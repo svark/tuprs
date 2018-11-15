@@ -4,31 +4,109 @@ extern crate nom;
 named!(till_comma, take_till!(|ch| ch == b','));
 named!(till_endbrace, take_until!(")\n"));
 
-
+// rvalue is something that can appear on the right side of assignment statement
 #[derive(Debug)]
 enum RvalGeneral {
-    Prefix(String),
-    DollarExpr(String),
-    AtExpr(String),
+    Prefix(String), //  a normal string
+    DollarExpr(String), // this is dollar expr eg $(EXPR)
+    AtExpr(String), // @(EXPR)
 }
+
 #[derive(Debug)]
 struct EqCond {
     lhs: Vec<RvalGeneral>,
     rhs: Vec<RvalGeneral>,
 }
 
+#[derive(Debug)]
+struct Ident {
+    name: String,
+}
+
+fn to_lval(s: &str) -> Ident {
+    Ident { name: s.to_owned() }
+}
+// #[derive(Debug)]
+// struct Assignment {
+//     left: Ident,
+//     right: Vec<RvalGeneral>,
+//     is_append: bool,
+// }
+#[derive(Debug)]
+struct Bucket
+{
+    name: String
+}
+#[derive(Debug)]
+struct Group
+{
+   name : String
+}
+
+#[derive(Debug)]
+struct IOValGeneral
+{
+    paths: Vec<RvalGeneral>,
+    buckets: Vec<Bucket>,
+    groups : Vec<Group>
+}
+
+#[derive(Debug)]
+enum Source
+{
+    Primary{ inp: IOValGeneral, foreach: bool},
+    Secondary(IOValGeneral)
+}
+
+#[derive(Debug)]
+enum Target
+{
+    Primary(RvalGeneral),
+    Secondary(RvalGeneral),
+    BucketName(String),
+    GroupName(String)
+}
+
+#[derive(Debug)]
+struct Rule
+{
+    disp_string: String,
+    rule_string: String,
+}
+
+#[derive(Debug)]
+enum Statement
+{
+    LetExpr{left:Ident, right:Vec<RvalGeneral>, is_append: bool},
+    IfElseEndIf{ eq: EqCond, then_statements: Box<Vec<Statement>> , else_staments: Box< Vec<Statement>> },
+    IncRules(Box<Vec<Statement>>),
+    Include(Box<Vec<Statement>>),
+    Link{s: Source, t:Target, r:Rule}
+}
+
+// convert byte str to RvalGeneral::Prefix
 fn from_str(res: &[u8]) -> Result<RvalGeneral, std::str::Utf8Error> {
     match std::str::from_utf8(res) {
         Ok(s) => Ok(RvalGeneral::Prefix(s.to_owned())),
         Err(e) => Err(e),
     }
 }
+
 fn is_ident(c: u8) -> bool {
     nom::is_alphanumeric(c) || c == b'_'
 }
 // parse rvalue wrapped inside dollar or at
 named!(parse_rvalue_raw,
-       delimited!(alt!(tag!("$(") | tag!("@(")), take_while!(is_ident), tag!(")")));
+       delimited!(alt!(tag!("$(") | tag!("@(") ), take_while!(is_ident), tag!(")"))
+);
+
+named!(parse_rvalue_raw_bucket,
+       delimited!(tag!("{"), take_while!(is_ident), tag!("}"))
+);
+
+// named!(parse_rvalue_raw_group,
+//        delimited!(tag!("<"), alt!(map_res!(take_while!(is_ident),  ) | many!(parse_rvalue_raw) ), tag!(">")));
+
 // parse rvalue at expression eg @(V)
 named!(parse_rvalue_at<&[u8], RvalGeneral>,
    do_parse!(
@@ -79,15 +157,6 @@ fn parse_rvalgeneral_list_long<'a, 'b>
                apply!(parse_rvalgeneral, delim),
                alt!(tag!(delim) | eof!())  )
 }
-
-#[derive(Debug)]
-struct Ident {
-    name: String,
-}
-
-fn to_lval(s: &str) -> Ident {
-    Ident { name: s.to_owned() }
-}
 // specialization of previos one delimited by eol
 named!(parse_rvalgeneral_list<&[u8], (Vec<RvalGeneral>, &[u8]) >,
        apply!(parse_rvalgeneral_list_long, "\n") );
@@ -96,21 +165,29 @@ named!(parse_lvalue<&[u8], Ident>,
         do_parse!(  l : map_res!(take_while!(is_ident), std::str::from_utf8)>> (to_lval(l)) )
        );
 
-#[derive(Debug)]
-struct Assignment {
-    left: Ident,
-    right: Vec<RvalGeneral>,
-    is_append: bool,
-}
+// named!(parse_include<&[u8], Statement>,
+//        do_parse!(ws!(tag!("include")) >> s: map_res!(take_until!("\n"), std::str::from_utf8) >> (Statement::Include(String::from(s)))
+//        )
+// );
 
-// parse an assignment expr
-named!(parse_let_expr<&[u8], Assignment>,
+       // parse an assignment expr
+named!(parse_let_expr<&[u8], Statement>,
        do_parse!( l : ws!(parse_lvalue) >>
                   op : ws!(alt_complete!( tag!("=") | tag!("+=")  )) >>
                   r :  complete!(parse_rvalgeneral_list)  >>
-                  (Assignment{ left:l, right:r.0,
+                  (Statement::LetExpr{ left:l, right:r.0,
                                is_append: (op == b"+=") }) )
 );
+//       named!(parse_include<&[u8], Vec<Statement>>,
+
+
+// named!(parse_statement<&[u8], Statement>,
+//        alt_complete!(
+//            IncRules,
+//            Include(String)
+//        )
+// );
+
 // parse equality condition (only the condition, not the statements that follow if)
 named!(parse_eq<&[u8], EqCond>,
     do_parse!(ws!(tag_s!("ifeq")) >>
