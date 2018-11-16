@@ -18,6 +18,7 @@ enum RvalGeneral {
 struct EqCond {
     lhs: Vec<RvalGeneral>,
     rhs: Vec<RvalGeneral>,
+    not_cond : bool
 }
 
 #[derive(Debug)]
@@ -59,8 +60,8 @@ enum Statement {
     },
     IfElseEndIf {
         eq: EqCond,
-        then_statements: Box<Vec<Statement>>,
-        else_staments: Box<Vec<Statement>>,
+        then_statements: Vec<Statement>,
+        else_statements: Vec<Statement>,
     },
     IncludeRules,
     Include(String),
@@ -89,7 +90,7 @@ named!(parse_rvalue_raw,
                   tag!(")")));
 
 named!(parse_rvalue_raw_bucket,
-       delimited!(tag!("{"), take_while!(is_ident), tag!("}")));
+       delimited!(ws!(tag!("{")), take_while!(is_ident), tag!("}")));
 
 named!(parse_rvalue_raw_angle<&[u8], Vec<RvalGeneral>>,
        do_parse!(tag!("<") >>
@@ -124,8 +125,6 @@ named!(parse_rvalue_bucket<&[u8], RvalGeneral>,
                (RvalGeneral::Bucket(rv.to_owned()))
        )
 );
-
-
 
 named!(parse_rvalue<&[u8], RvalGeneral>,
        switch!(peek!(take!(1)),
@@ -190,11 +189,12 @@ named!(parse_include_rules<&[u8], Statement>,
 // parse an assignment expr
 named!(parse_let_expr<&[u8], Statement>,
        do_parse!( l : ws!(parse_lvalue) >>
-                  op : ws!(alt_complete!( tag!("=") | tag!("+=")  )) >>
+                  op : ws!(alt_complete!( tag!("=") | tag!(":=") | tag!("+=")  )) >>
                   r :  complete!(parse_rvalgeneral_list)  >>
                   (Statement::LetExpr{ left:l, right:r.0,
                                is_append: (op == b"+=") }) )
 );
+
 named!(parse_rule_gut<&[u8], RuleFormula>,
        do_parse!(
            description :
@@ -224,14 +224,14 @@ fn from_output(primary: Vec<RvalGeneral>,
     }
 }
 named!(parse_rule<&[u8], Statement>,
-      do_parse!( tag!(":") >>
+      do_parse!( ws!(tag!(":")) >>
                  for_each: opt!(ws!(tag!("foreach"))) >>
                  input : apply!(parse_rvalgeneral_list_long, "|") >>
                  secondary_input : opt!( do_parse!(tag!("|") >>  r : apply!(parse_rvalgeneral_list_long, "|") >> (r)) ) >>
                  tag!(">") >>
                  rule_formula : parse_rule_gut >>
-                 tag!(">") >>
-                 secondary_output : opt!( do_parse!( r: apply!(parse_rvalgeneral_list_long, "|") >> tag!("|") >> (r)) ) >>
+                 ws!(tag!(">")) >>
+                 secondary_output : opt!( do_parse!( r: apply!(parse_rvalgeneral_list_long, "|") >> (r)) ) >>
                  output : apply!(parse_rvalgeneral_list_long, "\n") >>
               //   opt!(eat_separator!(" \t")) >>
                  outputtag : opt!(parse_rvalgeneral_list) >>
@@ -246,25 +246,42 @@ named!(parse_rule<&[u8], Statement>,
 
 named!(parse_statement<&[u8], Statement>,
        alt_complete!( parse_include |
-                      parse_include_rules|
+                      parse_include_rules |
                       parse_let_expr |
-                      parse_rule)
+                      parse_rule |
+                      parse_ifelseendif
+       )
 );
 
-named!(parse_statements_until<&[u8], (Vec<Statement>, &[u8])>,
-       many_till!(parse_statement, alt_complete!(tag!("endif")| tag!("else")))
+named!(parse_statements_until_else<&[u8], (Vec<Statement>, &[u8])>,
+       many_till!(parse_statement, tag!("else"))
 );
+
+named!(parse_statements_until_endif<&[u8], (Vec<Statement>, &[u8])>,
+       many_till!(parse_statement, tag!("endif"))
+);
+
 
 // parse equality condition (only the condition, not the statements that follow if)
 named!(parse_eq<&[u8], EqCond>,
-    do_parse!(ws!(tag_s!("ifeq")) >>
-         char!('(') >>
-         e1:  apply!(parse_rvalgeneral_list_long, ",") >>
-         e2 : apply!(parse_rvalgeneral_list_long, ")") >>
-          (EqCond{lhs: e1.0, rhs: e2.0})
-         )
+       do_parse!(  not_cond : alt!(ws!(tag_s!("ifeq")) => { |_|  false } |
+                                   ws!(tag_s!("ifneq")) => { |_|  true } )  >>
+                   char!('(') >>
+                   e1:  apply!(parse_rvalgeneral_list_long, ",") >>
+                   e2 : apply!(parse_rvalgeneral_list_long, ")") >>
+                   (EqCond{lhs: e1.0, rhs: e2.0, not_cond: not_cond})
+       )
 );
 
+named!(parse_ifelseendif<&[u8], Statement>,
+       do_parse!( eqcond : call!(parse_eq) >>
+                  eat_separator!(" \t\n") >>
+                  then_s : alt_complete!(do_parse!( t0 : parse_statements_until_else  >>  e : parse_statements_until_endif >> ((t0.0, e.0)) ) |
+                                         do_parse!( t : parse_statements_until_endif >>  (t.0, vec![])) ) >>
+                  (Statement::IfElseEndIf{ eq : eqcond,
+                                           then_statements: then_s.0 , else_statements :then_s.1
+                  }) )
+);
 fn main() {
     let res1 = parse_eq(b" ifeq($(HW_DEBUG),20)\nvar x=y");
     println!("res1: {:?}", res1);
@@ -288,12 +305,16 @@ fn main() {
     println!("41: {:?}", res41);
     let res5 = parse_let_expr(b"SOURCES += $(HW_ROOTDIR)/*.cxx  \n");
     println!("{:?}", res5);
-
-    let res6 = parse_rule(b": {objs} |> p4 edit %i |> %B.o \n");
+    let res6 = parse_rule(b": {objs} |> cl %i /Fout:%f |> command.pch |   %B.o {obj}\n");
     match res6 {
         Ok(something) => println!("{:?}", something),
         Err(nom::Err::Error(nom::Context::Code(x,_y))) => println!("{:?}", std::str::from_utf8(x).to_owned() ),
         _ => println!("unknown")
     }
-    //println!("{:?}", res6);
+    let res7 = parse_ifelseendif(b"ifeq($(HW_DEBUG),20)\nx=ysds\nelse\nx+=eere\nendif\n");
+    match res7 {
+        Ok(something) => println!("{:?}", something),
+        Err(nom::Err::Error(nom::Context::Code(x,_y))) => println!("{:?}", std::str::from_utf8(x).to_owned()),
+        _ => println!("unknown")
+    }
 }
