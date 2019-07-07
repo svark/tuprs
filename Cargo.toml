@@ -3,6 +3,10 @@ name = "tuprs"
 version = "0.1.0"
 authors = ["Arun Sivaramakrishnan <arun.sivaramakrishnan@gmail.com>"]
 
+[lib]
+name = "tupparser"
+path = "lib/mod.rs"
+
 [dependencies]
 nom = "4.1.1"
 
