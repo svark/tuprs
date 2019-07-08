@@ -1,16 +1,19 @@
 use std::collections::HashMap;
 use statements::*;
 use parser::parse_tupfile;
+use parser::{locate_file, locate_tuprules};
+use std::path::{Path, PathBuf};
 
 pub struct SubstMap {
     pub expr_map: HashMap<String, String>,
     pub conf_map: HashMap<String, String>,
     pub rule_map: HashMap<String, Link>,
+    pub cur_file: PathBuf,
 }
 
 pub trait Subst
 {
-     fn subst(&self, m: &mut SubstMap) -> Self;
+    fn subst(&self, m: &mut SubstMap) -> Self;
 }
 
 pub trait ExpandMacro
@@ -97,7 +100,6 @@ impl Subst for RuleFormula {
 }
 // replace occurences of a macro ref with link data from previous assignments in namedrules
 impl ExpandMacro for Link {
-
     fn hasref(&self) -> bool {
         for rval in self.r.formula.iter() {
             if let RvalGeneral::MacroRef(_) = *rval {
@@ -133,6 +135,29 @@ impl ExpandMacro for Link {
             },
         }
     }
+}
+fn get_parent(cur_file: &Path) -> PathBuf {
+    PathBuf::from(cur_file.parent().unwrap().to_str().unwrap())
+}
+// load the conf variables in tup.config in the root directory
+pub fn load_conf_vars(filename: &str) -> HashMap<String, String> {
+    let mut conf_vars: HashMap<String, String> = HashMap::new();
+    if let Some(conf_file) = locate_file(Path::new(filename), "tup.config") {
+        if let Some(fstr) = conf_file.to_str() {
+            for stmt in parse_tupfile(fstr).iter() {
+                match stmt {
+                    Statement::LetExpr{left,right, ..} => {
+                        conf_vars.insert(left.name.clone(), tostr_cat(right));
+                    }
+                    _ => (),
+                }
+            }
+        }
+    }else
+    {
+        panic!("unexpected\n");
+    }
+    conf_vars
 }
 
 impl Subst for Link {
@@ -188,13 +213,27 @@ impl Subst for Vec<Statement> {
                     }
                 }
                 Statement::IncludeRules => {
-                    let s = statement.clone();
-                    newstats.push(s);
+                    let parent = get_parent(m.cur_file.as_path());
+                    if let Some(f) = locate_tuprules(parent.as_path()) {
+                        let mut include_stmts = parse_tupfile(f.to_str().unwrap());
+                        newstats.append(&mut include_stmts.subst(m));
+                    }
                 }
                 Statement::Include(s) => {
                     let s = s.subst(m);
-                    let mut include_stmmts = parse_tupfile(tostr_cat(&s).as_str());
-                    newstats.append(&mut include_stmmts.subst(m));
+                    let scat = tostr_cat(&s);
+                    let mut longp = get_parent(m.cur_file.as_path());
+                    let mut pscat = Path::new(scat.as_str());
+                    let fullp = longp.join(pscat);
+                    let p = if pscat.is_relative() {
+                        fullp.as_path()
+                    } else {
+                        pscat
+                    };
+                    if p.is_file() {
+                        let mut include_stmmts = parse_tupfile(p.to_str().unwrap());
+                        newstats.append(&mut include_stmmts.subst(m));
+                    }
                 }
                 Statement::Rule(link) => {
                     let mut l = link.clone();

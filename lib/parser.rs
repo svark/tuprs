@@ -316,7 +316,6 @@ pub fn parse_tupfile(filename: &str) ->  Vec<Statement>
     let mut file = File::open(filename).expect("no such file");
     let mut contents = String::new();
     if file.read_to_string(&mut contents).ok().is_some()  {
-        use parser::parse_statements_until_eof;
         if let Some(v) = parse_statements_until_eof(contents.as_bytes()).ok()
         {
             (v.1)
@@ -327,4 +326,51 @@ pub fn parse_tupfile(filename: &str) ->  Vec<Statement>
         Vec::new()
     }
 }
+use std::path::{Path, PathBuf};
+pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf>
+{
+    let mut cwd = cur_tupfile;
+    while let Some(parent) = cwd.parent() {
+        let p = parent.join(file_to_loc);
+        if p.is_file() {
+            return Some(p);
+        }
+        cwd = parent;
+    }
+    None
+}
 
+pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf>
+{
+    locate_file(cur_tupfile, "Tuprules.tup")
+}
+
+// fn locate_root(cur_tupfile: &Path) -> Option<PathBuf> {
+//     let inifile = locate_file(cur_tupfile, "Tupfile.ini");
+//     if let Some(ref p) = inifile
+//     {
+//         return Some(p.parent().unwrap().canonicalize().unwrap());
+//     }
+//     None
+// }
+
+
+pub fn parse_config(filename : &str) -> Vec<Statement>
+{
+    use std::fs::File;
+    use std::io::prelude::*;
+    let mut file = File::open(filename).expect("no such file");
+    let mut contents = String::new();
+    if file.read_to_string(&mut contents).ok().is_some() {
+        if let Some(v) = parse_statements_until_eof(contents.as_bytes()).ok()
+        {
+            (v.1)
+        }else
+        {
+            Vec::new()
+        }
+    }else
+    {
+        Vec::new()
+    }
+}

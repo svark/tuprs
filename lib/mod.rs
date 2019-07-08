@@ -1,12 +1,13 @@
 #[macro_use]
 extern crate nom;
-use std::fs::File;
-use std::io::Write;
 pub mod statements;
 pub mod parser;
 pub mod transform;
+
 #[test]
 fn test_op() {
+    use std::fs::File;
+    use std::io::Write;
     {
         let mut file = File::create("tupdata0.txt").expect("cannot open file");
         let stmts = b"DEBUG =1\n\
@@ -18,28 +19,32 @@ fn test_op() {
                        ifeq ($(DEBUG),1)\
                        : $(SRCS)|>\
                   !CC <%grp> <%grp2> |> command.pch |\
-                  %B.o <grp>\nelse\n  x+=eere\nendif\n";
+                  @(PLATFORM)/%B.o <grp>\nelse\n  x+=eere\nendif\n";
         let mut file = File::create("tupdata1.txt").expect("cannot open file");
         file.write_all(stmts1).expect("write failed");
+
+        let mut file = File::create("tup.config").expect("cannot open file");
+        let stmts2 = b"PLATFORM=win64\n";
+        file.write_all(stmts2).expect("write failed to config file");
 
     }
     {
         let stmts = parser::parse_tupfile("tupdata1.txt");
         use std::collections::HashMap;
-        // use statements::RvalGeneral::DollarExpr;
         use statements::RvalGeneral::Literal;
         use statements::RvalGeneral::Group;
         use transform::*;
         use statements::{Statement, Source, Target, Link, RuleFormula};
 
-        let cm: HashMap<String, String> = HashMap::new();
-        let em: HashMap<String, String> = HashMap::new();
-        let rm: HashMap<String, Link> = HashMap::new();
-        let mut map = SubstMap {
-            expr_map: em,
-            conf_map: cm,
-            rule_map: rm,
-        };
+       let mut map = SubstMap {
+           expr_map: HashMap::new(),
+           conf_map: load_conf_vars("tupdata1.txt"),
+           rule_map: HashMap::new(),
+           cur_file : std::path::Path::new("tupdata1.txt").canonicalize().unwrap()
+       };
+
+        assert_eq!(map.conf_map.get("PLATFORM"), Some(&"win64".to_owned()));
+
         let stmts_ = stmts.subst(&mut map);
         let resolvedexpr = [Statement::Rule(Link {
                                 s: Source {
@@ -48,8 +53,8 @@ fn test_op() {
                                     secondary: vec![],
                                 },
                                 t: Target {
-                                    primary: vec![Literal("%B.o ".to_string()),
-                                              Group(vec![Literal("grp".to_string())]),
+                                    primary: vec![Literal("win64".to_string()), Literal("/%B.o ".to_string()),
+                                                  Group(vec![Literal("grp".to_string())]),
                                               Literal(" ".to_string())],
                                     secondary: vec![Literal("command.pch ".to_string())],
                                     tag: vec![],
@@ -65,7 +70,6 @@ fn test_op() {
                                 },
         })];
         assert_eq!(resolvedexpr[0], stmts_[0]);
-        // println!("{:?}", stmts_);
     }
 }
 
@@ -112,6 +116,7 @@ fn test_parse() {
         expr_map: em,
         conf_map: cm,
         rule_map: rm,
+        cur_file : std::path::Path::new(".").canonicalize().unwrap(),
     };
     let stmts_ = stmts.subst(&mut map);
     let prog = vec![Statement::Rule(Link {
