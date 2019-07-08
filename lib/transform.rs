@@ -215,15 +215,15 @@ impl Subst for Vec<Statement> {
                 Statement::IncludeRules => {
                     let parent = get_parent(m.cur_file.as_path());
                     if let Some(f) = locate_tuprules(parent.as_path()) {
-                        let mut include_stmts = parse_tupfile(f.to_str().unwrap());
+                        let include_stmts = parse_tupfile(f.to_str().unwrap());
                         newstats.append(&mut include_stmts.subst(m));
                     }
                 }
                 Statement::Include(s) => {
                     let s = s.subst(m);
                     let scat = tostr_cat(&s);
-                    let mut longp = get_parent(m.cur_file.as_path());
-                    let mut pscat = Path::new(scat.as_str());
+                    let longp = get_parent(m.cur_file.as_path());
+                    let pscat = Path::new(scat.as_str());
                     let fullp = longp.join(pscat);
                     let p = if pscat.is_relative() {
                         fullp.as_path()
@@ -231,7 +231,7 @@ impl Subst for Vec<Statement> {
                         pscat
                     };
                     if p.is_file() {
-                        let mut include_stmmts = parse_tupfile(p.to_str().unwrap());
+                        let include_stmmts = parse_tupfile(p.to_str().unwrap());
                         newstats.append(&mut include_stmmts.subst(m));
                     }
                 }
@@ -248,7 +248,7 @@ impl Subst for Vec<Statement> {
                     m.rule_map.insert(name.clone(), link.clone());
                 }
                 Statement::Err(v) => {
-                    let mut v = v.subst(m);
+                    let v = v.subst(m);
                     eprintln!("{}\n", tostr_cat(&v).as_str());
                     break;
                 }
