@@ -12,21 +12,21 @@ fn test_op() {
         let mut file = File::create("tupdata0.txt").expect("cannot open file");
         let stmts = b"DEBUG =1\n\
                   SRCS=*.cxx\n\
+                  #comment\n\
                   SRCS +=*.cpp\n\
                   !CC = |> cl %i /Fout:%f |> \n";
         file.write_all(stmts).expect("write failed");
         let stmts1 = b"include tupdata0.txt\n\
-                       ifeq ($(DEBUG),1)\
-                       : $(SRCS)|>\
+                       ifeq ($(DEBUG),1) #comment\n \
+                       : $(SRCS)|> \
                   !CC <%grp> <%grp2> |> command.pch |\
-                  @(PLATFORM)/%B.o <grp>\nelse\n  x+=eere\nendif\n";
+                  @(PLATFORM)/%B.o <grp>\nelse\n  x+=eere #append\nendif\n";
         let mut file = File::create("tupdata1.txt").expect("cannot open file");
         file.write_all(stmts1).expect("write failed");
 
         let mut file = File::create("tup.config").expect("cannot open file");
         let stmts2 = b"PLATFORM=win64\n";
         file.write_all(stmts2).expect("write failed to config file");
-
     }
     {
         let stmts = parser::parse_tupfile("tupdata1.txt");
@@ -97,6 +97,8 @@ fn test_parse() {
     };
     assert_eq!(res1.unwrap().1, prog1);
 
+    let res64 = parser::parse_statement(b"#Source files\n").unwrap().1;
+    assert_eq!(res64, Statement::Comment("Source files".to_owned()));
     let res65 = parser::parse_statement(b"DEBUG =1\n").unwrap().1;
     let res66 = parser::parse_statement(b"SRCS=*.cxx\n").unwrap().1;
     let res67 = parser::parse_statement(b"SRCS +=*.cpp\n").unwrap().1;
@@ -106,7 +108,7 @@ fn test_parse() {
                                  %B.o <grp>\nelse\nx+=eere\nendif\n")
                    .unwrap()
                    .1;
-    let stmts = vec![res65, res66, res67, res68, res7];
+    let stmts = vec![res64, res65, res66, res67, res68, res7];
     use std::collections::HashMap;
 
     let cm: HashMap<String, String> = HashMap::new();

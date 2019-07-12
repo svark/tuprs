@@ -42,6 +42,9 @@ impl Subst for RvalGeneral {
                                      .map(|x| x.subst(m))
                                      .collect())
             }
+            &RvalGeneral::InlineComment(_) => {
+                RvalGeneral::Literal("".to_owned())
+            }
             _ => self.clone(),
         }
     }
@@ -260,6 +263,9 @@ impl Subst for Vec<Statement> {
                 }
                 Statement::Run(r) => {
                     newstats.push(Statement::Export(r.subst(m)));
+                }
+                Statement::Comment(_) => {
+                    ; // ignore
                 }
             }
         }

@@ -8,6 +8,7 @@ pub enum RvalGeneral {
     Group(Vec<RvalGeneral>), // reference to an output available globally
     Bucket(String), // {objs} a collector of output
     MacroRef(String), // !cc_name reference to a macro to be expanded
+    InlineComment(String), // trailing comments
 }
 
 // represents the equality condition in if(n)eq (LHS,RHS)
@@ -71,5 +72,6 @@ pub enum Statement {
     Export(Vec<RvalGeneral>),
     Preload(Vec<RvalGeneral>),
     Run(Vec<RvalGeneral>),
+    Comment(String),
 }
 

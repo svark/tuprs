@@ -27,6 +27,13 @@ named!(parse_rvalue_raw_excl,
                 v : take_while!(is_ident) >>
                 (v)));
 
+// parse an inline comment
+named!(parse_rvalue_raw_comment,
+       do_parse!(tag!("#") >>
+                 v : take_until!("\n") >>
+                 (v)));
+
+
 // read a curly brace and the identifier inside it
 named!(parse_rvalue_raw_bucket,
        delimited!(ws!(tag!("{")), take_while!(is_ident), tag!("}")));
@@ -76,6 +83,14 @@ named!(parse_rvalue_bucket<&[u8], RvalGeneral>,
                (RvalGeneral::Bucket(rv.to_owned()))
        )
 );
+
+// parse trailing comments (#--)
+named!(parse_rvalue_comment<&[u8], RvalGeneral>,
+       do_parse!(
+           rv : map_res!(parse_rvalue_raw_comment, std::str::from_utf8) >>
+               (RvalGeneral::InlineComment(rv.to_owned()))
+       )
+);
 // parse to any of the special expressions (dollar, at, angle, bucket)
 named!(parse_rvalue<&[u8], RvalGeneral>,
        switch!(peek!(take!(1)),
@@ -83,20 +98,21 @@ named!(parse_rvalue<&[u8], RvalGeneral>,
                b"@" => call!(parse_rvalue_at) |
                b"<" => call!(parse_rvalue_angle) |
                b"{" => call!(parse_rvalue_bucket) |
-               b"!" => call!(parse_rvalue_exclamation)
+               b"!" => call!(parse_rvalue_exclamation) |
+               b"#" => call!(parse_rvalue_comment)
        )
 );
 
 // eat up the (dollar or at) that dont parse to (dollar or at) expression
 named!(chompdollar,
-       do_parse!( peek!(one_of!("$@!<")) >> not!(parse_rvalue) >> r : take!(1)  >> (r)));
+       do_parse!( peek!(one_of!("$@!<#")) >> not!(parse_rvalue) >> r : take!(1)  >> (r)));
 
 // read  a rvalue until delimiter
 // in addition, \\\n , $,@, ! also pause the parsing
 fn parse_greedy<'a, 'b>(input: &'a [u8],
                         delim: &'b str)
                         -> Result<(&'a [u8], &'a [u8]), nom::Err<&'a [u8]>> {
-    let mut s = String::from("\\\n$@{<!");
+    let mut s = String::from("\\\n$@{<!#");
     s.push_str(delim);
     alt!(input,
          value!(b"".as_ref(), complete!(tag!("\\\n"))) | chompdollar |
@@ -171,6 +187,14 @@ named!(parse_include_rules<&[u8], Statement>,
                  (Statement::IncludeRules)
        )
 );
+
+// parse comment expresssion
+named!(parse_comment<&[u8], Statement>,
+       do_parse!(ws!(tag!("#")) >> s: map_res!(take_until!("\n"), std::str::from_utf8) >>
+                 (Statement::Comment(s.to_owned()))
+       )
+);
+
 
 // parse an assignment expression
 named!(parse_let_expr<&[u8], Statement>,
@@ -267,7 +291,8 @@ named!(pub parse_statement<&[u8], Statement>,
                       parse_error |
                       parse_export |
                       parse_run |
-                      parse_preload
+                      parse_preload |
+                      parse_comment
        )
 );
 
