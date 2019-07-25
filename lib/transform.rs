@@ -3,12 +3,36 @@ use statements::*;
 use parser::parse_tupfile;
 use parser::{locate_file, locate_tuprules};
 use std::path::{Path, PathBuf};
+use platform::*;
+
+pub enum StatementContext {
+    Export,
+    Preload,
+    Error,
+    Link{source:PathBuf, dest: PathBuf},
+    Other,
+}
+
 
 pub struct SubstMap {
     pub expr_map: HashMap<String, String>,
+    pub rexpr_map: HashMap<String, String>,
     pub conf_map: HashMap<String, String>,
     pub rule_map: HashMap<String, Link>,
     pub cur_file: PathBuf,
+    pub sc: StatementContext,
+}
+impl Default for SubstMap {
+    fn default() -> SubstMap {
+        SubstMap {
+            expr_map: HashMap::new(),
+            rexpr_map: HashMap::new(),
+            conf_map: HashMap::new(),
+            rule_map: HashMap::new(),
+            cur_file: PathBuf::new(),
+            sc: StatementContext::Other,
+        }
+    }
 }
 
 pub trait Subst
@@ -22,29 +46,51 @@ pub trait ExpandMacro
     fn expand(&self, m: &mut SubstMap) -> Self;
 }
 
+fn is_empty(rval: &RvalGeneral) -> bool {
+    if let RvalGeneral::Literal(s) = rval {
+        s.trim().len() == 0
+    } else {
+        false
+    }
+}
+
 impl Subst for RvalGeneral {
     fn subst(&self, m: &mut SubstMap) -> Self {
         match self {
             &RvalGeneral::DollarExpr(ref x) => {
-                RvalGeneral::Literal(m.expr_map
-                                      .get(x.as_str())
-                                      .unwrap_or(&"".to_owned())
-                                      .to_string())
+                if let Some(val) = m.expr_map.get(x.as_str()) {
+                    RvalGeneral::Literal(val.to_string())
+                } else if !x.contains("%") {
+                    RvalGeneral::Literal("".to_owned())
+                } else {
+                    self.clone()
+                }
             }
             &RvalGeneral::AtExpr(ref x) => {
-                RvalGeneral::Literal(m.conf_map
-                                      .get(x.as_str())
-                                      .unwrap_or(&"".to_owned())
-                                      .to_string())
+                if let Some(val) = m.conf_map.get(x.as_str()) {
+                    RvalGeneral::Literal(val.to_string())
+                } else if !x.contains("%") {
+                    RvalGeneral::Literal("".to_owned())
+                } else {
+                    self.clone()
+                }
             }
+            &RvalGeneral::AmpExpr(ref x) => {
+                if let Some(val) = m.rexpr_map.get(x.as_str()) {
+                    RvalGeneral::Literal(val.to_string())
+                } else if !x.contains("%") {
+                    RvalGeneral::Literal("".to_owned())
+                } else {
+                    self.clone()
+                }
+            }
+
             &RvalGeneral::Group(ref xs) => {
                 RvalGeneral::Group(xs.into_iter()
                                      .map(|x| x.subst(m))
                                      .collect())
             }
-            &RvalGeneral::InlineComment(_) => {
-                RvalGeneral::Literal("".to_owned())
-            }
+            &RvalGeneral::InlineComment(_) => RvalGeneral::Literal("".to_owned()),
             _ => self.clone(),
         }
     }
@@ -53,7 +99,7 @@ impl Subst for RvalGeneral {
 
 impl Subst for Vec<RvalGeneral> {
     fn subst(&self, m: &mut SubstMap) -> Self {
-        self.iter().map(|x| x.subst(m)).collect()
+        self.iter().map(|x| x.subst(m)).filter(|x| !is_empty(x)).collect()
     }
 }
 impl Subst for Source {
@@ -139,28 +185,55 @@ impl ExpandMacro for Link {
         }
     }
 }
+
 fn get_parent(cur_file: &Path) -> PathBuf {
     PathBuf::from(cur_file.parent().unwrap().to_str().unwrap())
 }
+
+
 // load the conf variables in tup.config in the root directory
-pub fn load_conf_vars(filename: &str) -> HashMap<String, String> {
+pub fn load_conf_vars(filename: &Path) -> HashMap<String, String> {
     let mut conf_vars: HashMap<String, String> = HashMap::new();
-    if let Some(conf_file) = locate_file(Path::new(filename), "tup.config") {
+
+
+    if let Some(conf_file) = locate_file(filename, "tup.config") {
         if let Some(fstr) = conf_file.to_str() {
             for stmt in parse_tupfile(fstr).iter() {
                 match stmt {
                     Statement::LetExpr{left,right, ..} => {
-                        conf_vars.insert(left.name.clone(), tostr_cat(right));
+                        if left.name.starts_with("CONFIG_") {
+                            conf_vars.insert(left.name[7..].to_string(), tostr_cat(right));
+                        }
                     }
                     _ => (),
                 }
             }
         }
-    }else
-    {
-        panic!("unexpected\n");
     }
+    if !conf_vars.contains_key("TUP_PLATFORM") {
+        conf_vars.insert("TUP_PLATFORM".to_owned(), get_platform());;
+    }
+    if !conf_vars.contains_key("TUP_ARCH") {
+        conf_vars.insert("TUP_ARCH".to_owned(), get_arch());;
+    }
+
+    // @(TUP_PLATFORM)
+    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
+    //     @(TUP_ARCH)
+    //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
+
     conf_vars
+}
+pub fn set_cwd(filename: &Path, m: &mut SubstMap) -> PathBuf {
+    let cf = m.cur_file.clone();
+    m.cur_file = filename.to_path_buf();
+    // println!("{:?}", get_parent(m.cur_file.as_path()).to_str().unwrap_or("empty"));
+    let ref mut def_vars = m.expr_map;
+    if let Some(p) = get_parent(m.cur_file.as_path()).to_str() {
+        def_vars.remove("TUP_CWD");
+        def_vars.insert("TUP_CWD".to_owned(), p.to_owned());
+    }
+    cf
 }
 
 impl Subst for Link {
@@ -203,6 +276,23 @@ impl Subst for Vec<Statement> {
                     };
                     m.expr_map.insert(left.name.clone(), curright);
                 }
+                Statement::LetRefExpr{left, right, is_append} => {
+                    let &app = is_append;
+                    let prefix = vec![RvalGeneral::DollarExpr("TUP_CWD".to_owned()),
+                                      RvalGeneral::Literal("/".to_owned())]
+                                     .subst(m);
+                    let subst_right = tostr_cat(&prefix) + tostr_cat(&right.subst(m)).as_str();
+                    let curright = if app {
+                        match m.rexpr_map.get(left.name.as_str()) {
+                            Some(prevright) => prevright.to_string() + " " + subst_right.as_str(),
+                            _ => subst_right,
+                        }
+                    } else {
+                        subst_right
+                    };
+                    m.rexpr_map.insert(left.name.clone(), curright);
+                }
+
                 Statement::IfElseEndIf{eq, then_statements, else_statements} => {
                     let e = EqCond {
                         lhs: eq.lhs.subst(m),
@@ -215,10 +305,20 @@ impl Subst for Vec<Statement> {
                         newstats.append(&mut else_statements.subst(m));
                     }
                 }
+                Statement::IfDef{checked_var, then_statements, else_statements} => {
+                    let cvar = RvalGeneral::AtExpr(checked_var.0.name.clone());
+                    if is_empty(&cvar.subst(m)) == checked_var.1 {
+                        newstats.append(&mut then_statements.subst(m));
+                    } else {
+                        newstats.append(&mut else_statements.subst(m));
+                    }
+                }
+
                 Statement::IncludeRules => {
                     let parent = get_parent(m.cur_file.as_path());
                     if let Some(f) = locate_tuprules(parent.as_path()) {
                         let include_stmts = parse_tupfile(f.to_str().unwrap());
+                        m.cur_file = f;
                         newstats.append(&mut include_stmts.subst(m));
                     }
                 }
@@ -235,7 +335,9 @@ impl Subst for Vec<Statement> {
                     };
                     if p.is_file() {
                         let include_stmmts = parse_tupfile(p.to_str().unwrap());
+                        let cf = set_cwd(p, m);
                         newstats.append(&mut include_stmmts.subst(m));
+                        set_cwd(cf.as_path(), m);
                     }
                 }
                 Statement::Rule(link) => {

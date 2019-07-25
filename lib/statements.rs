@@ -5,6 +5,7 @@ pub enum RvalGeneral {
     Literal(String), // a normal string
     DollarExpr(String), // this is dollar expr eg $(EXPR)
     AtExpr(String), // @(EXPR)
+    AmpExpr(String), //&(Expr)
     Group(Vec<RvalGeneral>), // reference to an output available globally
     Bucket(String), // {objs} a collector of output
     MacroRef(String), // !cc_name reference to a macro to be expanded
@@ -18,11 +19,19 @@ pub struct EqCond {
     pub rhs: Vec<RvalGeneral>,
     pub not_cond: bool,
 }
-// name of a variable in let expressions such as X=1
+
+// name of a variable in let expressions such as X=1 or
+// &X = 1
 #[derive(PartialEq, Debug, Clone)]
 pub struct Ident {
     pub name: String,
 }
+
+
+// variable being checked for defined
+#[derive(PartialEq, Debug, Clone)]
+pub struct CheckedVar(pub Ident, pub bool);
+
 // represents source of a link (tup rule)
 #[derive(PartialEq, Debug, Clone, Default)]
 pub struct Source {
@@ -59,8 +68,19 @@ pub enum Statement {
         right: Vec<RvalGeneral>,
         is_append: bool,
     },
+    LetRefExpr
+    {
+        left: Ident,
+        right : Vec<RvalGeneral>,
+        is_append: bool,
+    },
     IfElseEndIf {
         eq: EqCond,
+        then_statements: Vec<Statement>,
+        else_statements: Vec<Statement>,
+    },
+    IfDef{
+        checked_var: CheckedVar,
         then_statements: Vec<Statement>,
         else_statements: Vec<Statement>,
     },

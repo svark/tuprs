@@ -1,7 +1,7 @@
 // promote a string into a tup variable
 use statements::*;
 fn to_lval(s: &str) -> Ident {
-    Ident { name: s.to_owned() }
+    Ident { name: s.to_owned()}
 }
 // convert byte str to RvalGeneral::Literal
 fn from_str(res: &[u8]) -> Result<RvalGeneral, std::str::Utf8Error> {
@@ -15,10 +15,15 @@ fn is_ident(c: u8) -> bool {
     nom::is_alphanumeric(c) || c == b'_'
 }
 
+fn is_ident_perc(c: u8) -> bool {
+    nom::is_alphanumeric(c) || c == b'_' || c == b'%'
+}
+
+
 // parse rvalue wrapped inside dollar or at
 named!(parse_rvalue_raw,
-       delimited!(alt!(tag!("$(") | tag!("@(")),
-                  take_while!(is_ident),
+       delimited!(alt!(tag!("$(") | tag!("@(") | tag!("&(")),
+                  take_while!(is_ident_perc),
                   tag!(")")));
 
 // parse a macro ref starting with a exclamation mark
@@ -61,6 +66,15 @@ named!(parse_rvalue_dollar<&[u8], RvalGeneral>,
    )
 );
 
+// parse rvalue dollar expression eg $(H)
+named!(parse_rvalue_amp<&[u8], RvalGeneral>,
+       do_parse!(
+           rv : map_res!(parse_rvalue_raw, std::str::from_utf8) >>
+               (RvalGeneral::AmpExpr(rv.to_owned()))
+       )
+);
+
+
 // parse rvalue macro ref eg !CC
 named!(parse_rvalue_exclamation<&[u8], RvalGeneral>,
        do_parse!(
@@ -96,6 +110,7 @@ named!(parse_rvalue<&[u8], RvalGeneral>,
        switch!(peek!(take!(1)),
            b"$" => call!(parse_rvalue_dollar) |
                b"@" => call!(parse_rvalue_at) |
+               b"&" => call!(parse_rvalue_amp) |
                b"<" => call!(parse_rvalue_angle) |
                b"{" => call!(parse_rvalue_bucket) |
                b"!" => call!(parse_rvalue_exclamation) |
@@ -105,14 +120,14 @@ named!(parse_rvalue<&[u8], RvalGeneral>,
 
 // eat up the (dollar or at) that dont parse to (dollar or at) expression
 named!(chompdollar,
-       do_parse!( peek!(one_of!("$@!<#")) >> not!(parse_rvalue) >> r : take!(1)  >> (r)));
+       do_parse!( peek!(one_of!("$@!<#&")) >> not!(parse_rvalue) >> r : take!(1)  >> (r)));
 
 // read  a rvalue until delimiter
 // in addition, \\\n , $,@, ! also pause the parsing
 fn parse_greedy<'a, 'b>(input: &'a [u8],
                         delim: &'b str)
                         -> Result<(&'a [u8], &'a [u8]), nom::Err<&'a [u8]>> {
-    let mut s = String::from("\\\n$@{<!#");
+    let mut s = String::from("\\\n$@{<!#&");
     s.push_str(delim);
     alt!(input,
          value!(b"".as_ref(), complete!(tag!("\\\n"))) | chompdollar |
@@ -142,9 +157,21 @@ named!(parse_rvalgeneral_list<&[u8], (Vec<RvalGeneral>, &[u8]) >,
 );
 
 // parse a lvalue to a string
-named!(parse_lvalue<&[u8], Ident>,
-        do_parse!(  l : map_res!(take_while!(is_ident), std::str::from_utf8)>> (to_lval(l)) )
+named!(parse_lvalue_ref<&[u8], Ident>,
+       do_parse!(
+           char!('&') >>
+               l : call!(parse_lvalue) >>
+               (l)
+       )
 );
+
+named!(parse_lvalue<&[u8], Ident>,
+       do_parse!(
+           l : map_res!(take_while!(is_ident), std::str::from_utf8)>> (to_lval(l))
+       )
+);
+
+
 
 // parse include expression
 named!(parse_include<&[u8], Statement>,
@@ -195,15 +222,24 @@ named!(parse_comment<&[u8], Statement>,
        )
 );
 
-
 // parse an assignment expression
 named!(parse_let_expr<&[u8], Statement>,
        do_parse!( l : ws!(parse_lvalue) >>
                   op : ws!(alt_complete!( tag!("=") | tag!(":=") | tag!("+=")  )) >>
                   r :  complete!(parse_rvalgeneral_list)  >>
-                  (Statement::LetExpr{ left:l, right:r.0,
-                               is_append: (op == b"+=") }) )
+                  (Statement::LetExpr{ left:l, right: r.0,
+                                       is_append: (op == b"+=") }) )
 );
+
+// parse an assignment expression
+named!(parse_letref_expr<&[u8], Statement>,
+       do_parse!( l : ws!(parse_lvalue_ref) >>
+                  op : ws!(alt_complete!( tag!("=") | tag!(":=") | tag!("+=")  )) >>
+                  r :  complete!(parse_rvalgeneral_list)  >>
+                  (Statement::LetRefExpr{ left:l, right:r.0,
+                                       is_append: (op == b"+=") }) )
+);
+
 
 // parse the insides of a rule, which includes a description and rule formula
 named!(parse_rule_gut<&[u8], RuleFormula>,
@@ -284,9 +320,11 @@ named!(pub parse_macroassignment<&[u8], Statement>,
 named!(pub parse_statement<&[u8], Statement>,
        alt_complete!( parse_include |
                       parse_include_rules |
+                      parse_letref_expr |
                       parse_let_expr |
                       parse_rule |
                       parse_ifelseendif |
+                      parse_ifdef |
                       parse_macroassignment |
                       parse_error |
                       parse_export |
@@ -321,6 +359,15 @@ named!(pub parse_eq<&[u8], EqCond>,
                    (EqCond{lhs: e1.0, rhs: e2.0, not_cond: not_cond})
        )
 );
+
+named!(parse_checked_var<&[u8], CheckedVar>,
+       do_parse!( negate : alt!(ws!(tag_s!("ifdef")) => {|_| false} |
+                                ws!(tag_s!("ifndef")) => { |_| true } ) >>
+                  var : parse_lvalue >>
+                  (CheckedVar(var, negate))
+                  )
+);
+
 // parse if else endif block
 named!(pub parse_ifelseendif<&[u8], Statement>,
        do_parse!( eqcond : call!(parse_eq) >>
@@ -333,6 +380,20 @@ named!(pub parse_ifelseendif<&[u8], Statement>,
                                            then_statements: then_s.0 , else_statements :then_s.1
                   }) )
 );
+
+// parse if else endif block
+named!(pub parse_ifdef<&[u8], Statement>,
+       do_parse!( cvar: call!(parse_checked_var) >>
+                  eat_separator!(" \t\n") >>
+                  then_s : alt_complete!(
+                      do_parse!( t0 : parse_statements_until_else >>
+                                 e : parse_statements_until_endif >> ((t0.0, e.0)) ) |
+                      do_parse!( t : parse_statements_until_endif >>  (t.0, vec![])) ) >>
+                  (Statement::IfDef{ checked_var : cvar,
+                                     then_statements: then_s.0 , else_statements :then_s.1
+                  }) )
+);
+
 // parse statements in a tupfile
 pub fn parse_tupfile(filename: &str) ->  Vec<Statement>
 {
