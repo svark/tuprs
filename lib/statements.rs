@@ -2,14 +2,14 @@
 // in general they can be constituents of any tup expression that is not on lhs of assignment
 #[derive(PartialEq, Debug, Clone)]
 pub enum RvalGeneral {
-    Literal(String), // a normal string
-    DollarExpr(String), // this is dollar expr eg $(EXPR)
-    AtExpr(String), // @(EXPR)
-    AmpExpr(String), //&(Expr)
+    Literal(String),         // a normal string
+    DollarExpr(String),      // this is dollar expr eg $(EXPR)
+    AtExpr(String),          // @(EXPR)
+    AmpExpr(String),         //&(Expr)
     Group(Vec<RvalGeneral>), // reference to an output available globally
-    Bucket(String), // {objs} a collector of output
-    MacroRef(String), // !cc_name reference to a macro to be expanded
-    InlineComment(String), // trailing comments
+    Bucket(String),          // {objs} a collector of output
+    MacroRef(String),        // !cc_name reference to a macro to be expanded
+    InlineComment(String),   // trailing comments
 }
 
 // represents the equality condition in if(n)eq (LHS,RHS)
@@ -26,7 +26,6 @@ pub struct EqCond {
 pub struct Ident {
     pub name: String,
 }
-
 
 // variable being checked for defined
 #[derive(PartialEq, Debug, Clone)]
@@ -68,10 +67,9 @@ pub enum Statement {
         right: Vec<RvalGeneral>,
         is_append: bool,
     },
-    LetRefExpr
-    {
+    LetRefExpr {
         left: Ident,
-        right : Vec<RvalGeneral>,
+        right: Vec<RvalGeneral>,
         is_append: bool,
     },
     IfElseEndIf {
@@ -79,7 +77,7 @@ pub enum Statement {
         then_statements: Vec<Statement>,
         else_statements: Vec<Statement>,
     },
-    IfDef{
+    IfDef {
         checked_var: CheckedVar,
         then_statements: Vec<Statement>,
         else_statements: Vec<Statement>,
@@ -94,4 +92,3 @@ pub enum Statement {
     Run(Vec<RvalGeneral>),
     Comment(String),
 }
-

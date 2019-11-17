@@ -1,7 +1,7 @@
 // promote a string into a tup variable
 use statements::*;
 fn to_lval(s: &str) -> Ident {
-    Ident { name: s.to_owned()}
+    Ident { name: s.to_owned() }
 }
 // convert byte str to RvalGeneral::Literal
 fn from_str(res: &[u8]) -> Result<RvalGeneral, std::str::Utf8Error> {
@@ -19,29 +19,33 @@ fn is_ident_perc(c: u8) -> bool {
     nom::is_alphanumeric(c) || c == b'_' || c == b'%'
 }
 
-
 // parse rvalue wrapped inside dollar or at
-named!(parse_rvalue_raw,
-       delimited!(alt!(tag!("$(") | tag!("@(") | tag!("&(")),
-                  take_while!(is_ident_perc),
-                  tag!(")")));
+named!(
+    parse_rvalue_raw,
+    delimited!(
+        alt!(tag!("$(") | tag!("@(") | tag!("&(")),
+        take_while!(is_ident_perc),
+        tag!(")")
+    )
+);
 
 // parse a macro ref starting with a exclamation mark
-named!(parse_rvalue_raw_excl,
-       do_parse!(tag!("!") >>
-                v : take_while!(is_ident) >>
-                (v)));
+named!(
+    parse_rvalue_raw_excl,
+    do_parse!(tag!("!") >> v: take_while!(is_ident) >> (v))
+);
 
 // parse an inline comment
-named!(parse_rvalue_raw_comment,
-       do_parse!(tag!("#") >>
-                 v : take_until!("\n") >>
-                 (v)));
-
+named!(
+    parse_rvalue_raw_comment,
+    do_parse!(tag!("#") >> v: take_until!("\n") >> (v))
+);
 
 // read a curly brace and the identifier inside it
-named!(parse_rvalue_raw_bucket,
-       delimited!(ws!(tag!("{")), take_while!(is_ident), tag!("}")));
+named!(
+    parse_rvalue_raw_bucket,
+    delimited!(ws!(tag!("{")), take_while!(is_ident), tag!("}"))
+);
 
 // read '<' and the list of rvals inside it until '>'
 named!(parse_rvalue_raw_angle<&[u8], Vec<RvalGeneral>>,
@@ -73,7 +77,6 @@ named!(parse_rvalue_amp<&[u8], RvalGeneral>,
                (RvalGeneral::AmpExpr(rv.to_owned()))
        )
 );
-
 
 // parse rvalue macro ref eg !CC
 named!(parse_rvalue_exclamation<&[u8], RvalGeneral>,
@@ -119,35 +122,46 @@ named!(parse_rvalue<&[u8], RvalGeneral>,
 );
 
 // eat up the (dollar or at) that dont parse to (dollar or at) expression
-named!(chompdollar,
-       do_parse!( peek!(one_of!("$@!<#&")) >> not!(parse_rvalue) >> r : take!(1)  >> (r)));
+named!(
+    chompdollar,
+    do_parse!(peek!(one_of!("$@!<#&")) >> not!(parse_rvalue) >> r: take!(1) >> (r))
+);
 
 // read  a rvalue until delimiter
 // in addition, \\\n , $,@, ! also pause the parsing
-fn parse_greedy<'a, 'b>(input: &'a [u8],
-                        delim: &'b str)
-                        -> Result<(&'a [u8], &'a [u8]), nom::Err<&'a [u8]>> {
+fn parse_greedy<'a, 'b>(
+    input: &'a [u8],
+    delim: &'b str,
+) -> Result<(&'a [u8], &'a [u8]), nom::Err<&'a [u8]>> {
     let mut s = String::from("\\\n$@{<!#&");
     s.push_str(delim);
-    alt!(input,
-         value!(b"".as_ref(), complete!(tag!("\\\n"))) | chompdollar |
-         alt_complete!(take_until_either!(s.as_str()) | eof!()))
+    alt!(
+        input,
+        value!(b"".as_ref(), complete!(tag!("\\\n")))
+            | chompdollar
+            | alt_complete!(take_until_either!(s.as_str()) | eof!())
+    )
 }
 // parse either (dollar|at|curly|angle|exclamation) expression or a general rvalue delimited by delim
-fn parse_rvalgeneral<'a, 'b>(s: &'a [u8],
-                             delim: &'b str)
-                             -> Result<(&'a [u8], RvalGeneral), nom::Err<&'a [u8]>> {
-    alt_complete!(s,
-                  parse_rvalue | map_res!(apply!(parse_greedy, delim), from_str))
+fn parse_rvalgeneral<'a, 'b>(
+    s: &'a [u8],
+    delim: &'b str,
+) -> Result<(&'a [u8], RvalGeneral), nom::Err<&'a [u8]>> {
+    alt_complete!(
+        s,
+        parse_rvalue | map_res!(apply!(parse_greedy, delim), from_str)
+    )
 }
 // repeatedly invoke the rvalue parser until eof or delim is encountered
-fn parse_rvalgeneral_list_long<'a, 'b>
-    (input: &'a [u8],
-     delim: &'b str)
-     -> Result<(&'a [u8], (Vec<RvalGeneral>, &'a [u8])), nom::Err<&'a [u8]>> {
-    many_till!(input,
-               apply!(parse_rvalgeneral, delim),
-               alt_complete!(tag!(delim) | eof!()))
+fn parse_rvalgeneral_list_long<'a, 'b>(
+    input: &'a [u8],
+    delim: &'b str,
+) -> Result<(&'a [u8], (Vec<RvalGeneral>, &'a [u8])), nom::Err<&'a [u8]>> {
+    many_till!(
+        input,
+        apply!(parse_rvalgeneral, delim),
+        alt_complete!(tag!(delim) | eof!())
+    )
 }
 // specialization of previos one delimited by eol
 named!(parse_rvalgeneral_list<&[u8], (Vec<RvalGeneral>, &[u8]) >,
@@ -170,8 +184,6 @@ named!(parse_lvalue<&[u8], Ident>,
            l : map_res!(take_while!(is_ident), std::str::from_utf8)>> (to_lval(l))
        )
 );
-
-
 
 // parse include expression
 named!(parse_include<&[u8], Statement>,
@@ -207,7 +219,6 @@ named!(parse_run<&[u8], Statement>,
        )
 );
 
-
 // parse include_rules expresssion
 named!(parse_include_rules<&[u8], Statement>,
        do_parse!(ws!(tag!("include_rules")) >> _s: map_res!(take_until!("\n"), std::str::from_utf8) >>
@@ -240,7 +251,6 @@ named!(parse_letref_expr<&[u8], Statement>,
                                        is_append: (op == b"+=") }) )
 );
 
-
 // parse the insides of a rule, which includes a description and rule formula
 named!(parse_rule_gut<&[u8], RuleFormula>,
        do_parse!(
@@ -261,10 +271,11 @@ fn from_input(primary: Vec<RvalGeneral>, foreach: bool, secondary: Vec<RvalGener
     }
 }
 // convert the output to a rule to 'Target' struct
-fn from_output(primary: Vec<RvalGeneral>,
-               secondary: Vec<RvalGeneral>,
-               tag: Vec<RvalGeneral>)
-               -> Target {
+fn from_output(
+    primary: Vec<RvalGeneral>,
+    secondary: Vec<RvalGeneral>,
+    tag: Vec<RvalGeneral>,
+) -> Target {
     Target {
         primary: primary,
         secondary: secondary,
@@ -315,7 +326,6 @@ named!(pub parse_macroassignment<&[u8], Statement>,
                  )))
 );
 
-
 // parse any of the different types of statements in a tupfile
 named!(pub parse_statement<&[u8], Statement>,
        alt_complete!( parse_include |
@@ -348,11 +358,10 @@ named!(pub parse_statements_until_eof<&[u8], Vec<Statement>>,
        many0!(parse_statement)
 );
 
-
 // parse equality condition (only the condition, not the statements that follow if)
 named!(pub parse_eq<&[u8], EqCond>,
-       do_parse!(  not_cond : alt!(ws!(tag_s!("ifeq")) => { |_|  false } |
-                                   ws!(tag_s!("ifneq")) => { |_|  true } )  >>
+       do_parse!(  not_cond : alt!(ws!(tag!("ifeq")) => { |_|  false } |
+                                   ws!(tag!("ifneq")) => { |_|  true } )  >>
                    ws!(char!('(')) >>
                    e1:  apply!(parse_rvalgeneral_list_long, ",") >>
                    e2 : apply!(parse_rvalgeneral_list_long, ")") >>
@@ -361,8 +370,8 @@ named!(pub parse_eq<&[u8], EqCond>,
 );
 
 named!(parse_checked_var<&[u8], CheckedVar>,
-       do_parse!( negate : alt!(ws!(tag_s!("ifdef")) => {|_| false} |
-                                ws!(tag_s!("ifndef")) => { |_| true } ) >>
+       do_parse!( negate : alt!(ws!(tag!("ifdef")) => {|_| false} |
+                                ws!(tag!("ifndef")) => { |_| true } ) >>
                   var : parse_lvalue >>
                   (CheckedVar(var, negate))
                   )
@@ -395,26 +404,23 @@ named!(pub parse_ifdef<&[u8], Statement>,
 );
 
 // parse statements in a tupfile
-pub fn parse_tupfile(filename: &str) ->  Vec<Statement>
-{
+pub fn parse_tupfile(filename: &str) -> Vec<Statement> {
     use std::fs::File;
     use std::io::prelude::*;
     let mut file = File::open(filename).expect("no such file");
     let mut contents = String::new();
-    if file.read_to_string(&mut contents).ok().is_some()  {
-        if let Some(v) = parse_statements_until_eof(contents.as_bytes()).ok()
-        {
+    if file.read_to_string(&mut contents).ok().is_some() {
+        if let Some(v) = parse_statements_until_eof(contents.as_bytes()).ok() {
             (v.1)
-        }else {
+        } else {
             Vec::new()
         }
-    }else {
+    } else {
         Vec::new()
     }
 }
 use std::path::{Path, PathBuf};
-pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf>
-{
+pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
     let mut cwd = cur_tupfile;
     while let Some(parent) = cwd.parent() {
         let p = parent.join(file_to_loc);
@@ -426,8 +432,7 @@ pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathB
     None
 }
 
-pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf>
-{
+pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
     locate_file(cur_tupfile, "Tuprules.tup")
 }
 
@@ -440,23 +445,18 @@ pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf>
 //     None
 // }
 
-
-pub fn parse_config(filename : &str) -> Vec<Statement>
-{
+pub fn parse_config(filename: &str) -> Vec<Statement> {
     use std::fs::File;
     use std::io::prelude::*;
     let mut file = File::open(filename).expect("no such file");
     let mut contents = String::new();
     if file.read_to_string(&mut contents).ok().is_some() {
-        if let Some(v) = parse_statements_until_eof(contents.as_bytes()).ok()
-        {
+        if let Some(v) = parse_statements_until_eof(contents.as_bytes()).ok() {
             (v.1)
-        }else
-        {
+        } else {
             Vec::new()
         }
-    }else
-    {
+    } else {
         Vec::new()
     }
 }
