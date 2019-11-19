@@ -1,4 +1,3 @@
-use glob::glob;
 use parser::parse_tupfile;
 use parser::{locate_file, locate_tuprules};
 use platform::*;
@@ -22,6 +21,7 @@ pub struct SubstMap {
     pub cur_file: PathBuf,
     pub sc: StatementContext,
 }
+
 impl Default for SubstMap {
     fn default() -> SubstMap {
         SubstMap {
@@ -393,99 +393,98 @@ impl Subst for Vec<Statement> {
 }
 // extract the literals in the list of generals deglob the strings, replace %f,
 // %B etc and create rules per match for 'foreach' expressions
-pub fn deglob(statement: &Statement) -> Vec<Statement> {
-    let mut deglobbed = Vec::new();
-    if let Statement::Rule(Link { s, t, r }) = statement {
-        if s.foreach {
-            // let newprims = split_by_space(&s.primary);
-            let paths = s
-                .primary
-                .iter()
-                .filter_map(|x| {
-                    if let RvalGeneral::Literal(src) = x {
-                        let mut vs = Vec::new();
-                        for src in src.split_whitespace() {
-                            if let Some(pos) = src.rfind('*') {
-                                let (first, last) = src.split_at(pos);
-                                let mut bstr: String = first.to_string();
-                                bstr.push_str("(*)"); // replace * with (*) to capture the glob
-                                bstr.push_str(&last[1..]);
-                                let g = glob(bstr.as_str()).expect("Failed to read glob pattern");
-                                for p in g.into_iter().filter_map(|x| x.ok()) {
-                                    vs.push(p);
-                                }
-                            } else {
-                                let g = glob(src).expect("Failed to read glob pattern");
-                                for p in g.into_iter().filter_map(|x| x.ok()) {
-                                    vs.push(p)
-                                }
-                            }
-                        }
-                        Some(vs)
-                    } else {
-                        None
-                    }
-                })
-                .flatten();
-            for p in paths {
-                let path = p.path();
-                let mut tc = t.clone();
-                let frep = |d: &str| {
-                    d.replace("%i", path.to_str().unwrap())
-                        .replace("%B", path.file_stem().unwrap().to_str().unwrap())
-                        .replace("%g", p.group(1).unwrap().to_str().unwrap())
-                        .replace("%b", path.file_name().unwrap().to_str().unwrap())
-                        .replace("%e", path.extension().unwrap().to_str().unwrap())
-                        .replace(
-                            "%d",
-                            path.parent()
-                                .unwrap()
-                                .file_name()
-                                .unwrap()
-                                .to_str()
-                                .unwrap(),
-                        )
-                };
-                tc.primary = tc
-                    .primary
-                    .iter()
-                    .filter_map(|x| {
-                        if let RvalGeneral::Literal(s) = x {
-                            Some(RvalGeneral::Literal(frep(s).to_string()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                let mut rc = r.clone();
-                rc.description = frep(r.description.as_str());
+// pub fn deglob(statement: &Statement) -> Vec<Statement> {
+//     let mut deglobbed = Vec::new();
+//     if let Statement::Rule(Link { s, t, r }) = statement {
+//         if s.foreach {
+//             let paths = s
+//                 .primary
+//                 .iter()
+//                 .filter_map(|x| {
+//                     if let RvalGeneral::Literal(src) = x {
+//                         let mut vs = Vec::new();
+//                         for src in src.split_whitespace() {
+//                             if let Some(pos) = src.rfind('*') {
+//                                 let (first, last) = src.split_at(pos);
+//                                 let mut bstr: String = first.to_string();
+//                                 bstr.push_str("(*)"); // replace * with (*) to capture the glob
+//                                 bstr.push_str(&last[1..]);
+//                                 let g = glob(bstr.as_str()).expect("Failed to read glob pattern");
+//                                 for p in g.into_iter().filter_map(|x| x.ok()) {
+//                                     vs.push(p);
+//                                 }
+//                             } else {
+//                                 let g = glob(src).expect("Failed to read glob pattern");
+//                                 for p in g.into_iter().filter_map(|x| x.ok()) {
+//                                     vs.push(p)
+//                                 }
+//                             }
+//                         }
+//                         Some(vs)
+//                     } else {
+//                         None
+//                     }
+//                 })
+//                 .flatten();
+//             for p in paths {
+//                 let path = p.path();
+//                 let mut tc = t.clone();
+//                 let frep = |d: &str| {
+//                     d.replace("%i", path.to_str().unwrap())
+//                         .replace("%B", path.file_stem().unwrap().to_str().unwrap())
+//                         .replace("%g", p.group(1).unwrap().to_str().unwrap())
+//                         .replace("%b", path.file_name().unwrap().to_str().unwrap())
+//                         .replace("%e", path.extension().unwrap().to_str().unwrap())
+//                         .replace(
+//                             "%d",
+//                             path.parent()
+//                                 .unwrap()
+//                                 .file_name()
+//                                 .unwrap()
+//                                 .to_str()
+//                                 .unwrap(),
+//                         )
+//                 };
+//                 tc.primary = tc
+//                     .primary
+//                     .iter()
+//                     .filter_map(|x| {
+//                         if let RvalGeneral::Literal(s) = x {
+//                             Some(RvalGeneral::Literal(frep(s).to_string()))
+//                         } else {
+//                             None
+//                         }
+//                     })
+//                     .collect();
+//                 let mut rc = r.clone();
+//                 rc.description = frep(r.description.as_str());
 
-                rc.formula = r
-                    .formula
-                    .iter()
-                    .filter_map(|x| {
-                        if let RvalGeneral::Literal(s) = x {
-                            Some(RvalGeneral::Literal(frep(s).to_string()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+//                 rc.formula = r
+//                     .formula
+//                     .iter()
+//                     .filter_map(|x| {
+//                         if let RvalGeneral::Literal(s) = x {
+//                             Some(RvalGeneral::Literal(frep(s).to_string()))
+//                         } else {
+//                             None
+//                         }
+//                     })
+//                     .collect();
 
-                let newsrc = Source {
-                    primary: vec![RvalGeneral::Literal(path.to_str().unwrap().to_string())],
-                    foreach: false,
-                    secondary: s.secondary.clone(),
-                };
-                deglobbed.push(Statement::Rule(Link {
-                    s: newsrc,
-                    t: tc,
-                    r: rc,
-                }));
-            }
-        }
-    } else {
-        deglobbed.push(statement.clone());
-    }
-    return deglobbed;
-}
+//                 let newsrc = Source {
+//                     primary: vec![RvalGeneral::Literal(path.to_str().unwrap().to_string())],
+//                     foreach: false,
+//                     secondary: s.secondary.clone(),
+//                 };
+//                 deglobbed.push(Statement::Rule(Link {
+//                     s: newsrc,
+//                     t: tc,
+//                     r: rc,
+//                 }));
+//             }
+//         }
+//     } else {
+//         deglobbed.push(statement.clone());
+//     }
+//     return deglobbed;
+// }

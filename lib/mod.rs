@@ -1,11 +1,11 @@
 #[macro_use]
 extern crate nom;
 extern crate capturing_glob as glob;
+pub mod decode;
 pub mod parser;
 mod platform;
 pub mod statements;
 pub mod transform;
-
 #[test]
 fn test_op() {
     use std::fs::File;
@@ -19,13 +19,13 @@ fn test_op() {
                   SRCS=*.cxx $(PRVSRCS)\n\
                   #comment\n\
                   SRCS +=*.cpp\n\
-                  !CC = |> cl %i /Fout:%f |> \n";
+                  !CC = |> cl %f /Fout:%o |> %B.o {objs} ../<grp> \n";
         file.write_all(stmts).expect("write failed");
         let stmts1 = b"include tupdata0.txt\n\
                        ifeq ($(DEBUG),1) #comment\n \
-                       : $(SRCS)|> \
+                       : $(SRCS) ../<grp> ../<grp2> |> \
                   !CC <%grp> <%grp2> |> command.pch |\
-                  @(PLATFORM)/%B.o <grp>\n &v := src/main.rs\n\
+                  \n &v := src/main.rs\n\
                   :&(v) |> echo %f |> \n\
                   else\n  x+=eere #append\nendif\n";
         let mut file = File::create("tupdata1.txt").expect("cannot open file");
@@ -38,7 +38,7 @@ fn test_op() {
     {
         let stmts = parser::parse_tupfile("tupdata1.txt");
         use statements::RvalGeneral::Group;
-        use statements::RvalGeneral::Literal;
+        use statements::RvalGeneral::{Literal, Bucket};
         use statements::{Link, RuleFormula, Source, Statement, Target};
         use transform::*;
 
@@ -57,14 +57,21 @@ fn test_op() {
         let resolvedexpr = [
             Statement::Rule(Link {
                 s: Source {
-                    primary: vec![Literal("*.cxx impl/*.cxx *.cpp".to_string())],
+                    primary:vec![
+                        Literal("*.cxx impl/*.cxx *.cpp".to_string()),
+                        Literal(" ../".to_string()),
+                        Group(vec![Literal("grp".to_string())]),
+                        Literal(" ../".to_string()),
+                        Group(vec![Literal("grp2".to_string())]),
+                    ],
                     foreach: false,
                     secondary: vec![],
                 },
                 t: Target {
                     primary: vec![
-                        Literal("win64".to_string()),
-                        Literal("/%B.o ".to_string()),
+                        Literal("%B.o ".to_string()),
+                        Bucket("objs".to_string()),
+                        Literal(" ../".to_string()), 
                         Group(vec![Literal("grp".to_string())]),
                     ],
                     secondary: vec![Literal("command.pch ".to_string())],
@@ -73,7 +80,7 @@ fn test_op() {
                 r: RuleFormula {
                     description: "".to_string(),
                     formula: vec![
-                        Literal("cl %i /Fout:%f ".to_string()),
+                        Literal("cl %f /Fout:%o ".to_string()),
                         Group(vec![Literal("%grp".to_string())]),
                         Group(vec![Literal("%grp2".to_string())]),
                     ],
@@ -130,7 +137,7 @@ fn test_parse() {
     let res65 = parser::parse_statement(b"DEBUG =1\n").unwrap().1;
     let res66 = parser::parse_statement(b"SRCS=*.cxx\n").unwrap().1;
     let res67 = parser::parse_statement(b"SRCS +=*.cpp\n").unwrap().1;
-    let res68 = parser::parse_macroassignment(b"!CC = |> cl %i /Fout:%f |> \n")
+    let res68 = parser::parse_macroassignment(b"!CC = |> cl %f /Fout:%o |> \n")
         .unwrap()
         .1;
     let res7 = parser::parse_statement(
@@ -162,7 +169,7 @@ fn test_parse() {
         r: RuleFormula {
             description: "".to_string(),
             formula: vec![
-                Literal("cl %i /Fout:%f ".to_string()),
+                Literal("cl %f /Fout:%o ".to_string()),
                 Group(vec![Literal("%grp".to_string())]),
                 Group(vec![Literal("%grp2".to_string())]),
             ],
