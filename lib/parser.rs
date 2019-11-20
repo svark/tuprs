@@ -122,8 +122,7 @@ named!(parse_rvalue<&[u8], RvalGeneral>,
 );
 
 // eat up the (dollar or at) that dont parse to (dollar or at) expression
-named!(
-    chompdollar,
+named!(chompdollar,
     do_parse!(peek!(one_of!("$@!<#&")) >> not!(parse_rvalue) >> r: take!(1) >> (r))
 );
 
@@ -165,13 +164,12 @@ fn parse_rvalgeneral_list_long<'a, 'b>(
 }
 
 fn parse_rvalgeneral_list_sp<'a, 'b>(
-    input: &'a [u8],
-    delim: &'b str,
+    input: &'a [u8]
 ) -> Result<(&'a [u8], (Vec<RvalGeneral>, &'a [u8])), nom::Err<&'a [u8]>> {
     many_till!(
         input,
-        apply!(parse_rvalgeneral, delim),
-        alt_complete!( tag!(delim) | eof!())
+        apply!(parse_rvalgeneral, " \t\r\n"),
+        alt_complete!( tag!("\n")| tag!("\t") | tag!(" ") | tag!("\r") | eof!())
     )
 }
 
@@ -182,10 +180,10 @@ named!(parse_rvalgeneral_list<&[u8], (Vec<RvalGeneral>, &[u8]) >,
              apply!(parse_rvalgeneral_list_long, "\n") )
 );
 
-named!(parse_rvalgeneral_list_space<&[u8], (Vec<RvalGeneral>, &[u8]) >,
+named!(parse_rvalgeneral_list_until_space<&[u8], (Vec<RvalGeneral>, &[u8]) >,
        alt_complete!( value!((Vec::new(), b"".as_ref()), eof!() ) |
-                      value!((Vec::new(), b"".as_ref()), ws!(tag!("\n") )) |
-                      apply!(parse_rvalgeneral_list_sp, "\n") )
+                      value!((Vec::new(), b"".as_ref()), peek!(one_of!(" \t\n")) ) |
+                      call!(parse_rvalgeneral_list_sp) )
 );
 
 
@@ -301,45 +299,55 @@ fn from_output(
         tag: tag,
     }
 }
-// parse the rule expression, that includes input, secondary input rule gut, output, secondary output , bucket tags and group tags
+
+named!(parse_pipe,
+       terminated!(tag!("|"), many0!(tag!(" ")))
+);
+
+// parse a rule expression
+// : [foreach] [inputs] [ | order-only inputs] |> command |> [outputs] [ | extra outputs] [<group>] [{bin}]
 named!(parse_rule<&[u8], Statement>,
       do_parse!( ws!(tag!(":")) >>
                  for_each: opt!(ws!(tag!("foreach"))) >>
                  input : apply!(parse_rvalgeneral_list_long, "|") >>
-                 secondary_input : opt!( do_parse!(tag!("|") >>  r : apply!(parse_rvalgeneral_list_long, "|") >> (r)) ) >>
-                 tag!(">") >>
+                 secondary_input : opt!( do_parse!(call!(parse_pipe) >>  r : apply!(parse_rvalgeneral_list_long, "|") >> (r)) ) >>
+                 tag!(">") >> many0!(tag!(" ")) >>
                  rule_formula : parse_rule_gut >>
-                 ws!(tag!(">")) >>
+                 tag!(">")  >> many0!(tag!(" ")) >>
                  secondary_output : opt!( do_parse!( r: apply!(parse_rvalgeneral_list_long, "|") >> (r)) ) >>
-                 output : opt!(complete!(call!(parse_rvalgeneral_list))) >>
+                 output : opt!(complete!(call!(parse_rvalgeneral_list_until_space))) >>
+                 tags :  opt!(call!(parse_rvalgeneral_list)) >>
                  (Statement::Rule(Link {
                      s : from_input(input.0, for_each.is_some(),
                                     secondary_input.unwrap_or((Vec::new(), b"")).0),
-                     t : from_output(output.unwrap_or((Vec::new(), b"")).0, secondary_output.unwrap_or((Vec::new(), b"")).0,
-                                     Vec::new()),
+                     t : from_output(output.unwrap_or((Vec::new(), b"")).0,
+                                     secondary_output.unwrap_or((Vec::new(), b"")).0,
+                                     tags.unwrap_or((Vec::new(), b"")).0),
                      r : rule_formula
                      }
                  )) )
 );
 
 // parse a macro assignment which is more or less same as parsing a rule expression
+// !macro = [inputs] | [order-only inputs] |> command |> [outputs]
 named!(pub parse_macroassignment<&[u8], Statement>,
        do_parse!( ws!(tag!("!")) >>
                   macroname : take_while!(is_ident) >> ws!(tag!("=")) >>
                   for_each: opt!(ws!(tag!("foreach"))) >>
                   input : call!(parse_rvalgeneral_list_long, "|") >>
                   secondary_input : opt!( do_parse!(tag!("|") >>  r : apply!(parse_rvalgeneral_list_long, "|") >> (r)) ) >>
-                  tag!(">") >>
+                  terminated!(tag!(">"), opt!(many0!(tag!(" ")))) >>
                   rule_formula : parse_rule_gut >>
-                  terminated!(tag!(">"), opt!(tag!(" "))) >>
+                  terminated!(tag!(">"), opt!(many0!(tag!(" ")))) >>
                   secondary_output : opt!( complete!(do_parse!( r: apply!(parse_rvalgeneral_list_long, "|") >> (r)) )) >>
-                  output : opt!(call!(parse_rvalgeneral_list_space)) >>
+                  output : opt!(call!(parse_rvalgeneral_list_until_space)) >>
                   (Statement::MacroAssignment(std::str::from_utf8(macroname).unwrap_or("").to_owned(), Link {
                       s : from_input(input.0, for_each.is_some(),
                                      secondary_input.unwrap_or((Vec::new(), b"")).0),
                       t : from_output(output.unwrap_or((Vec::new(), b"")).0,
                                       secondary_output.unwrap_or((Vec::new(), b"")).0,
-                                      Vec::new()),
+                                      Vec::new()
+                                      ),
                       r : rule_formula
                   }
                  )))

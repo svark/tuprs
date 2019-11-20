@@ -19,14 +19,15 @@ fn test_op() {
                   SRCS=*.cxx $(PRVSRCS)\n\
                   #comment\n\
                   SRCS +=*.cpp\n\
-                  !CC = |> cl %f /Fout:%o |> %B.o {objs} ../<grp> \n";
+                  !CC = |> cl %f /Fout:%o |> %B.o \n";
         file.write_all(stmts).expect("write failed");
         let stmts1 = b"include tupdata0.txt\n\
                        ifeq ($(DEBUG),1) #comment\n \
                        : $(SRCS) ../<grp> ../<grp2> |> \
-                  !CC <%grp> <%grp2> |> command.pch |\
+                  !CC <%grp> <%grp2> |> command.pch | {objs}\
                   \n &v := src/main.rs\n\
-                  :&(v) |> echo %f |> \n\
+                  :&(v) |> type %f > file.txt |> \\\nfile.txt |\n\
+                  : |> type &(v) |> \n\
                   else\n  x+=eere #append\nendif\n";
         let mut file = File::create("tupdata1.txt").expect("cannot open file");
         file.write_all(stmts1).expect("write failed");
@@ -38,7 +39,7 @@ fn test_op() {
     {
         let stmts = parser::parse_tupfile("tupdata1.txt");
         use statements::RvalGeneral::Group;
-        use statements::RvalGeneral::{Literal, Bucket};
+        use statements::RvalGeneral::{Bucket, Literal};
         use statements::{Link, RuleFormula, Source, Statement, Target};
         use transform::*;
 
@@ -54,10 +55,11 @@ fn test_op() {
         assert_eq!(map.conf_map.get("CVAR"), Some(&"1".to_owned()));
 
         let stmts_ = stmts.subst(&mut map);
+        assert_eq!(stmts_.len(), 3);
         let resolvedexpr = [
             Statement::Rule(Link {
                 s: Source {
-                    primary:vec![
+                    primary: vec![
                         Literal("*.cxx impl/*.cxx *.cpp".to_string()),
                         Literal(" ../".to_string()),
                         Group(vec![Literal("grp".to_string())]),
@@ -68,14 +70,9 @@ fn test_op() {
                     secondary: vec![],
                 },
                 t: Target {
-                    primary: vec![
-                        Literal("%B.o ".to_string()),
-                        Bucket("objs".to_string()),
-                        Literal(" ../".to_string()), 
-                        Group(vec![Literal("grp".to_string())]),
-                    ],
+                    primary: vec![Literal("%B.o".to_string())],
                     secondary: vec![Literal("command.pch ".to_string())],
-                    tag: vec![],
+                    tag: vec![Literal(" ".to_string()), Bucket("objs".to_string())],
                 },
                 r: RuleFormula {
                     description: "".to_string(),
@@ -93,19 +90,39 @@ fn test_op() {
                     secondary: vec![],
                 },
                 t: Target {
-                    primary: vec![Literal("else".to_string())],
+                    primary: vec![],
+                    secondary: vec![Literal("file.txt ".to_string())],
+                    tag: vec![],
+                },
+                r: RuleFormula {
+                    description: "".to_string(),
+                    formula: vec![Literal("type %f > file.txt ".to_string())],
+                },
+            }),
+            Statement::Rule(Link {
+                s: Source {
+                    primary: vec![],
+                    foreach: false,
+                    secondary: vec![],
+                },
+                t: Target {
+                    primary: vec![],
                     secondary: vec![],
                     tag: vec![],
                 },
                 r: RuleFormula {
                     description: "".to_string(),
-                    formula: vec![Literal("echo %f ".to_string())],
+                    formula: vec![
+                        Literal("type ".to_string()),
+                        Literal("./src/main.rs".to_string()),
+                    ],
                 },
             }),
         ];
 
         assert_eq!(stmts_[0], resolvedexpr[0]);
         assert_eq!(stmts_[1], resolvedexpr[1]);
+        assert_eq!(stmts_[2], resolvedexpr[2]);
     }
 }
 
@@ -152,6 +169,7 @@ fn test_parse() {
     let mut map = SubstMap::default();
     set_cwd(Path::new("."), &mut map);
     let stmts_ = stmts.subst(&mut map);
+    assert_eq!(stmts_.len(), 1);
     let prog = vec![Statement::Rule(Link {
         s: Source {
             primary: vec![Literal("*.cxx *.cpp".to_string())],
@@ -159,12 +177,9 @@ fn test_parse() {
             secondary: vec![],
         },
         t: Target {
-            primary: vec![
-                Literal("%B.o ".to_string()),
-                Group(vec![Literal("grp".to_string())]),
-            ],
+            primary: vec![Literal("%B.o".to_string())],
             secondary: vec![Literal("command.pch ".to_string())],
-            tag: vec![],
+            tag: vec![Group(vec![Literal("grp".to_string())])],
         },
         r: RuleFormula {
             description: "".to_string(),
@@ -176,7 +191,7 @@ fn test_parse() {
         },
     })];
 
-    assert_eq!(prog, stmts_);
+    assert_eq!(prog[0], stmts_[0]);
 
     // assert_eq!(deglob(&prog[0]).len(), 18);
 }
