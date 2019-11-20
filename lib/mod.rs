@@ -192,6 +192,5 @@ fn test_parse() {
     })];
 
     assert_eq!(prog[0], stmts_[0]);
-
     // assert_eq!(deglob(&prog[0]).len(), 18);
 }

@@ -86,6 +86,11 @@ named!(parse_rvalue_exclamation<&[u8], RvalGeneral>,
        )
 );
 
+named!(parse_path_till_angle<&[u8], PathBuf>,
+       do_parse!(
+           peek!(tag!("")) >> r : take_till!(|ch| ch == b'<') >> (PathBuf::from(std::str::from_utf8(r).unwrap()))
+       )
+);
 // parse to a group <group>
 named!(parse_rvalue_angle<&[u8], RvalGeneral>,
        do_parse!(
@@ -462,15 +467,6 @@ pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathB
 pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
     locate_file(cur_tupfile, "Tuprules.tup")
 }
-
-// fn locate_root(cur_tupfile: &Path) -> Option<PathBuf> {
-//     let inifile = locate_file(cur_tupfile, "Tupfile.ini");
-//     if let Some(ref p) = inifile
-//     {
-//         return Some(p.parent().unwrap().canonicalize().unwrap());
-//     }
-//     None
-// }
 
 pub fn parse_config(filename: &str) -> Vec<Statement> {
     use std::fs::File;

@@ -241,20 +241,6 @@ impl Subst for Link {
         }
     }
 }
-// convert a literal to a String
-fn tostr(rval: &RvalGeneral) -> String {
-    match rval {
-        &RvalGeneral::Literal(ref x) => x.clone(),
-        _ => "".to_owned(),
-    }
-}
-// concat string literals into a single String
-fn tostr_cat(rvals: &Vec<RvalGeneral>) -> String {
-    rvals
-        .iter()
-        .map(tostr)
-        .fold("".to_owned(), |x, y| x + y.as_str())
-}
 // substitute variables in a sequence of statements from previous assignments
 // update variable assignments into substmap as you go.
 impl Subst for Vec<Statement> {

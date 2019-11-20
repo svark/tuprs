@@ -92,3 +92,17 @@ pub enum Statement {
     Run(Vec<RvalGeneral>),
     Comment(String),
 }
+// convert a literal to a String
+pub(crate) fn tostr(rval: &RvalGeneral) -> String {
+    match rval {
+        &RvalGeneral::Literal(ref x) => x.clone(),
+        _ => "".to_owned(),
+    }
+}
+// concat string literals into a single String
+pub(crate) fn tostr_cat(rvals: &Vec<RvalGeneral>) -> String {
+    rvals
+        .iter()
+        .map(tostr)
+        .fold("".to_owned(), |x, y| x + y.as_str())
+}
