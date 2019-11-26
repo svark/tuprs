@@ -22,8 +22,8 @@ fn test_op() {
                   !CC = |> cl %f /Fout:%o |> %B.o \n";
         file.write_all(stmts).expect("write failed");
         let stmts1 = b"include tupdata0.txt\n\
-                       ifeq ($(DEBUG),1) #comment\n \
-                       : $(SRCS) ../<grp> ../<grp2> |> \
+                       ifeq ($(DEBUG),1) \n \
+                       :$(SRCS) ../<grp> ../<grp2> |> \
                   !CC <%grp> <%grp2> |> command.pch | {objs}\
                   \n &v := src/main.rs\n\
                   :&(v) |> type %f > file.txt |> \\\nfile.txt |\n\
@@ -72,7 +72,7 @@ fn test_op() {
                 t: Target {
                     primary: vec![Literal("%B.o".to_string())],
                     secondary: vec![Literal("command.pch ".to_string())],
-                    tag: vec![Literal(" ".to_string()), Bucket("objs".to_string())],
+                    tag: vec![Bucket("objs".to_string())],
                 },
                 r: RuleFormula {
                     description: "".to_string(),
