@@ -8,6 +8,6 @@ name = "tupparser"
 path = "lib/mod.rs"
 
 [dependencies]
-nom = "4.1.1"
+nom = "5.0.1"
 capturing-glob = "*"
 

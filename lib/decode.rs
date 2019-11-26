@@ -250,14 +250,14 @@ pub fn updategrouptags(tgt: &Target, taginfo: &mut OutputTagInfo) {
 // update the bins (buckets) with the path to primary target
 pub fn updatebuckets(tgt: &Target, taginfo: &mut OutputTagInfo) {
     let pathb = primary_path(tgt);
-    let firstbinname= tgt.tag.iter().find_map(|x| {
+    let firstbinname = tgt.tag.iter().find_map(|x| {
         if let RvalGeneral::Bucket(bin) = x {
             Some(bin)
         } else {
             None
         }
     });
-    if let Some(binname) = firstbinname{
+    if let Some(binname) = firstbinname {
         if let Some(paths) = taginfo.buckettags.get_mut(binname) {
             paths.push(pathb);
         } else {
