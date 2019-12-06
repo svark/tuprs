@@ -1,5 +1,5 @@
 // promote a string into a tup variable
-use nom::character::complete::{multispace0, multispace1, space1};
+use nom::character::complete::{multispace0, multispace1, space1, line_ending, not_line_ending};
 use nom::combinator::{complete, cut, map, map_res, not, opt, peek};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many_till};
@@ -31,7 +31,7 @@ fn is_ident_perc(c: u8) -> bool {
 
 fn ws1<'a>(input: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
     alt((
-        tag("\\\n"),
+        preceded(tag("\\"), line_ending),
         multispace1,
         map(peek(one_of("<{")), |_| b"".as_ref()),
     ))(input)
@@ -39,7 +39,7 @@ fn ws1<'a>(input: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
 
 // read a space or blackslash newline continuation
 fn sp1<'a>(input: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
-    alt((complete(tag("\\\n")), space1))(input)
+    alt((complete(preceded(tag("\\"), line_ending)), space1))(input)
 }
 
 // parse rvalue wrapped inside dollar or at
@@ -153,7 +153,7 @@ fn parse_greedy<'a, 'b>(input: &'a [u8], delim: &'b str) -> nom::IResult<&'a [u8
     let mut s = String::from("\\\n$@{<!#&");
     s.push_str(delim);
     alt((
-        map(tag("\\\n"), |_| b"".as_ref()),
+        map( preceded(tag("\\"), line_ending), |_| b"".as_ref()),
         parse_delim,
         is_not(s.clone().as_str()), // not sure why we need to clone there, compiler errors otherwise
     ))(input)
@@ -180,16 +180,14 @@ fn parse_rvalgeneral_list_long<'a, 'b>(
 ) -> nom::IResult<&'a [u8], (Vec<RvalGeneral>, &'a [u8])> {
     many_till(
         |i| parse_rvalgeneral(i, delim),
-        // alt((tag(delim) , eof))
         tag(delim),
     )(input)
-    // Ok((b"".as_ref(), (Vec::new(), b"".as_ref())))
 }
 //  wrapper over the previous parser that handles empty inputs and stops at newline;
 fn parse_rvalgeneral_list(input: &[u8]) -> IResult<&[u8], (Vec<RvalGeneral>, &[u8])> {
     alt((
         complete(map(eof, |_| (Vec::new(), b"".as_ref()))),
-        complete(map(delimited(multispace0, tag("\n"), multispace0), |_| {
+        complete(map(delimited(multispace0, line_ending, multispace0), |_| {
             (Vec::new(), b"".as_ref())
         })),
         complete(|i| parse_rvalgeneral_list_long(i, "\n")),
@@ -209,7 +207,7 @@ fn parse_rvalgeneral_list_sp<'a>(
 fn parse_rvalgeneral_list_until_space(input: &[u8]) -> IResult<&[u8], (Vec<RvalGeneral>, &[u8])> {
     alt((
         complete(map(eof, |_| (Vec::new(), b"".as_ref()))),
-        complete(map(peek(one_of("\n{<")), |_| (Vec::new(), b"".as_ref()))),
+        complete(map(peek(one_of("\r\n{<")), |_| (Vec::new(), b"".as_ref()))),
         complete(parse_rvalgeneral_list_sp),
     ))(input)
 }
@@ -271,7 +269,7 @@ fn parse_run(i: &[u8]) -> IResult<&[u8], Statement> {
 fn parse_include_rules(i: &[u8]) -> IResult<&[u8], Statement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("include_rules")(s)?;
-    let (s, _) = context("include_rules", cut(many_till(sp1, tag("\n"))))(s)?;
+    let (s, _) = context("include_rules", cut(multispace0))(s)?;
     Ok((s, Statement::IncludeRules))
 }
 
@@ -281,7 +279,7 @@ fn parse_comment(i: &[u8]) -> IResult<&[u8], Statement> {
     let (s, _) = tag("#")(s)?;
     let (s, r) = context(
         "comment",
-        cut(map_res(take_until("\n"), std::str::from_utf8)),
+        cut(map_res(not_line_ending,  std::str::from_utf8)),
     )(s)?;
     Ok((s, Statement::Comment(r.to_owned())))
 }
@@ -325,7 +323,7 @@ fn parse_letref_expr(i: &[u8]) -> IResult<&[u8], Statement> {
 fn parse_rule_description(i: &[u8]) -> IResult<&[u8], String> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("^")(s)?;
-    let (s, r) = map_res(take_until("^"), std::str::from_utf8)(s)?;
+    let (s, r) = context("rule description", cut(map_res(take_until("^"), std::str::from_utf8)))(s)?;
     let (s, _) = tag("^")(s)?;
     let (s, _) = multispace0(s)?;
     Ok((s, String::from(r)))
