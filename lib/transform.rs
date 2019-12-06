@@ -35,6 +35,20 @@ impl Default for SubstMap {
     }
 }
 
+impl SubstMap {
+    pub fn new(conf_map: &HashMap<String, String>, cur_file: &Path) -> Self {
+        let mut def_vars = HashMap::new();
+        if let Some(p) = get_parent(cur_file).to_str() {
+            def_vars.insert("TUP_CWD".to_owned(), p.to_owned());
+        }
+        SubstMap {
+            conf_map: conf_map.clone(),
+            expr_map: def_vars,
+            ..SubstMap::default()
+        }
+    }
+}
+
 pub trait Subst {
     fn subst(&self, m: &mut SubstMap) -> Self;
 }
@@ -51,7 +65,50 @@ fn is_empty(rval: &RvalGeneral) -> bool {
         false
     }
 }
+trait Deps {
+    fn input_groups(&self) -> Vec<String>;
+    fn output_groups(&self) -> Vec<String>;
+}
+// scan for group tags in a vec of rvalgenerals
+impl Deps for Vec<RvalGeneral> {
+    fn input_groups(&self) -> Vec<String> {
+        let mut inps = Vec::new();
+        for rval in self.iter() {
+            if let RvalGeneral::Group(grpnamerval) = rval {
+                let name = tostr_cat(&grpnamerval);
+                inps.push(name)
+            }
+        }
+        inps
+    }
+    // dont distinguish between input and output at this level
+    fn output_groups(&self) -> Vec<String> {
+        self.input_groups()
+    }
+}
+impl Deps for Statement {
+    fn input_groups(&self) -> Vec<String> {
+        if let Statement::Rule(Link { s, .. }) = self {
+            let mut inp_groups_prim = s.primary.input_groups();
+            let mut inp_groups_sec = s.secondary.input_groups();
+            inp_groups_prim.append(&mut inp_groups_sec);
+            inp_groups_prim
+        } else {
+            Vec::new()
+        }
+    }
 
+    fn output_groups(&self) -> Vec<String> {
+        if let Statement::Rule(Link { s: _s, t, .. }) = self {
+            let mut out_groups_prim = t.primary.output_groups();
+            let mut out_groups_sec = t.secondary.output_groups();
+            out_groups_prim.append(&mut out_groups_sec);
+            out_groups_prim
+        } else {
+            Vec::new()
+        }
+    }
+}
 impl Subst for RvalGeneral {
     fn subst(&self, m: &mut SubstMap) -> Self {
         match self {
@@ -86,7 +143,6 @@ impl Subst for RvalGeneral {
             &RvalGeneral::Group(ref xs) => {
                 RvalGeneral::Group(xs.into_iter().map(|x| x.subst(m)).collect())
             }
-            &RvalGeneral::InlineComment(_) => RvalGeneral::Literal("".to_owned()),
             _ => self.clone(),
         }
     }
@@ -220,6 +276,7 @@ pub fn load_conf_vars(filename: &Path) -> HashMap<String, String> {
 
     conf_vars
 }
+
 pub fn set_cwd(filename: &Path, m: &mut SubstMap) -> PathBuf {
     let cf = m.cur_file.clone();
     m.cur_file = filename.to_path_buf();

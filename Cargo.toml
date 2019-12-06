@@ -1,5 +1,5 @@
 [package]
-name = "tuprs"
+name = "tupparser"
 version = "0.1.0"
 authors = ["Arun Sivaramakrishnan <arun.sivaramakrishnan@gmail.com>"]
 

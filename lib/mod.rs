@@ -1,11 +1,11 @@
 #[macro_use]
 extern crate nom;
 extern crate capturing_glob as glob;
-pub mod decode;
 pub mod parser;
 mod platform;
 pub mod statements;
 pub mod transform;
+pub mod decode;
 #[test]
 fn test_op() {
     use std::fs::File;

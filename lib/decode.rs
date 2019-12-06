@@ -3,10 +3,41 @@ use statements::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 // maps to paths corresponding to bin names, or group names
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct OutputTagInfo {
     pub buckettags: HashMap<String, Vec<PathBuf>>,
     pub grouptags: HashMap<String, Vec<PathBuf>>,
+}
+
+impl OutputTagInfo
+{
+    pub fn merge_group_tags(&mut self, other:&mut OutputTagInfo)
+    {
+        for (k,v) in other.grouptags.iter_mut()
+        {
+            if let Some(vorig) =  self.grouptags.get_mut(k) {
+                vorig.append(v);
+            }
+            else
+            {
+                self.grouptags.insert(k.clone(),v.clone());
+            }
+        }
+    }
+
+    pub fn merge_bin_tags(&mut self, other:&mut OutputTagInfo)
+    {
+        for (k,v) in other.buckettags.iter_mut()
+        {
+            if let Some(vorig) = self.buckettags.get_mut(k) {
+                vorig.append(v)
+            }
+            else
+            {
+                self.buckettags.insert(k.clone(), v.clone());
+            }
+        }
+    }
 }
 
 // Types of decoded input to rules which includes
@@ -32,6 +63,13 @@ fn as_path(inpg: &InputGlobType) -> &Path {
 fn as_glob(inpg: &InputGlobType) -> String {
     match inpg {
         InputGlobType::Deglob(e) => e.group(1).unwrap().to_str().unwrap().to_string(),
+        _ => "".to_string(),
+    }
+}
+
+fn as_grp(inpg: &InputGlobType) -> String {
+    match inpg {
+        InputGlobType::Group(name, _) => name.clone(),
         _ => "".to_string(),
     }
 }
@@ -126,10 +164,12 @@ impl DecodePlaceHolders for RvalGeneral {
     ) -> RvalGeneral {
         let frep = |d: &str| {
             let path = as_path(&input);
-            let grp = as_glob(&input);
+            let glb = as_glob(&input);
+            let grp =  "%<".to_string() + as_grp(&input).as_str() + ">";
             d.replace("%f", path.to_str().unwrap())
                 .replace("%B", path.file_stem().unwrap().to_str().unwrap())
-                .replace("%g", grp.as_str())
+                .replace("%g", glb.as_str())
+                .replace(grp.as_str(), path.to_str().unwrap())
                 .replace("%b", path.file_name().unwrap().to_str().unwrap())
                 .replace("%e", path.extension().unwrap().to_str().unwrap())
                 .replace(
@@ -200,21 +240,32 @@ impl DecodePlaceHolders for Target {
         }
     }
 }
-// deglob rule statement into multiple deglobbed rules
-pub fn deglobrule(stmt: &Statement, taginfo: &mut OutputTagInfo) -> Vec<Statement> {
+// deglob rule statement into multiple deglobbed rules, update the buckets corresponding to the deglobed targets
+pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>, OutputTagInfo) {
     let mut deglobbed = Vec::new();
+    let mut output : OutputTagInfo = Default::default();
     if let Statement::Rule(Link { s, t, r }) = stmt {
-        for input in stmt.decode(&taginfo) {
+        let inpdec = s.primary.decode(&taginfo);
+        let secondinpdec = s.secondary.decode(&taginfo);
+        let ref mut sinputs = Vec::new();
+        for sinput in secondinpdec
+        {
+            sinputs.push(RvalGeneral::Literal(
+                as_path(&sinput).to_str().unwrap().to_string(),
+            ));
+        }
+        for input in inpdec {
             let tc = t.decode_place_holders(&input, &None);
             let rfc = r.decode_place_holders(&input, &Some(primary_path(&tc)));
+            updatetags(&tc, &mut output);
             let inputc = vec![RvalGeneral::Literal(
                 as_path(&input).to_str().unwrap().to_string(),
             )];
             let src = Source {
                 primary: inputc,
-                secondary: s.secondary.clone(),
+                secondary: sinputs.clone(),
                 foreach: false,
-            };
+            }; // single source input
             // tc.tags
             deglobbed.push(Statement::Rule(Link {
                 s: src,
@@ -222,11 +273,13 @@ pub fn deglobrule(stmt: &Statement, taginfo: &mut OutputTagInfo) -> Vec<Statemen
                 r: rfc,
             }))
         }
+    } else {
+        deglobbed.push(stmt.clone())
     }
-    deglobbed
+    (deglobbed, output)
 }
 // update the groups with the path to primary target
-pub fn updategrouptags(tgt: &Target, taginfo: &mut OutputTagInfo) {
+fn updatetags(tgt: &Target, taginfo : &mut OutputTagInfo) {
     let pathb = primary_path(tgt);
     // let grouppathstr = tostr_cat(&tgt.tag);
     let firstgroupname = tgt.tag.iter().find_map(|x| {
@@ -240,16 +293,11 @@ pub fn updategrouptags(tgt: &Target, taginfo: &mut OutputTagInfo) {
         let grpnamestr = tostr_cat(grpname);
         // let pb = PathBuf::from(grouppathstr);
         if let Some(paths) = taginfo.grouptags.get_mut(&grpnamestr) {
-            paths.push(pathb);
+            paths.push(pathb.clone());
         } else {
-            taginfo.grouptags.insert(grpnamestr, vec![pathb]);
+            taginfo.grouptags.insert(grpnamestr, vec![pathb.clone()]);
         }
     }
-}
-
-// update the bins (buckets) with the path to primary target
-pub fn updatebuckets(tgt: &Target, taginfo: &mut OutputTagInfo) {
-    let pathb = primary_path(tgt);
     let firstbinname = tgt.tag.iter().find_map(|x| {
         if let RvalGeneral::Bucket(bin) = x {
             Some(bin)
@@ -265,6 +313,7 @@ pub fn updatebuckets(tgt: &Target, taginfo: &mut OutputTagInfo) {
         }
     }
 }
+
 
 // reconstruct a rule formula that has placeholders filled up
 impl DecodePlaceHolders for RuleFormula {

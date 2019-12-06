@@ -1,16 +1,24 @@
 // promote a string into a tup variable
-use statements::*;
 use nom::character::complete::{multispace0, multispace1, space1};
+use nom::combinator::{complete, cut, map, map_res, not, opt, peek};
+use nom::error::{context, ErrorKind};
+use nom::multi::{many0, many_till};
+use nom::sequence::{delimited, preceded};
+use nom::Err;
+use nom::IResult;
+use nom::{
+    branch::alt,
+    bytes::complete::{is_not, tag, take, take_until, take_while},
+    character::complete::{char, one_of},
+};
+use statements::*;
 
 fn to_lval(s: &str) -> Ident {
     Ident { name: s.to_owned() }
 }
 // convert byte str to RvalGeneral::Literal
 fn from_str(res: &[u8]) -> Result<RvalGeneral, std::str::Utf8Error> {
-    match std::str::from_utf8(res) {
-        Ok(s) => Ok(RvalGeneral::Literal(s.to_owned())),
-        Err(e) => Err(e),
-    }
+    std::str::from_utf8(res).map(|s| RvalGeneral::Literal(s.to_owned()))
 }
 // check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
@@ -21,107 +29,105 @@ fn is_ident_perc(c: u8) -> bool {
     nom::character::is_alphanumeric(c) || c == b'_' || c == b'%'
 }
 
-named!(ws1, alt!(
-    complete!(tag!("\\\n"))|
-    multispace1 |
-    value!(b"".as_ref(), peek!(one_of!("<{")))
-));
-named!(sp1, alt!(
-    complete!(tag!("\\\n"))|
-    space1
-));
+fn ws1<'a>(input: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+    alt((
+        tag("\\\n"),
+        multispace1,
+        map(peek(one_of("<{")), |_| b"".as_ref()),
+    ))(input)
+}
 
-
+// read a space or blackslash newline continuation
+fn sp1<'a>(input: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+    alt((complete(tag("\\\n")), space1))(input)
+}
 
 // parse rvalue wrapped inside dollar or at
-named!(
-    parse_rvalue_raw,
-    delimited!(
-        alt!(tag!("$(") | tag!("@(") | tag!("&(")),
-        take_while!(is_ident_perc),
-        tag!(")")
-    )
-);
+fn parse_rvalue_raw<'a>(input: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+    delimited(
+        alt((tag("$("), tag("@("), tag("&("))),
+        take_while(is_ident_perc),
+        tag(")"),
+    )(input)
+}
 
-// parse a macro ref starting with a exclamation mark
-named!(
-    parse_rvalue_raw_excl,
-    do_parse!( opt!(sp1) >> tag!("!") >> v: take_while!(is_ident) >> (v))
-);
+// read a ! followed by macro name
+fn parse_rvalue_raw_excl<'a>(i: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+    let (s, _) = opt(sp1)(i)?;
+    let (s, _) = tag("!")(s)?;
+    take_while(is_ident)(s)
+}
 
-// parse an inline comment
-named!(
-    parse_rvalue_raw_comment,
-    do_parse!(opt!(sp1) >> tag!("#") >> v: take_until!("\n") >> (v))
-);
 // read a curly brace and the identifier inside it
-named!(
-    parse_rvalue_raw_bucket,
-    delimited!(tag!("{"), take_while!(is_ident), tag!("}"))
-);
+fn parse_rvalue_raw_bucket<'a>(i: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+    delimited(tag("{"), take_while(is_ident), tag("}"))(i)
+}
 
 // read '<' and the list of rvals inside it until '>'
-named!(parse_rvalue_raw_angle<&[u8], Vec<RvalGeneral>>,
-       do_parse!(
-           tag!("<") >>
-           v : call!(parse_rvalgeneral_list_long, ">") >>
-           (v.0))
-);
-
-// parse rvalue at expression eg @(V)
-named!(parse_rvalue_at<&[u8], RvalGeneral>,
-   do_parse!(
-       rv : map_res!(parse_rvalue_raw, std::str::from_utf8) >>
-       (RvalGeneral::AtExpr(rv.to_owned()))
-   )
-);
+fn parse_rvalue_raw_angle<'a>(i: &'a [u8]) -> IResult<&'a [u8], Vec<RvalGeneral>> {
+    let (s, _) = context("group", tag("<"))(i)?;
+    let (r, v) = parse_rvalgeneral_list_long(s, ">")?;
+    Ok((r, v.0))
+}
+// parse rvalue at expression eg $(H) for config vars
+fn parse_rvalue_at<'a>(i: &'a [u8]) -> IResult<&'a [u8], RvalGeneral> {
+    context(
+        "config(@) expression",
+        cut(map(map_res(parse_rvalue_raw, std::str::from_utf8), |rv| {
+            RvalGeneral::AtExpr(rv.to_owned())
+        })),
+    )(i)
+}
+// parse rvalue dollar expression eg $(H)
+fn parse_rvalue_dollar<'a>(i: &'a [u8]) -> IResult<&'a [u8], RvalGeneral> {
+    context(
+        "dollar expression",
+        cut(map(map_res(parse_rvalue_raw, std::str::from_utf8), |s| {
+            RvalGeneral::DollarExpr(s.to_owned())
+        })),
+    )(i)
+}
 
 // parse rvalue dollar expression eg $(H)
-named!(parse_rvalue_dollar<&[u8], RvalGeneral>,
-   do_parse!(
-       rv : map_res!(parse_rvalue_raw, std::str::from_utf8) >>
-       (RvalGeneral::DollarExpr(rv.to_owned()))
-   )
-);
+fn parse_rvalue_amp<'a>(i: &'a [u8]) -> IResult<&'a [u8], RvalGeneral> {
+    context(
+        "ampersand expression",
+        cut(map(map_res(parse_rvalue_raw, std::str::from_utf8), |rv| {
+            RvalGeneral::AmpExpr(rv.to_owned())
+        })),
+    )(i)
+}
 
-// parse rvalue dollar expression eg $(H)
-named!(parse_rvalue_amp<&[u8], RvalGeneral>,
-       do_parse!(
-           rv : map_res!(parse_rvalue_raw, std::str::from_utf8) >>
-               (RvalGeneral::AmpExpr(rv.to_owned()))
-       )
-);
+fn parse_rvalue_exclamation<'a>(i: &'a [u8]) -> IResult<&'a [u8], RvalGeneral> {
+    context(
+        "macro",
+        cut(map(
+            map_res(parse_rvalue_raw_excl, std::str::from_utf8),
+            |rv| RvalGeneral::MacroRef(rv.to_owned()),
+        )),
+    )(i)
+}
 
-// parse rvalue macro ref eg !CC
-named!(parse_rvalue_exclamation<&[u8], RvalGeneral>,
-       do_parse!(
-           rv : map_res!(parse_rvalue_raw_excl, std::str::from_utf8) >>
-               (RvalGeneral::MacroRef(rv.to_owned()))
-       )
-);
+fn parse_rvalue_angle<'a>(i: &'a [u8]) -> IResult<&'a [u8], RvalGeneral> {
+    context(
+        "group",
+        cut(map(parse_rvalue_raw_angle, |rv| {
+            RvalGeneral::Group(rv.to_owned())
+        })),
+    )(i)
+}
 
-// parse to a group <group>
-named!(parse_rvalue_angle<&[u8], RvalGeneral>,
-       do_parse!(
-           rv : parse_rvalue_raw_angle >>
-               (RvalGeneral::Group(rv))
-       )
-);
 // parse to a bucket name: {objs}
-named!(parse_rvalue_bucket<&[u8], RvalGeneral>,
-       do_parse!(
-           rv : map_res!(parse_rvalue_raw_bucket, std::str::from_utf8) >>
-               (RvalGeneral::Bucket(rv.to_owned()))
-       )
-);
+fn parse_rvalue_bucket<'a>(i: &'a [u8]) -> IResult<&'a [u8], RvalGeneral> {
+    context(
+        "bin",
+        cut(map(
+            map_res(parse_rvalue_raw_bucket, std::str::from_utf8),
+            |rv| RvalGeneral::Bucket(rv.to_owned()),
+        )),
+    )(i)
+}
 
-// parse trailing comments (#--)
-named!(parse_rvalue_comment<&[u8], RvalGeneral>,
-       do_parse!(
-           rv : map_res!(parse_rvalue_raw_comment, std::str::from_utf8) >>
-               (RvalGeneral::InlineComment(rv.to_owned()))
-       )
-);
 // parse to any of the special expressions (dollar, at, angle, bucket)
 named!(parse_rvalue<&[u8], RvalGeneral>,
        switch!(peek!(take!(1)),
@@ -130,177 +136,212 @@ named!(parse_rvalue<&[u8], RvalGeneral>,
                b"&" => call!(parse_rvalue_amp) |
                b"<" => call!(parse_rvalue_angle) |
                b"{" => call!(parse_rvalue_bucket) |
-               b"!" => call!(parse_rvalue_exclamation) |
-               b"#" => call!(parse_rvalue_comment)
+               b"!" => call!(parse_rvalue_exclamation)
        )
 );
 
 // eat up the (dollar or at) that dont parse to (dollar or at) expression
-named!(chompdollar,
-    do_parse!(peek!(one_of!("$@!<#&")) >> not!(parse_rvalue) >> r: take!(1) >> (r))
-);
+fn parse_delim<'a>(i: &'a [u8]) -> nom::IResult<&'a [u8], &'a [u8]> {
+    let _ = peek(one_of("$@!<#&"))(i)?;
+    let _ = not(parse_rvalue);
+    take(1 as usize)(i)
+}
 
 // read  a rvalue until delimiter
 // in addition, \\\n , $,@, ! also pause the parsing
-fn parse_greedy<'a, 'b>(
-    input: &'a [u8],
-    delim: &'b str,
-) -> nom::IResult<&'a [u8], &'a [u8] > {
+fn parse_greedy<'a, 'b>(input: &'a [u8], delim: &'b str) -> nom::IResult<&'a [u8], &'a [u8]> {
     let mut s = String::from("\\\n$@{<!#&");
     s.push_str(delim);
-    alt!(input,
-        value!(b"".as_ref(), complete!(tag!("\\\n")))
-            | chompdollar
-            | is_not!(s.as_str()) )
+    alt((
+        map(tag("\\\n"), |_| b"".as_ref()),
+        parse_delim,
+        is_not(s.clone().as_str()), // not sure why we need to clone there, compiler errors otherwise
+    ))(input)
 }
-// parse either (dollar|at|curly|angle|exclamation) expression or a general rvalue delimited by delim
-fn parse_rvalgeneral<'a, 'b>(
-    s: &'a [u8],
-    delim: &'b str,
-) -> nom::IResult<&'a [u8], RvalGeneral> {
-    alt!(
-        s,
-        complete!(preceded!(opt!(sp1), parse_rvalue)) |
-        complete!(map_res!(call!(parse_greedy, delim), from_str))
-    )
+// parse either (dollar|at|curly|angle|exclamation) expression or a general rvalue delimited by delimb
+fn parse_rvalgeneral<'a, 'b>(s: &'a [u8], delim: &'b str) -> nom::IResult<&'a [u8], RvalGeneral> {
+    alt((
+        complete(preceded(opt(sp1), parse_rvalue)),
+        complete(map_res(|i| parse_greedy(i, delim), from_str)),
+    ))(s)
+}
+
+fn eof<'a>(i: &'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+    if i.len() == 0 {
+        Ok((i, i))
+    } else {
+        Err(Err::Error(error_position!(i, ErrorKind::Eof)))
+    }
 }
 // repeatedly invoke the rvalue parser until eof or delim is encountered
 fn parse_rvalgeneral_list_long<'a, 'b>(
     input: &'a [u8],
     delim: &'b str,
-) -> nom::IResult<&'a [u8], (Vec<RvalGeneral>, &'a [u8]) > {
-    many_till!(
-        input,
-        call!(parse_rvalgeneral, delim),
-        alt!(tag!(delim) | eof!())
-    )
+) -> nom::IResult<&'a [u8], (Vec<RvalGeneral>, &'a [u8])> {
+    many_till(
+        |i| parse_rvalgeneral(i, delim),
+        // alt((tag(delim) , eof))
+        tag(delim),
+    )(input)
+    // Ok((b"".as_ref(), (Vec::new(), b"".as_ref())))
+}
+//  wrapper over the previous parser that handles empty inputs and stops at newline;
+fn parse_rvalgeneral_list(input: &[u8]) -> IResult<&[u8], (Vec<RvalGeneral>, &[u8])> {
+    alt((
+        complete(map(eof, |_| (Vec::new(), b"".as_ref()))),
+        complete(map(delimited(multispace0, tag("\n"), multispace0), |_| {
+            (Vec::new(), b"".as_ref())
+        })),
+        complete(|i| parse_rvalgeneral_list_long(i, "\n")),
+    ))(input)
 }
 
-named!(parse_rvalgeneral_list_sp<&[u8], (Vec<RvalGeneral>, &[u8])>,
-    many_till!(
-        call!(parse_rvalgeneral, " \t\r\n{<"), // avoid reading tags , newlines, spaces
-        alt!(eof!() | ws1 )
-    )
-);
+fn parse_rvalgeneral_list_sp<'a>(
+    input: &'a [u8],
+) -> nom::IResult<&'a [u8], (Vec<RvalGeneral>, &'a [u8])> {
+    many_till(
+        |i| parse_rvalgeneral(i, " \t\r\n{<"), // avoid reading tags , newlines, spaces
+        ws1,
+    )(input)
+}
 
-//  wrapper over the previous parser that handles empty inputs and stops at newline
-named!(parse_rvalgeneral_list<&[u8], (Vec<RvalGeneral>, &[u8]) >,
-       alt!( complete!(value!((Vec::new(), b"".as_ref()), eof!() )) |
-             complete!(value!((Vec::new(), b"".as_ref()), delimited!(multispace0, tag!("\n"), multispace0) )) |
-             complete!(call!(parse_rvalgeneral_list_long, "\n")) )
-);
+// wrapper over the previous that handles empty inputs and stops at newline
+fn parse_rvalgeneral_list_until_space(input: &[u8]) -> IResult<&[u8], (Vec<RvalGeneral>, &[u8])> {
+    alt((
+        complete(map(eof, |_| (Vec::new(), b"".as_ref()))),
+        complete(map(peek(one_of("\n{<")), |_| (Vec::new(), b"".as_ref()))),
+        complete(parse_rvalgeneral_list_sp),
+    ))(input)
+}
 
-named!(parse_rvalgeneral_list_until_space<&[u8], (Vec<RvalGeneral>, &[u8]) >,
-       alt!( complete!(value!((Vec::new(), b"".as_ref()), eof!() )) |
-                       complete!(value!((Vec::new(), b"".as_ref()), peek!(one_of!("\n{<")) )) |
-                      complete!(call!(parse_rvalgeneral_list_sp) ))
-);
-
-
-// parse a lvalue to a string
-named!(parse_lvalue_ref<&[u8], Ident>,
-       do_parse!(
-           char!('&') >>
-               l : call!(parse_lvalue) >>
-               (l)
-       )
-);
-
-named!(parse_lvalue<&[u8], Ident>,
-       do_parse!(
-           l : map_res!(take_while!(is_ident), std::str::from_utf8)>> (to_lval(l))
-       )
-);
+// parse a lvalue ref to a ident
+fn parse_lvalue_ref(input: &[u8]) -> IResult<&[u8], Ident> {
+    let (s, _) = char('&')(input)?;
+    parse_lvalue(s)
+}
+// parse a lvalue to a ident
+fn parse_lvalue(input: &[u8]) -> IResult<&[u8], Ident> {
+    map(map_res(take_while(is_ident), std::str::from_utf8), to_lval)(input)
+}
 
 // parse include expression
-named!(parse_include<&[u8], Statement>,
-       do_parse!( multispace0 >>
-                  tag!("include") >> sp1 >> s: call!(parse_rvalgeneral_list) >>
-                 (Statement::Include(s.0))
-        )
-);
-
+fn parse_include(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("include")(s)?;
+    let (s, _) = sp1(s)?;
+    let (s, r) = context("include statement", cut(parse_rvalgeneral_list))(s)?;
+    Ok((s, Statement::Include(r.0)))
+}
 // parse error expression
-named!(parse_error<&[u8], Statement>,
-       do_parse!(multispace0 >>
-                 tag!("error") >> opt!(sp1) >> sp1 >>  s: call!(parse_rvalgeneral_list) >>
-                 (Statement::Err(s.0))
-       )
-);
+fn parse_error(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("error")(s)?;
+    let (s, _) = sp1(s)?;
+    let (s, r) = context("error expression", cut(parse_rvalgeneral_list))(s)?;
+    Ok((s, Statement::Err(r.0)))
+}
 
 // parse export expression
-named!(parse_export<&[u8], Statement>,
-       do_parse!( multispace0 >> tag!("export") >> sp1 >> s: call!(parse_rvalgeneral_list) >>
-                 (Statement::Export(s.0))
-       )
-);
+fn parse_export(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("export")(s)?;
+    let (s, _) = sp1(s)?;
+    let (s, r) = context("export expression", cut(parse_rvalgeneral_list))(s)?;
+    Ok((s, Statement::Export(r.0)))
+}
 
 // parse preload expression
-named!(parse_preload<&[u8], Statement>,
-       do_parse!(multispace0 >>  tag!("preload") >> sp1 >>  s: call!(parse_rvalgeneral_list) >>
-                 (Statement::Preload(s.0))
-       )
-);
-// parse the run expresssion
-named!(parse_run<&[u8], Statement>,
-       do_parse!(multispace0 >>  tag!("run")  >> sp1 >>  s: call!(parse_rvalgeneral_list) >>
-                 (Statement::Run(s.0))
-       )
-);
+fn parse_preload(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("preload")(s)?;
+    let (s, _) = sp1(s)?;
+    let (s, r) = context("preload expression", cut(parse_rvalgeneral_list))(s)?;
+    Ok((s, Statement::Preload(r.0)))
+}
 
+// parse the run expresssion
+fn parse_run(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("run")(s)?;
+    let (s, _) = sp1(s)?;
+    let (s, r) = context("run expression", cut(parse_rvalgeneral_list))(s)?;
+    Ok((s, Statement::Run(r.0)))
+}
 // parse include_rules expresssion
-named!(parse_include_rules<&[u8], Statement>,
-       do_parse!(multispace0 >>  tag!("include_rules")
-                 >> _s: map_res!(take_until!("\n"), std::str::from_utf8) >>
-                 (Statement::IncludeRules)
-       )
-);
+fn parse_include_rules(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("include_rules")(s)?;
+    let (s, _) = context("include_rules", cut(many_till(sp1, tag("\n"))))(s)?;
+    Ok((s, Statement::IncludeRules))
+}
 
 // parse comment expresssion
-named!(parse_comment<&[u8], Statement>,
-       do_parse!(multispace0 >>  tag!("#")  >>
-                 s: map_res!(take_until!("\n"), std::str::from_utf8) >>
-                 (Statement::Comment(s.to_owned()))
-       )
-);
+fn parse_comment(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("#")(s)?;
+    let (s, r) = context(
+        "comment",
+        cut(map_res(take_until("\n"), std::str::from_utf8)),
+    )(s)?;
+    Ok((s, Statement::Comment(r.to_owned())))
+}
 
 // parse an assignment expression
-named!(parse_let_expr<&[u8], Statement>,
-       do_parse!( multispace0 >>
-                  l : parse_lvalue >> opt!(sp1) >>
-                  op : alt!( complete!(tag!("=")) |
-                             complete!(tag!(":=")) |
-                             complete!(tag!("+="))  ) >>
-                  opt!(sp1) >>
-                  r :  complete!(parse_rvalgeneral_list)  >>
-                  (Statement::LetExpr{ left:l, right: r.0,
-                                       is_append: (op == b"+=") }) )
-);
+fn parse_let_expr(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, l) = parse_lvalue(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, op) = alt((complete(tag("=")), complete(tag(":=")), complete(tag("+="))))(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, r) = complete(parse_rvalgeneral_list)(s)?;
+    Ok((
+        s,
+        Statement::LetExpr {
+            left: l,
+            right: r.0,
+            is_append: (op == b"+="),
+        },
+    ))
+}
 
 // parse an assignment expression
-named!(parse_letref_expr<&[u8], Statement>,
-       do_parse!( multispace0 >>
-                  l : parse_lvalue_ref >> opt!(sp1) >>
-                  op : alt!( complete!(tag!("="))
-                                 | complete!(tag!(":="))
-                             | complete!(tag!("+="))  ) >>
-                  opt!(sp1) >>
-                  r :  complete!(parse_rvalgeneral_list)  >>
-                  (Statement::LetRefExpr{ left:l, right:r.0,
-                                       is_append: (op == b"+=") }) )
-);
-
+fn parse_letref_expr(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, l) = parse_lvalue_ref(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, op) = alt((complete(tag("=")), complete(tag(":=")), complete(tag("+="))))(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, r) = complete(parse_rvalgeneral_list)(s)?;
+    Ok((
+        s,
+        Statement::LetRefExpr {
+            left: l,
+            right: r.0,
+            is_append: (op == b"+="),
+        },
+    ))
+}
+// parse description insude a rule (between ^^)
+fn parse_rule_description(i: &[u8]) -> IResult<&[u8], String> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("^")(s)?;
+    let (s, r) = map_res(take_until("^"), std::str::from_utf8)(s)?;
+    let (s, _) = tag("^")(s)?;
+    let (s, _) = multispace0(s)?;
+    Ok((s, String::from(r)))
+}
 // parse the insides of a rule, which includes a description and rule formula
-named!(parse_rule_gut<&[u8], RuleFormula>,
-       do_parse!(
-           description :
-           opt!(do_parse!( multispace0 >>
-                           tag!("^") >>
-                           r: map_res!(take_until!("^"), std::str::from_utf8) >>
-                           tag!("^") >> multispace0 >> (String::from(r)) ) )  >>
-               formula : call!(parse_rvalgeneral_list_long, "|") >>
-               (RuleFormula { description : description.unwrap_or(String::from("")), formula : formula.0}) )
-);
+fn parse_rule_gut(i: &[u8]) -> IResult<&[u8], RuleFormula> {
+    let (s, desc) = opt(parse_rule_description)(i)?;
+    let (s, formula) = parse_rvalgeneral_list_long(s, "|")?;
+    Ok((
+        s,
+        RuleFormula {
+            description: desc.unwrap_or(String::from("")),
+            formula: formula.0,
+        },
+    ))
+}
 
 // convert the inputs to a rule to 'Source' struct
 fn from_input(primary: Vec<RvalGeneral>, foreach: bool, secondary: Vec<RvalGeneral>) -> Source {
@@ -323,139 +364,228 @@ fn from_output(
     }
 }
 
-
 // parse a rule expression
 // : [foreach] [inputs] [ | order-only inputs] |> command |> [outputs] [ | extra outputs] [<group>] [{bin}]
-named!(parse_rule<&[u8], Statement>,
-      do_parse!( multispace0 >> tag!(":") >> multispace0 >>
-                 for_each: opt!(tag!("foreach")) >> opt!(sp1)  >>
-                 input : call!(parse_rvalgeneral_list_long, "|") >> opt!(sp1) >>
-                 secondary_input : opt!( do_parse!( tag!("|") >> opt!(sp1) >>  r : call!(parse_rvalgeneral_list_long, "|") >> (r)) ) >>
-                 tag!(">") >> opt!(sp1) >>
-                 rule_formula : parse_rule_gut >>
-                 tag!(">")  >> opt!(sp1) >>
-                 secondary_output : opt!( call!(parse_rvalgeneral_list_long, "|") ) >> opt!(sp1) >>
-                 output : opt!(complete!(call!(parse_rvalgeneral_list_until_space))) >> opt!(sp1) >>
-                 tags :  opt!(call!(parse_rvalgeneral_list)) >>
-                 (Statement::Rule(Link {
-                     s : from_input(input.0, for_each.is_some(),
-                                    secondary_input.unwrap_or((Vec::new(), b"")).0),
-                     t : from_output(output.unwrap_or((Vec::new(), b"")).0,
-                                     secondary_output.unwrap_or((Vec::new(), b"")).0,
-                                     tags.unwrap_or((Vec::new(), b"")).0),
-                     r : rule_formula
-                     }
-                 )) )
-);
+fn parse_secondary_inp(i: &[u8]) -> IResult<&[u8], (Vec<RvalGeneral>, &[u8])> {
+    let (s, _) = tag("|")(i)?;
+    let (s, _) = opt(sp1)(s)?;
+    parse_rvalgeneral_list_long(s, "|")
+}
+pub fn parse_rule(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag(":")(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, for_each) = opt(tag("foreach"))(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, input) = context(
+        "rule input",
+        cut(opt(|i| parse_rvalgeneral_list_long(i, "|"))),
+    )(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, secondary_input) = context("rule secondary input", cut(opt(parse_secondary_inp)))(s)?;
+    let (s, _) = tag(">")(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, rule_formula) = context("rule formula", cut(parse_rule_gut))(s)?;
+    let (s, _) = tag(">")(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, secondary_output) = opt(|i| parse_rvalgeneral_list_long(i, "|"))(s)?;
+    let (s, output) = context(
+        "rule output",
+        opt(complete(parse_rvalgeneral_list_until_space)),
+    )(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, tags) = context("rule tags", cut(opt(parse_rvalgeneral_list)))(s)?;
+    Ok((
+        s,
+        Statement::Rule(Link {
+            s: from_input(
+                input.map(|(x, _)| x).unwrap_or(Vec::new()),
+                for_each.is_some(),
+                secondary_input.unwrap_or((Vec::new(), b"")).0,
+            ),
+            t: from_output(
+                output.unwrap_or((Vec::new(), b"")).0,
+                secondary_output.unwrap_or((Vec::new(), b"")).0,
+                tags.unwrap_or((Vec::new(), b"")).0,
+            ),
+            r: rule_formula,
+        }),
+    ))
+}
 
 // parse a macro assignment which is more or less same as parsing a rule expression
 // !macro = [inputs] | [order-only inputs] |> command |> [outputs]
-named!(pub parse_macroassignment<&[u8], Statement>,
-       do_parse!( multispace0 >> tag!("!") >>
-                  macroname : take_while!(is_ident) >> opt!(sp1) >> tag!("=") >> opt!(sp1)>>
-                  for_each: opt!(tag!("foreach")) >> opt!(sp1)  >>
-                  input : call!(parse_rvalgeneral_list_long, "|") >> opt!(sp1) >>
-                  secondary_input : opt!( do_parse!(tag!("|") >>  r : call!(parse_rvalgeneral_list_long, "|") >> (r)) ) >>
-                  tag!(">") >> opt!(sp1) >>
-                  rule_formula : parse_rule_gut >>
-                  tag!(">") >> opt!(sp1) >>
-                  secondary_output : opt!( complete!(do_parse!( r: call!(parse_rvalgeneral_list_long, "|") >> (r)) )) >>
-                  output : opt!(call!(parse_rvalgeneral_list_until_space)) >> opt!(sp1) >>
-                  (Statement::MacroAssignment(std::str::from_utf8(macroname).unwrap_or("").to_owned(), Link {
-                      s : from_input(input.0, for_each.is_some(),
-                                     secondary_input.unwrap_or((Vec::new(), b"")).0),
-                      t : from_output(output.unwrap_or((Vec::new(), b"")).0,
-                                      secondary_output.unwrap_or((Vec::new(), b"")).0,
-                                      Vec::new()
-                                      ),
-                      r : rule_formula
-                  }
-                 )))
-);
+pub fn parse_macroassignment(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("!")(s)?;
+    let (s, macroname) = take_while(is_ident)(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, _) = tag("=")(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, for_each) = opt(tag("foreach"))(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, input) = context(
+        "rule input",
+        cut(opt(|i| parse_rvalgeneral_list_long(i, "|"))),
+    )(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, secondary_input) = context("rule secondary input", cut(opt(parse_secondary_inp)))(s)?;
+    let (s, _) = tag(">")(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, rule_formula) = context("rule formula", cut(parse_rule_gut))(s)?;
+    let (s, _) = tag(">")(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, secondary_output) = opt(|i| parse_rvalgeneral_list_long(i, "|"))(s)?;
+    let (s, output) = context(
+        "rule output",
+        opt(complete(parse_rvalgeneral_list_until_space)),
+    )(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    Ok((
+        s,
+        Statement::MacroAssignment(
+            std::str::from_utf8(macroname).unwrap_or("").to_owned(),
+            Link {
+                s: from_input(
+                    input.map(|(x, _)| x).unwrap_or(Vec::new()),
+                    for_each.is_some(),
+                    secondary_input.unwrap_or((Vec::new(), b"")).0,
+                ),
+                t: from_output(
+                    output.unwrap_or((Vec::new(), b"")).0,
+                    secondary_output.unwrap_or((Vec::new(), b"")).0,
+                    Vec::new(),
+                ),
+                r: rule_formula,
+            },
+        ),
+    ))
+}
 
 // parse any of the different types of statements in a tupfile
-named!(pub parse_statement<&[u8], Statement>,
-       alt!( complete!(parse_include) |
-             complete!(parse_include_rules) |
-             complete!(parse_letref_expr) |
-             complete!(parse_let_expr) |
-             complete!(parse_rule) |
-             complete!(parse_ifelseendif) |
-             complete!(parse_ifdef) |
-             complete!(parse_macroassignment) |
-             complete!(parse_error) |
-             complete!(parse_export) |
-             complete!(parse_run) |
-             complete!(parse_preload) |
-             complete!(parse_comment)
-       )
-);
+pub fn parse_statement(i: &[u8]) -> IResult<&[u8], Statement> {
+    alt((
+        complete(parse_include),
+        complete(parse_include_rules),
+        complete(parse_letref_expr),
+        complete(parse_let_expr),
+        complete(parse_rule),
+        complete(parse_ifelseendif),
+        complete(parse_ifdef),
+        complete(parse_macroassignment),
+        complete(parse_error),
+        complete(parse_export),
+        complete(parse_run),
+        complete(parse_preload),
+        complete(parse_comment),
+    ))(i)
+}
 
 // parse until the start of else block
-named!(parse_statements_until_else<&[u8], (Vec<Statement>, &[u8])>,
-       many_till!(parse_statement,
-                  delimited!( opt!(ws1),
-                  tag!("else"), opt!(ws1)) )
-);
+fn parse_statements_until_else(i: &[u8]) -> IResult<&[u8], (Vec<Statement>, &[u8])> {
+    many_till(parse_statement, delimited(opt(ws1), tag("else"), opt(ws1)))(i)
+}
 
 // parse until endif statement
-named!(parse_statements_until_endif<&[u8], (Vec<Statement>, &[u8])>,
-       many_till!(parse_statement,
-                  delimited!(opt!(ws1),
-                  tag!("endif"), opt!(ws1)) )
-);
+fn parse_statements_until_endif(i: &[u8]) -> IResult<&[u8], (Vec<Statement>, &[u8])> {
+    many_till(parse_statement, delimited(opt(ws1), tag("endif"), opt(ws1)))(i)
+}
+
 // parse statements till end of file
-named!(pub parse_statements_until_eof<&[u8], Vec<Statement>>,
-       many0!(parse_statement)
-);
+pub fn parse_statements_until_eof(i: &[u8]) -> IResult<&[u8], Vec<Statement>> {
+    many0(parse_statement)(i)
+}
 
 // parse equality condition (only the condition, not the statements that follow if)
-named!(pub parse_eq<&[u8], EqCond>,
-       do_parse!( opt!(ws1) >>
-                   not_cond : alt!(tag!("ifeq") => { |_|  false } |
-                                   tag!("ifneq") => { |_|  true } )  >>
-                   opt!(ws1) >>
-                   char!('(') >> opt!(ws1) >>
-                   e1:  call!(parse_rvalgeneral_list_long, ",") >> opt!(ws1) >>
-                   e2 : call!(parse_rvalgeneral_list_long, ")") >> opt!(ws1) >>
-                   (EqCond{lhs: e1.0, rhs: e2.0, not_cond: not_cond})
-       )
-);
+pub fn parse_eq(i: &[u8]) -> IResult<&[u8], EqCond> {
+    let (s, _) = opt(ws1)(i)?;
+    let (s, not_cond) = alt((map(tag("ifeq"), |_| false), map(tag("ifneq"), |_| true)))(s)?;
+    let (s, _) = opt(ws1)(s)?;
+    let (s, _) = char('(')(s)?;
+    let (s, _) = opt(ws1)(s)?;
+    let (s, e1) = parse_rvalgeneral_list_long(s, ",")?;
+    let (s, _) = opt(ws1)(s)?;
+    let (s, e2) = parse_rvalgeneral_list_long(s, ")")?;
+    Ok((
+        s,
+        EqCond {
+            lhs: e1.0,
+            rhs: e2.0,
+            not_cond: not_cond,
+        },
+    ))
+}
 
-named!(parse_checked_var<&[u8], CheckedVar>,
-       do_parse!( opt!(ws1) >>
-                  negate : alt!(tag!("ifdef") => {|_| false} |
-                                tag!("ifndef") => { |_| true } ) >>
-                  opt!(ws1) >>
-                  var : parse_lvalue >> opt!(ws1) >>
-                  (CheckedVar(var, negate))
-                  )
-);
+pub fn parse_checked_var(i: &[u8]) -> IResult<&[u8], CheckedVar> {
+    let (s, _) = opt(ws1)(i)?;
+    let (s, negate) = alt((map(tag("ifdef"), |_| false), map(tag("ifndef"), |_| true)))(s)?;
+    let (s, _) = opt(ws1)(s)?;
+    let (s, var) = parse_lvalue(s)?;
+    let (s, _) = opt(ws1)(s)?;
+    Ok((s, CheckedVar(var, negate)))
+}
 
+pub fn parse_ifelseendif_inner(i: &[u8], eqcond: EqCond) -> IResult<&[u8], Statement> {
+    let (s, then_else_s) = opt(parse_statements_until_else)(i)?;
+    let (s, then_endif_s) = parse_statements_until_endif(s)?;
+    if let Some(then_s) = then_else_s {
+        Ok((
+            s,
+            Statement::IfElseEndIf {
+                eq: eqcond,
+                then_statements: then_s.0,
+                else_statements: then_endif_s.0,
+            },
+        ))
+    } else {
+        Ok((
+            s,
+            Statement::IfElseEndIf {
+                eq: eqcond,
+                then_statements: then_endif_s.0,
+                else_statements: Vec::new(),
+            },
+        ))
+    }
+}
+// parse if else endif block along with condition
+pub fn parse_ifelseendif(i: &[u8]) -> IResult<&[u8], Statement> {
+    let (s, eqcond) = parse_eq(i)?;
+    let (s, _) = opt(ws1)(s)?;
+    context("if else block", cut(move |s| parse_ifelseendif_inner(s,eqcond.clone())))(s)
+}
+
+pub fn parse_ifdef_inner(i:&[u8], cvar: CheckedVar) -> IResult<&[u8], Statement>
+{
+    let (s,then_else_s) = opt(parse_statements_until_else)(i)?;
+    let (s, then_endif_s) = parse_statements_until_endif(s)?;
+    if let Some(then_s) = then_else_s {
+        Ok((
+            s,
+            Statement::IfDef { checked_var : cvar,
+                               then_statements: then_s.0,
+                               else_statements: then_endif_s.0,
+            }
+        ))
+    }else {
+        Ok((
+            s,
+            Statement::IfDef{
+                checked_var : cvar,
+                then_statements:  then_endif_s.0,
+                else_statements: Vec::new()
+            }
+        ))
+    }
+}
 // parse if else endif block
-named!(pub parse_ifelseendif<&[u8], Statement>,
-       do_parse!( eqcond : call!(parse_eq) >>
-                  opt!(ws1) >>
-                  then_s : alt!(
-                      complete!(do_parse!( t0 : parse_statements_until_else >>
-                                  e : parse_statements_until_endif >> ((t0.0, e.0)) )) |
-                      complete!(do_parse!( t : parse_statements_until_endif >>  (t.0, vec![])) )) >>
-                  (Statement::IfElseEndIf{ eq : eqcond,
-                                           then_statements: then_s.0 , else_statements :then_s.1
-                  }) )
-);
+pub fn parse_ifdef(i:&[u8]) -> IResult< &[u8], Statement>
+{
+    let (s,cvar) = parse_checked_var(i)?;
+    let (s,_) = opt(ws1)(s)?;
+    context("ifdef block", cut(move |s| parse_ifdef_inner(s, cvar.clone())))(s)
+}
 
-// parse if else endif block
-named!(pub parse_ifdef<&[u8], Statement>,
-       do_parse!(cvar: call!(parse_checked_var) >> opt!(ws1) >>
-                  then_s : alt!(
-                      complete!(do_parse!( t0 : parse_statements_until_else >>
-                                 e : parse_statements_until_endif >> ((t0.0, e.0)) )) |
-                      complete!(do_parse!( t : parse_statements_until_endif >>  (t.0, vec![])) )) >>
-                  (Statement::IfDef{ checked_var : cvar,
-                                     then_statements: then_s.0 , else_statements :then_s.1
-                  }) )
-);
 
 // parse statements in a tupfile
 pub fn parse_tupfile(filename: &str) -> Vec<Statement> {
