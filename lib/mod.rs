@@ -1,11 +1,12 @@
 #[macro_use]
 extern crate nom;
 extern crate capturing_glob as glob;
+extern crate nom_locate;
+pub mod decode;
 pub mod parser;
 mod platform;
 pub mod statements;
 pub mod transform;
-pub mod decode;
 #[test]
 fn test_op() {
     use std::fs::File;
@@ -82,6 +83,7 @@ fn test_op() {
                         Group(vec![Literal("%grp2".to_string())]),
                     ],
                 },
+                pos: (3,3),
             }),
             Statement::Rule(Link {
                 s: Source {
@@ -98,6 +100,7 @@ fn test_op() {
                     description: "".to_string(),
                     formula: vec![Literal("type %f > file.txt ".to_string())],
                 },
+                pos: (5,2),
             }),
             Statement::Rule(Link {
                 s: Source {
@@ -117,6 +120,7 @@ fn test_op() {
                         Literal("./src/main.rs".to_string()),
                     ],
                 },
+                pos: (7,2),
             }),
         ];
 
@@ -128,20 +132,22 @@ fn test_op() {
 
 #[test]
 fn test_parse() {
+    use nom_locate::LocatedSpan;
     use statements::RvalGeneral::DollarExpr;
     use statements::RvalGeneral::Group;
     use statements::RvalGeneral::Literal;
     use statements::{EqCond, Link, RuleFormula, Source, Statement, Target};
     use transform::*;
+    type Span<'a> = LocatedSpan<&'a [u8]>;
 
-    let res1 = parser::parse_eq(b" ifeq($(DEBUG),20)\n");
+    let res1 = parser::parse_eq(Span::new(b" ifeq($(DEBUG),20)\n"));
     let prog1 = EqCond {
         lhs: vec![DollarExpr("DEBUG".to_string())],
         rhs: vec![Literal("20".to_string())],
         not_cond: false,
     };
     assert_eq!(res1.unwrap().1, prog1);
-    let res1 = parser::parse_eq(b" ifneq($(DEBUG),20)\n");
+    let res1 = parser::parse_eq(Span::new(b" ifneq($(DEBUG),20)\n"));
     let prog1 = EqCond {
         lhs: vec![DollarExpr("DEBUG".to_string())],
         rhs: vec![Literal("20".to_string())],
@@ -149,19 +155,25 @@ fn test_parse() {
     };
     assert_eq!(res1.unwrap().1, prog1);
 
-    let res64 = parser::parse_statement(b"#Source files\n").unwrap().1;
-    assert_eq!(res64, Statement::Comment("Source files".to_owned()));
-    let res65 = parser::parse_statement(b"DEBUG =1\n").unwrap().1;
-    let res66 = parser::parse_statement(b"SRCS=*.cxx\n").unwrap().1;
-    let res67 = parser::parse_statement(b"SRCS +=*.cpp\n").unwrap().1;
-    let res68 = parser::parse_macroassignment(b"!CC = |> cl %f /Fout:%o |> \n")
+    let res64 = parser::parse_statement(Span::new(b"#Source files\n"))
         .unwrap()
         .1;
-    let res7 = parser::parse_statement(
+    assert_eq!(res64, Statement::Comment("Source files".to_owned()));
+    let res65 = parser::parse_statement(Span::new(b"DEBUG =1\n")).unwrap().1;
+    let res66 = parser::parse_statement(Span::new(b"SRCS=*.cxx\n"))
+        .unwrap()
+        .1;
+    let res67 = parser::parse_statement(Span::new(b"SRCS +=*.cpp\n"))
+        .unwrap()
+        .1;
+    let res68 = parser::parse_macroassignment(Span::new(b"!CC = |> cl %f /Fout:%o |> \n"))
+        .unwrap()
+        .1;
+    let res7 = parser::parse_statement(Span::new(
         b"ifeq ($(DEBUG),1)\n: foreach $(SRCS) |>\
                                  !CC <%grp> <%grp2> |> command.pch |\
                                  %B.o <grp>\nelse\nx+=eere\nendif\n",
-    )
+    ))
     .unwrap()
     .1;
     let stmts = vec![res64, res65, res66, res67, res68, res7];
@@ -189,6 +201,7 @@ fn test_parse() {
                 Group(vec![Literal("%grp2".to_string())]),
             ],
         },
+        pos: (2,2),
     })];
 
     assert_eq!(prog[0], stmts_[0]);

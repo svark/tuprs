@@ -244,7 +244,7 @@ impl DecodePlaceHolders for Target {
 pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>, OutputTagInfo) {
     let mut deglobbed = Vec::new();
     let mut output : OutputTagInfo = Default::default();
-    if let Statement::Rule(Link { s, t, r }) = stmt {
+    if let Statement::Rule(Link { s, t, r, pos }) = stmt {
         let inpdec = s.primary.decode(&taginfo);
         let secondinpdec = s.secondary.decode(&taginfo);
         let ref mut sinputs = Vec::new();
@@ -271,6 +271,7 @@ pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>,
                 s: src,
                 t: tc,
                 r: rfc,
+                pos: *pos,
             }))
         }
     } else {

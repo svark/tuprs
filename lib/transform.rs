@@ -215,6 +215,7 @@ impl ExpandMacro for Link {
         let mut source = self.s.clone();
         let mut target = self.t.clone();
         let mut desc = self.r.description.clone();
+        let pos = self.pos;
         let mut formulae = Vec::new();
         let emptylink: Link = Default::default();
         for rval in self.r.formula.iter() {
@@ -236,6 +237,7 @@ impl ExpandMacro for Link {
                 description: desc,
                 formula: formulae,
             },
+            pos : pos
         }
     }
 }
@@ -295,6 +297,7 @@ impl Subst for Link {
             s: self.s.subst(m),
             t: self.t.subst(m),
             r: self.r.subst(m),
+            pos: self.pos
         }
     }
 }

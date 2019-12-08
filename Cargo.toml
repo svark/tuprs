@@ -10,4 +10,5 @@ path = "lib/mod.rs"
 [dependencies]
 nom = "5.0.1"
 capturing-glob = "*"
+nom_locate = "1.0.0"
 

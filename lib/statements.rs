@@ -57,6 +57,7 @@ pub struct Link {
     pub s: Source,
     pub t: Target,
     pub r: RuleFormula,
+    pub pos: (u32, usize),
 }
 // any of the valid statements that can appear in a tupfile
 #[derive(PartialEq, Debug, Clone)]
