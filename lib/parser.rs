@@ -504,9 +504,7 @@ pub fn parse_eq(i: Span) -> IResult<Span, EqCond> {
     let (s, not_cond) = alt((map(tag("ifeq"), |_| false), map(tag("ifneq"), |_| true)))(s)?;
     let (s, _) = opt(ws1)(s)?;
     let (s, _) = char('(')(s)?;
-    let (s, _) = opt(ws1)(s)?;
     let (s, e1) = parse_rvalgeneral_list_long(s, ",")?;
-    let (s, _) = opt(ws1)(s)?;
     let (s, e2) = parse_rvalgeneral_list_long(s, ")")?;
     Ok((
         s,

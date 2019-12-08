@@ -140,10 +140,10 @@ fn test_parse() {
     use transform::*;
     type Span<'a> = LocatedSpan<&'a [u8]>;
 
-    let res1 = parser::parse_eq(Span::new(b" ifeq($(DEBUG),20)\n"));
+    let res1 = parser::parse_eq(Span::new(b" ifeq($(DEBUG), 20)\n"));
     let prog1 = EqCond {
         lhs: vec![DollarExpr("DEBUG".to_string())],
-        rhs: vec![Literal("20".to_string())],
+        rhs: vec![Literal(" 20".to_string())],
         not_cond: false,
     };
     assert_eq!(res1.unwrap().1, prog1);
