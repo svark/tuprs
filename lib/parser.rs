@@ -1,4 +1,3 @@
-// promote a string into a tup variable
 use nom::character::complete::{line_ending, multispace0, multispace1, not_line_ending, space1};
 use nom::combinator::{complete, cut, map, map_res, not, opt, peek};
 use nom::error::{context, ErrorKind};
