@@ -92,8 +92,8 @@ pub enum Statement {
     Run(Vec<RvalGeneral>),
     Comment(String),
 }
-// we could have used `Into' trait
-// coherence rules are too struct in rust hence the trait below
+// we could have used `Into' or 'ToString' trait
+// coherence rules are too strict in rust hence the trait below
 pub trait Cat {
     fn cat(self) -> String;
 }
