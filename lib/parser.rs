@@ -14,6 +14,7 @@ use nom::{
 };
 use nom_locate::{position, LocatedSpan};
 use statements::*;
+use std::path::{Path, PathBuf};
 type Span<'a> = LocatedSpan<&'a [u8]>;
 fn to_lval(name: String) -> Ident {
     Ident { name: name }
@@ -144,7 +145,7 @@ pub fn parse_rvalue(i: Span) -> IResult<Span, RvalGeneral> {
         b"<" => parse_rvalue_angle(s),
         b"{" => parse_rvalue_bucket(s),
         b"!" => parse_rvalue_exclamation(s),
-        _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))),
+        _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))), //fixme: what errorkind should we return?
     }
 }
 
@@ -164,8 +165,7 @@ fn parse_greedy<'a, 'b>(input: Span<'a>, delim: &'b str) -> nom::IResult<Span<'a
     alt((
         map(preceded(tag("\\"), line_ending), |_| default_inp()),
         parse_delim,
-        is_not(s.clone().as_str()),
-        // take(1 as usize) // not sure why we need to clone there, compiler errors otherwise
+        is_not(s.clone().as_str()), // not sure why we need to clone there, compiler errors otherwise
     ))(input)
 }
 // parse either (dollar|at|curly|angle|exclamation) expression or a general rvalue delimited by delimb
@@ -186,7 +186,6 @@ fn parse_rvalgeneral_list_long<'a, 'b>(
 //  wrapper over the previous parser that handles empty inputs and stops at newline;
 fn parse_rvalgeneral_list(input: Span) -> IResult<Span, (Vec<RvalGeneral>, Span)> {
     alt((
-        // complete(map(eof, |_| (Vec::new(), Span::new(b"".as_ref())))),
         complete(map(
             delimited(multispace0, line_ending, multispace0),
             |_| (Vec::new(), Span::new(b"".as_ref())),
@@ -524,7 +523,7 @@ pub fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
     let (s, _) = opt(ws1)(s)?;
     Ok((s, CheckedVar(var, negate)))
 }
-
+// parse contents inside if else endif bocks(without condition)
 pub fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, Statement> {
     let (s, then_else_s) = opt(parse_statements_until_else)(i)?;
     let (s, then_endif_s) = parse_statements_until_endif(s)?;
@@ -557,7 +556,7 @@ pub fn parse_ifelseendif(i: Span) -> IResult<Span, Statement> {
         cut(move |s| parse_ifelseendif_inner(s, eqcond.clone())),
     )(s)
 }
-
+// parse inside a ifdef block
 pub fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, Statement> {
     let (s, then_else_s) = opt(parse_statements_until_else)(i)?;
     let (s, then_endif_s) = parse_statements_until_endif(s)?;
@@ -607,7 +606,6 @@ pub fn parse_tupfile(filename: &str) -> Vec<Statement> {
         Vec::new()
     }
 }
-use std::path::{Path, PathBuf};
 pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
     let mut cwd = cur_tupfile;
     while let Some(parent) = cwd.parent() {

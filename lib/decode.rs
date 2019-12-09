@@ -9,31 +9,22 @@ pub struct OutputTagInfo {
     pub grouptags: HashMap<String, Vec<PathBuf>>,
 }
 
-impl OutputTagInfo
-{
-    pub fn merge_group_tags(&mut self, other:&mut OutputTagInfo)
-    {
-        for (k,v) in other.grouptags.iter_mut()
-        {
-            if let Some(vorig) =  self.grouptags.get_mut(k) {
+impl OutputTagInfo {
+    pub fn merge_group_tags(&mut self, other: &mut OutputTagInfo) {
+        for (k, v) in other.grouptags.iter_mut() {
+            if let Some(vorig) = self.grouptags.get_mut(k) {
                 vorig.append(v);
-            }
-            else
-            {
-                self.grouptags.insert(k.clone(),v.clone());
+            } else {
+                self.grouptags.insert(k.clone(), v.clone());
             }
         }
     }
 
-    pub fn merge_bin_tags(&mut self, other:&mut OutputTagInfo)
-    {
-        for (k,v) in other.buckettags.iter_mut()
-        {
+    pub fn merge_bin_tags(&mut self, other: &mut OutputTagInfo) {
+        for (k, v) in other.buckettags.iter_mut() {
             if let Some(vorig) = self.buckettags.get_mut(k) {
                 vorig.append(v)
-            }
-            else
-            {
+            } else {
                 self.buckettags.insert(k.clone(), v.clone());
             }
         }
@@ -165,7 +156,7 @@ impl DecodePlaceHolders for RvalGeneral {
         let frep = |d: &str| {
             let path = as_path(&input);
             let glb = as_glob(&input);
-            let grp =  "%<".to_string() + as_grp(&input).as_str() + ">";
+            let grp = "%<".to_string() + as_grp(&input).as_str() + ">";
             d.replace("%f", path.to_str().unwrap())
                 .replace("%B", path.file_stem().unwrap().to_str().unwrap())
                 .replace("%g", glb.as_str())
@@ -222,7 +213,7 @@ impl DecodePlaceHolders for Vec<RvalGeneral> {
     }
 }
 fn primary_path(tgt: &Target) -> PathBuf {
-    PathBuf::from(tostr_cat(&tgt.primary))
+    PathBuf::from(tgt.primary.cat())
 }
 
 // replace % specifiers in a rule statement target which has already been
@@ -232,7 +223,7 @@ impl DecodePlaceHolders for Target {
         let newprimary = self.primary.decode_place_holders(input, &None);
         let newsecondary = self
             .secondary
-            .decode_place_holders(input, &Some(PathBuf::from(tostr_cat(&newprimary))));
+            .decode_place_holders(input, &Some(PathBuf::from(newprimary.cat())));
         Target {
             primary: newprimary,
             secondary: newsecondary,
@@ -243,13 +234,12 @@ impl DecodePlaceHolders for Target {
 // deglob rule statement into multiple deglobbed rules, update the buckets corresponding to the deglobed targets
 pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>, OutputTagInfo) {
     let mut deglobbed = Vec::new();
-    let mut output : OutputTagInfo = Default::default();
+    let mut output: OutputTagInfo = Default::default();
     if let Statement::Rule(Link { s, t, r, pos }) = stmt {
         let inpdec = s.primary.decode(&taginfo);
         let secondinpdec = s.secondary.decode(&taginfo);
         let ref mut sinputs = Vec::new();
-        for sinput in secondinpdec
-        {
+        for sinput in secondinpdec {
             sinputs.push(RvalGeneral::Literal(
                 as_path(&sinput).to_str().unwrap().to_string(),
             ));
@@ -266,7 +256,7 @@ pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>,
                 secondary: sinputs.clone(),
                 foreach: false,
             }; // single source input
-            // tc.tags
+               // tc.tags
             deglobbed.push(Statement::Rule(Link {
                 s: src,
                 t: tc,
@@ -280,9 +270,8 @@ pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>,
     (deglobbed, output)
 }
 // update the groups with the path to primary target
-fn updatetags(tgt: &Target, taginfo : &mut OutputTagInfo) {
+fn updatetags(tgt: &Target, taginfo: &mut OutputTagInfo) {
     let pathb = primary_path(tgt);
-    // let grouppathstr = tostr_cat(&tgt.tag);
     let firstgroupname = tgt.tag.iter().find_map(|x| {
         if let RvalGeneral::Group(grp) = x {
             Some(grp)
@@ -291,7 +280,7 @@ fn updatetags(tgt: &Target, taginfo : &mut OutputTagInfo) {
         }
     });
     if let Some(grpname) = firstgroupname {
-        let grpnamestr = tostr_cat(grpname);
+        let grpnamestr = grpname.cat();
         // let pb = PathBuf::from(grouppathstr);
         if let Some(paths) = taginfo.grouptags.get_mut(&grpnamestr) {
             paths.push(pathb.clone());
@@ -315,7 +304,6 @@ fn updatetags(tgt: &Target, taginfo : &mut OutputTagInfo) {
     }
 }
 
-
 // reconstruct a rule formula that has placeholders filled up
 impl DecodePlaceHolders for RuleFormula {
     fn decode_place_holders(
@@ -324,9 +312,9 @@ impl DecodePlaceHolders for RuleFormula {
         output: &Option<OutputGlobType>,
     ) -> RuleFormula {
         RuleFormula {
-            description: tostr(
-                &RvalGeneral::Literal(self.description.clone()).decode_place_holders(input, output),
-            ),
+            description: RvalGeneral::Literal(self.description.clone())
+                .decode_place_holders(input, output)
+                .cat(),
             formula: self.formula.decode_place_holders(input, output),
         }
     }

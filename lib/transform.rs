@@ -75,7 +75,7 @@ impl Deps for Vec<RvalGeneral> {
         let mut inps = Vec::new();
         for rval in self.iter() {
             if let RvalGeneral::Group(grpnamerval) = rval {
-                let name = tostr_cat(&grpnamerval);
+                let name = grpnamerval.cat();
                 inps.push(name)
             }
         }
@@ -256,7 +256,7 @@ pub fn load_conf_vars(filename: &Path) -> HashMap<String, String> {
                 match stmt {
                     Statement::LetExpr { left, right, .. } => {
                         if left.name.starts_with("CONFIG_") {
-                            conf_vars.insert(left.name[7..].to_string(), tostr_cat(right));
+                            conf_vars.insert(left.name[7..].to_string(), right.cat());
                         }
                     }
                     _ => (),
@@ -314,7 +314,7 @@ impl Subst for Vec<Statement> {
                     is_append,
                 } => {
                     let &app = is_append;
-                    let subst_right = tostr_cat(&right.subst(m));
+                    let subst_right = right.subst(m).cat();
                     let curright = if app {
                         match m.expr_map.get(left.name.as_str()) {
                             Some(prevright) => prevright.to_string() + " " + subst_right.as_str(),
@@ -336,7 +336,7 @@ impl Subst for Vec<Statement> {
                         RvalGeneral::Literal("/".to_owned()),
                     ]
                     .subst(m);
-                    let subst_right = tostr_cat(&prefix) + tostr_cat(&right.subst(m)).as_str();
+                    let subst_right = prefix.cat() + (right.subst(m)).cat().as_str();
                     let curright = if app {
                         match m.rexpr_map.get(left.name.as_str()) {
                             Some(prevright) => prevright.to_string() + " " + subst_right.as_str(),
@@ -358,7 +358,7 @@ impl Subst for Vec<Statement> {
                         rhs: eq.rhs.subst(m),
                         not_cond: eq.not_cond,
                     };
-                    if tostr_cat(&e.lhs) == tostr_cat(&e.rhs) && !e.not_cond {
+                    if &e.lhs.cat() == &e.rhs.cat() && !e.not_cond {
                         newstats.append(&mut then_statements.subst(m));
                     } else {
                         newstats.append(&mut else_statements.subst(m));
@@ -387,7 +387,7 @@ impl Subst for Vec<Statement> {
                 }
                 Statement::Include(s) => {
                     let s = s.subst(m);
-                    let scat = tostr_cat(&s);
+                    let scat = &s.cat();
                     let longp = get_parent(m.cur_file.as_path());
                     let pscat = Path::new(scat.as_str());
                     let fullp = longp.join(pscat);
@@ -417,7 +417,7 @@ impl Subst for Vec<Statement> {
                 }
                 Statement::Err(v) => {
                     let v = v.subst(m);
-                    eprintln!("{}\n", tostr_cat(&v).as_str());
+                    eprintln!("{}\n", &v.cat().as_str());
                     break;
                 }
                 Statement::Preload(v) => {

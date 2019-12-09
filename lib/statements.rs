@@ -92,17 +92,68 @@ pub enum Statement {
     Run(Vec<RvalGeneral>),
     Comment(String),
 }
-// convert a literal to a String
-pub(crate) fn tostr(rval: &RvalGeneral) -> String {
-    match rval {
-        &RvalGeneral::Literal(ref x) => x.clone(),
-        _ => "".to_owned(),
+// we could have used `Into' trait
+// coherence rules are too struct in rust hence the trait below
+pub trait Cat {
+    fn cat(self) -> String;
+}
+
+pub trait CatRef {
+    fn cat_ref(&self) -> &str;
+}
+
+impl Cat for &Vec<RvalGeneral> {
+    fn cat(self) -> String {
+        self.iter()
+            .map(|x| x.cat_ref())
+            .fold("".to_owned(), |x, y| x + y)
     }
 }
-// concat string literals into a single String
-pub(crate) fn tostr_cat(rvals: &Vec<RvalGeneral>) -> String {
-    rvals
-        .iter()
-        .map(tostr)
-        .fold("".to_owned(), |x, y| x + y.as_str())
+
+// conversion to from string
+impl From<String> for RvalGeneral {
+    fn from(s: String) -> RvalGeneral {
+        RvalGeneral::Literal(s)
+    }
+}
+
+impl Cat for &RvalGeneral {
+    fn cat(self) -> String {
+        match self {
+            RvalGeneral::Literal(x) => x.clone(),
+            _ => "".to_owned(),
+        }
+    }
+}
+
+impl CatRef for RvalGeneral {
+    fn cat_ref(&self) -> &str {
+        match self {
+            RvalGeneral::Literal(x) => x.as_str(),
+            _ => "",
+        }
+    }
+}
+
+impl Cat for Statement {
+    fn cat(self) -> String {
+        match self {
+            Statement::Rule(Link {
+                s: _,
+                t: _,
+                r,
+                pos,
+            }) => {
+                let mut desc: String = r.description.into();
+                let formula: String = r
+                    .formula
+                    .iter()
+                    .map(|x| x.cat_ref())
+                    .fold("".to_owned(), |x, y| x + y);
+                desc += formula.as_str();
+                desc + ":" +  pos.0.to_string().as_str() + "," + pos.1.to_string().as_str()
+            }
+            _ => "".to_owned(),
+        }
+    }
 }
