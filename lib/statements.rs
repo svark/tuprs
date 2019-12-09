@@ -135,7 +135,7 @@ impl CatRef for RvalGeneral {
     }
 }
 
-impl Cat for Statement {
+impl Cat for &Statement {
     fn cat(self) -> String {
         match self {
             Statement::Rule(Link {
@@ -144,7 +144,7 @@ impl Cat for Statement {
                 r,
                 pos,
             }) => {
-                let mut desc: String = r.description.into();
+                let mut desc: String = r.description.clone();
                 let formula: String = r
                     .formula
                     .iter()

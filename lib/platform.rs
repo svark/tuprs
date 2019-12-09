@@ -48,10 +48,6 @@ pub(crate) fn get_platform() -> String {
 pub(crate) fn get_arch() -> String {
     "x86".to_string()
 }
-#[cfg(target_arch = "x86")]
-pub(crate) fn get_arch() -> String {
-    "x86".to_string()
-}
 
 #[cfg(target_arch = "x8_64")]
 pub(crate) fn get_arch() -> String {

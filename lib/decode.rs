@@ -29,6 +29,10 @@ impl OutputTagInfo {
             }
         }
     }
+    pub fn new() -> OutputTagInfo
+    {
+        Default::default()
+    }
 }
 
 // Types of decoded input to rules which includes
