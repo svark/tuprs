@@ -83,7 +83,7 @@ fn test_op() {
                         Group(vec![Literal("%grp2".to_string())]),
                     ],
                 },
-                pos: (3,3),
+                pos: (3, 3),
             }),
             Statement::Rule(Link {
                 s: Source {
@@ -100,7 +100,7 @@ fn test_op() {
                     description: "".to_string(),
                     formula: vec![Literal("type %f > file.txt ".to_string())],
                 },
-                pos: (5,2),
+                pos: (5, 2),
             }),
             Statement::Rule(Link {
                 s: Source {
@@ -120,7 +120,7 @@ fn test_op() {
                         Literal("./src/main.rs".to_string()),
                     ],
                 },
-                pos: (7,2),
+                pos: (7, 2),
             }),
         ];
 
@@ -201,7 +201,7 @@ fn test_parse() {
                 Group(vec![Literal("%grp2".to_string())]),
             ],
         },
-        pos: (2,2),
+        pos: (2, 2),
     })];
 
     assert_eq!(prog[0], stmts_[0]);

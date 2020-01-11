@@ -138,12 +138,7 @@ impl CatRef for RvalGeneral {
 impl Cat for &Statement {
     fn cat(self) -> String {
         match self {
-            Statement::Rule(Link {
-                s: _,
-                t: _,
-                r,
-                pos,
-            }) => {
+            Statement::Rule(Link { s: _, t: _, r, pos }) => {
                 let mut desc: String = r.description.clone();
                 let formula: String = r
                     .formula
@@ -151,7 +146,7 @@ impl Cat for &Statement {
                     .map(|x| x.cat_ref())
                     .fold("".to_owned(), |x, y| x + y);
                 desc += formula.as_str();
-                desc + ":" +  pos.0.to_string().as_str() + "," + pos.1.to_string().as_str()
+                desc + ":" + pos.0.to_string().as_str() + "," + pos.1.to_string().as_str()
             }
             _ => "".to_owned(),
         }

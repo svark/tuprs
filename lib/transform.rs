@@ -237,7 +237,7 @@ impl ExpandMacro for Link {
                 description: desc,
                 formula: formulae,
             },
-            pos : pos
+            pos: pos,
         }
     }
 }
@@ -297,7 +297,7 @@ impl Subst for Link {
             s: self.s.subst(m),
             t: self.t.subst(m),
             r: self.r.subst(m),
-            pos: self.pos
+            pos: self.pos,
         }
     }
 }

@@ -29,8 +29,7 @@ impl OutputTagInfo {
             }
         }
     }
-    pub fn new() -> OutputTagInfo
-    {
+    pub fn new() -> OutputTagInfo {
         Default::default()
     }
 }
