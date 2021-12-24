@@ -19,7 +19,7 @@ use nom::bytes::complete::{is_a, is_not};
 
 type Span<'a> = LocatedSpan<&'a [u8]>;
 fn to_lval(name: String) -> Ident {
-    Ident { name: name }
+    Ident { name }
 }
 fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
@@ -184,7 +184,7 @@ pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
         b"\\\n" => Ok((s, PathExpr::Literal(String::new()))),
         b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\<" | b"\\^"  | b"\\|"      =>
             {
-                let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::ParseTo)))?;
+                let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
                 Ok( (s,pe))
             },
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))), //FIXME: what errorkind should we return?
@@ -601,7 +601,7 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
                 v2
             ),
             rule_formula,
-            pos: (pos.line, pos.get_column()),
+            pos: (pos.location_line(), pos.get_column()),
         }),
     ))
 }
@@ -679,7 +679,7 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
                     None
                 ),
                 rule_formula,
-                pos: (pos.line, pos.get_column()),
+                pos: (pos.location_line(), pos.get_column()),
             },
         ),
     ))

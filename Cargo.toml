@@ -8,9 +8,9 @@ name = "tupparser"
 path = "lib/mod.rs"
 
 [dependencies]
-nom = "5.0.1"
+nom = "7.1.0"
 capturing-glob = "*"
-nom_locate = "1.0.0"
+nom_locate = "4.0.0"
 lazy_static = "1.4.0"
 thiserror = "1.0.30"
 
