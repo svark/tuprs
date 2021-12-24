@@ -1,6 +1,5 @@
 # tuprs  
-[![Build Status](https://app.travis-ci.com/svark/tuprs.svg?branch=master)](https://app.travis-ci.com/svark/tuprs)
-
+![Build Status](https://github.com/svark/tuprs/actions/workflows/rust.yml/badge.svg)
 Library for parsing a tup file. 
 Reads and converts data in Tupfile into parsed rust expressions.
 ```
