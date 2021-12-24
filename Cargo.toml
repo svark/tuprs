@@ -11,4 +11,6 @@ path = "lib/mod.rs"
 nom = "5.0.1"
 capturing-glob = "*"
 nom_locate = "1.0.0"
+lazy_static = "1.4.0"
+thiserror = "1.0.30"
 

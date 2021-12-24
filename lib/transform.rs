@@ -58,9 +58,9 @@ pub trait ExpandMacro {
     fn expand(&self, m: &mut SubstMap) -> Self;
 }
 
-fn is_empty(rval: &RvalGeneral) -> bool {
-    if let RvalGeneral::Literal(s) = rval {
-        s.trim().len() == 0
+fn is_empty(rval: &PathExpr) -> bool {
+    if let PathExpr::Literal(s) = rval {
+        s.len() == 0
     } else {
         false
     }
@@ -70,12 +70,12 @@ trait Deps {
     fn output_groups(&self) -> Vec<String>;
 }
 // scan for group tags in a vec of rvalgenerals
-impl Deps for Vec<RvalGeneral> {
+impl Deps for Vec<PathExpr> {
     fn input_groups(&self) -> Vec<String> {
         let mut inps = Vec::new();
         for rval in self.iter() {
-            if let RvalGeneral::Group(grpnamerval) = rval {
-                let name = grpnamerval.cat();
+            if let PathExpr::Group(_,_) = rval {
+                let name = rval.cat();
                 inps.push(name)
             }
         }
@@ -109,46 +109,50 @@ impl Deps for Statement {
         }
     }
 }
-impl Subst for RvalGeneral {
+impl Subst for PathExpr {
     fn subst(&self, m: &mut SubstMap) -> Self {
-        match self {
-            &RvalGeneral::DollarExpr(ref x) => {
+        match self{
+            &PathExpr::DollarExpr(ref x) => {
                 if let Some(val) = m.expr_map.get(x.as_str()) {
-                    RvalGeneral::Literal(val.to_string())
+                    PathExpr::Literal(val.to_string())
                 } else if !x.contains("%") {
-                    RvalGeneral::Literal("".to_owned())
+                    PathExpr::Literal("".to_owned())
                 } else {
                     self.clone()
                 }
             }
-            &RvalGeneral::AtExpr(ref x) => {
+            &PathExpr::AtExpr(ref x) => {
                 if let Some(val) = m.conf_map.get(x.as_str()) {
-                    RvalGeneral::Literal(val.to_string())
+                    PathExpr::Literal(val.to_string())
                 } else if !x.contains("%") {
-                    RvalGeneral::Literal("".to_owned())
+                    PathExpr::Literal("".to_owned())
                 } else {
                     self.clone()
                 }
             }
-            &RvalGeneral::AmpExpr(ref x) => {
+            &PathExpr::AmpExpr(ref x) => {
                 if let Some(val) = m.rexpr_map.get(x.as_str()) {
-                    RvalGeneral::Literal(val.to_string())
+                    PathExpr::Literal(val.to_string())
                 } else if !x.contains("%") {
-                    RvalGeneral::Literal("".to_owned())
+                    PathExpr::Literal("".to_owned())
                 } else {
                     self.clone()
                 }
             }
 
-            &RvalGeneral::Group(ref xs) => {
-                RvalGeneral::Group(xs.into_iter().map(|x| x.subst(m)).collect())
+            &PathExpr::Group(ref xs, ref ys) => {
+                PathExpr::Group(xs.into_iter().map(|x| x.subst(m)).collect(),
+                                ys.into_iter().map(|y| y.subst(m)).collect())
             }
+            /*&PathExpr::Sp1 => {
+                PathExpr::Literal(" ".to_string())
+            }*/
             _ => self.clone(),
         }
     }
 }
 
-impl Subst for Vec<RvalGeneral> {
+impl Subst for Vec<PathExpr> {
     fn subst(&self, m: &mut SubstMap) -> Self {
         self.iter()
             .map(|x| x.subst(m))
@@ -169,7 +173,9 @@ use std::ops::AddAssign;
 impl AddAssign for Source {
     fn add_assign(&mut self, other: Self) {
         let mut o = other;
+        self.primary.strip_trailing_ws();
         self.primary.append(&mut o.primary);
+        self.secondary.strip_trailing_ws();
         self.secondary.append(&mut o.secondary);
         self.foreach |= o.foreach;
     }
@@ -178,9 +184,14 @@ impl AddAssign for Source {
 impl AddAssign for Target {
     fn add_assign(&mut self, other: Self) {
         let mut o = other;
+        self.primary.strip_trailing_ws();
         self.primary.append(&mut o.primary);
+
+        self.secondary.strip_trailing_ws();
         self.secondary.append(&mut o.secondary);
-        self.tag.append(&mut o.tag);
+
+        self.group = self.group.clone().or(o.group);
+        self.bin = self.bin.clone().or(o.bin);
     }
 }
 
@@ -189,7 +200,8 @@ impl Subst for Target {
         Target {
             primary: self.primary.subst(m),
             secondary: self.secondary.subst(m),
-            tag: self.tag.clone(),
+            group: self.group.clone().map(|x| x.subst(m)),
+            bin: self.bin.clone().map(|x| x.subst(m))
         }
     }
 }
@@ -205,7 +217,7 @@ impl Subst for RuleFormula {
 impl ExpandMacro for Link {
     fn hasref(&self) -> bool {
         for rval in self.r.formula.iter() {
-            if let RvalGeneral::MacroRef(_) = *rval {
+            if let PathExpr::MacroRef(_) = *rval {
                 return true;
             }
         }
@@ -220,12 +232,15 @@ impl ExpandMacro for Link {
         let emptylink: Link = Default::default();
         for rval in self.r.formula.iter() {
             match rval {
-                &RvalGeneral::MacroRef(ref name) => {
+                &PathExpr::MacroRef(ref name) => {
                     let explink = m.rule_map.get(name.as_str()).unwrap_or(&emptylink);
                     source += explink.s.clone();
                     target += explink.t.clone();
                     desc += explink.r.description.as_str();
-                    formulae.append(&mut explink.r.formula.clone());
+                    //formulae.strip_trailing_ws();
+                    let mut r = explink.r.formula.clone();
+                    r.strip_trailing_ws();
+                    formulae.append( &mut r);
                 }
                 _ => formulae.push(rval.clone()),
             }
@@ -314,7 +329,7 @@ impl Subst for Vec<Statement> {
                     is_append,
                 } => {
                     let &app = is_append;
-                    let subst_right = right.subst(m).cat();
+                    let subst_right = right.subst(m).cat().clone();
                     let curright = if app {
                         match m.expr_map.get(left.name.as_str()) {
                             Some(prevright) => prevright.to_string() + " " + subst_right.as_str(),
@@ -332,8 +347,8 @@ impl Subst for Vec<Statement> {
                 } => {
                     let &app = is_append;
                     let prefix = vec![
-                        RvalGeneral::DollarExpr("TUP_CWD".to_owned()),
-                        RvalGeneral::Literal("/".to_owned()),
+                        PathExpr::DollarExpr("TUP_CWD".to_owned()),
+                        PathExpr::Literal("/".to_owned()),
                     ]
                     .subst(m);
                     let subst_right = prefix.cat() + (right.subst(m)).cat().as_str();
@@ -369,7 +384,7 @@ impl Subst for Vec<Statement> {
                     then_statements,
                     else_statements,
                 } => {
-                    let cvar = RvalGeneral::AtExpr(checked_var.0.name.clone());
+                    let cvar = PathExpr::AtExpr(checked_var.0.name.clone());
                     if is_empty(&cvar.subst(m)) == checked_var.1 {
                         newstats.append(&mut then_statements.subst(m));
                     } else {
@@ -413,7 +428,8 @@ impl Subst for Vec<Statement> {
                 // dont subst inside a macro assignment
                 // just update the rule_map
                 Statement::MacroAssignment(name, link) => {
-                    m.rule_map.insert(name.clone(), link.clone());
+                    let l = link.clone();
+                    m.rule_map.insert(name.clone(), l);
                 }
                 Statement::Err(v) => {
                     let v = v.subst(m);
@@ -423,13 +439,16 @@ impl Subst for Vec<Statement> {
                 Statement::Preload(v) => {
                     newstats.push(Statement::Preload(v.subst(m)));
                 }
-                Statement::Export(ex) => {
-                    newstats.push(Statement::Export(ex.subst(m)));
+                Statement::Export(_) => {
+                    newstats.push(statement.clone());
+                }
+                Statement::Import(_,_) => {
+                    newstats.push(statement.clone());
                 }
                 Statement::Run(r) => {
-                    newstats.push(Statement::Export(r.subst(m)));
+                    newstats.push(Statement::Run(r.subst(m)));
                 }
-                Statement::Comment(_) => {
+                Statement::Comment => {
                     // ignore
                 }
             }

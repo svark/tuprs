@@ -1,19 +1,22 @@
-use nom::character::complete::{line_ending, multispace0, multispace1, not_line_ending, space1};
-use nom::combinator::{complete, cut, map, map_res, not, opt, peek};
+use nom::character::complete::{line_ending, multispace0, multispace1, space1};
+use nom::combinator::{complete, cut, map, map_res, not, opt, peek, value};
 use nom::error::{context, ErrorKind};
-use nom::multi::{many0, many_till};
+use nom::multi::{many1, many0, many_till};
 use nom::sequence::{delimited, preceded};
-use nom::AsBytes;
+use nom::{AsBytes};
+
 use nom::Err;
 use nom::IResult;
 use nom::{
     branch::alt,
-    bytes::complete::{is_not, tag, take, take_until, take_while},
+    bytes::complete::{tag, take, take_until, take_while},
     character::complete::{char, one_of},
 };
 use nom_locate::{position, LocatedSpan};
 use statements::*;
 use std::path::{Path, PathBuf};
+use nom::bytes::complete::{is_a, is_not};
+
 type Span<'a> = LocatedSpan<&'a [u8]>;
 fn to_lval(name: String) -> Ident {
     Ident { name: name }
@@ -22,9 +25,17 @@ fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
 }
 
-// convert byte str to RvalGeneral::Literal
-fn from_str(res: Span) -> Result<RvalGeneral, std::str::Utf8Error> {
-    from_utf8(res).map(|s| RvalGeneral::Literal(s))
+lazy_static! (
+    static ref BRKTOKSINNER: &'static str = "\\\n$&";
+    static ref BRKTOKS : &'static str = "\\\n$@&";
+    static ref BRKTOKSWS : &'static str = "\\\n$@& ";
+    static ref BRKTOKSIO : &'static str = "\\\n $@&^<{";
+    static ref BRKTAGS : &'static str = " <|{";
+);
+
+// convert byte str to PathExpr::Literal
+fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
+    from_utf8(res).map(|s| PathExpr::Literal(s))
 }
 // check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
@@ -34,7 +45,6 @@ fn is_ident(c: u8) -> bool {
 fn is_ident_perc(c: u8) -> bool {
     nom::character::is_alphanumeric(c) || c == b'_' || c == b'%'
 }
-
 fn ws1(input: Span) -> IResult<Span, Span> {
     alt((
         preceded(tag("\\"), line_ending),
@@ -42,14 +52,23 @@ fn ws1(input: Span) -> IResult<Span, Span> {
         map(peek(one_of("<{")), |_| Span::new(b"".as_ref())),
     ))(input)
 }
-
+fn manynewlineesc(input : Span) -> IResult<Span, Span>
+{
+    let (s, _) = many1(preceded(tag("\\"), line_ending))(input)?;
+    Ok((s, default_inp()))
+}
 // read a space or blackslash newline continuation
 fn sp1(input: Span) -> IResult<Span, Span> {
-    alt((complete(preceded(tag("\\"), line_ending)), space1))(input)
+    alt((complete(manynewlineesc), space1))(input)
 }
 
+fn parse_pathexpr_raw_angle(input : Span) -> IResult<Span, Span>
+{
+    let i = input.clone();
+    preceded( is_not(*BRKTAGS), tag("<"))(i)
+}
 // parse rvalue wrapped inside dollar or at
-fn parse_rvalue_raw(input: Span) -> IResult<Span, String> {
+fn parse_pathexpr_ref_raw(input: Span) -> IResult<Span, String> {
     let (s, _) = alt((tag("$("), tag("@("), tag("&(")))(input)?;
     let (s, r) = take_while(is_ident_perc)(s)?;
     let (s, _) = tag(")")(s)?;
@@ -58,7 +77,7 @@ fn parse_rvalue_raw(input: Span) -> IResult<Span, String> {
 }
 
 // read a ! followed by macro name
-fn parse_rvalue_raw_excl(i: Span) -> IResult<Span, String> {
+fn parse_pathexpr_raw_macroref(i: Span) -> IResult<Span, String> {
     let (s, _) = opt(sp1)(i)?;
     let (s, _) = tag("!")(s)?;
     let (s, r) = take_while(is_ident)(s)?;
@@ -67,7 +86,7 @@ fn parse_rvalue_raw_excl(i: Span) -> IResult<Span, String> {
 }
 
 // read a curly brace and the identifier inside it
-fn parse_rvalue_raw_bucket(i: Span) -> IResult<Span, String> {
+fn parse_pathexpr_raw_bin(i: Span) -> IResult<Span, String> {
     let (s, _) = tag("{")(i)?;
     let (s, r) = take_while(is_ident)(s)?;
     let (s, _) = tag("}")(s)?;
@@ -76,138 +95,180 @@ fn parse_rvalue_raw_bucket(i: Span) -> IResult<Span, String> {
 }
 
 // read '<' and the list of rvals inside it until '>'
-fn parse_rvalue_raw_angle(i: Span) -> IResult<Span, Vec<RvalGeneral>> {
-    let (s, _) = context("group", tag("<"))(i)?;
-    let (r, v) = parse_rvalgeneral_list_long(s, ">")?;
-    Ok((r, v.0))
+fn parse_pathexpr_angle(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Vec<PathExpr>) >  {
+    //let input = i.clone();
+    let (s, v0) = many_till(
+        |i| parse_pathexpr_no_ws(i, " \t\r\n<{", *BRKTOKS),
+        tag("<")
+    )(i)?;
+    //let (s, _) = tag("<")(s)?;
+   let (s, v) =  many_till(
+        |i| parse_pathexpr_ws(i, ">", *BRKTOKSWS), // avoid reading tags , newlines, spaces
+        tag(">"),
+    )(s)?;
+    //let v0 = v0.map(|x| x.0);
+    Ok( (s, (v0.0, v.0)))
 }
 // parse rvalue at expression eg $(H) for config vars
-fn parse_rvalue_at(i: Span) -> IResult<Span, RvalGeneral> {
+fn parse_pathexpr_at(i: Span) -> IResult<Span, PathExpr> {
     context(
         "config(@) expression",
-        cut(map(parse_rvalue_raw, |rv| {
-            RvalGeneral::AtExpr(rv.to_owned())
+        cut(map(parse_pathexpr_ref_raw, |rv| {
+            PathExpr::AtExpr(rv.to_owned())
         })),
     )(i)
 }
 // parse rvalue dollar expression eg $(H)
-fn parse_rvalue_dollar(i: Span) -> IResult<Span, RvalGeneral> {
+fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
     context(
         "dollar expression",
-        cut(map(parse_rvalue_raw, |s| {
-            RvalGeneral::DollarExpr(s.to_owned())
+        cut(map(parse_pathexpr_ref_raw, |s| {
+            PathExpr::DollarExpr(s.to_owned())
         })),
     )(i)
 }
 
 // parse rvalue dollar expression eg $(H)
-fn parse_rvalue_amp(i: Span) -> IResult<Span, RvalGeneral> {
+fn parse_pathexpr_amp(i: Span) -> IResult<Span, PathExpr> {
     context(
         "ampersand expression",
-        cut(map(parse_rvalue_raw, |rv| {
-            RvalGeneral::AmpExpr(rv.to_owned())
+        cut(map(parse_pathexpr_ref_raw, |rv| {
+            PathExpr::AmpExpr(rv.to_owned())
         })),
     )(i)
 }
 
-fn parse_rvalue_exclamation(i: Span) -> IResult<Span, RvalGeneral> {
+fn parse_pathexpr_macroref(i: Span) -> IResult<Span, PathExpr> {
     context(
-        "macro",
-        cut(map(parse_rvalue_raw_excl, |rv| {
-            RvalGeneral::MacroRef(rv.to_owned())
-        })),
+        "reference to macro",
+       map(parse_pathexpr_raw_macroref, |rv| {
+            PathExpr::MacroRef(rv.to_owned())
+        }),
     )(i)
 }
-
-fn parse_rvalue_angle(i: Span) -> IResult<Span, RvalGeneral> {
+fn parse_pathexpr_group(i: Span) -> IResult<Span, PathExpr> {
     context(
         "group",
-        cut(map(parse_rvalue_raw_angle, |rv| RvalGeneral::Group(rv))),
+        map(parse_pathexpr_angle,
+                |rv| PathExpr::Group(rv.0, rv.1)),
     )(i)
 }
 
 // parse to a bucket name: {objs}
-fn parse_rvalue_bucket(i: Span) -> IResult<Span, RvalGeneral> {
+fn parse_pathexpr_bin(i: Span) -> IResult<Span, PathExpr> {
     context(
         "bin",
-        cut(map(parse_rvalue_raw_bucket, |rv| RvalGeneral::Bucket(rv))),
+        map(parse_pathexpr_raw_bin, |rv| PathExpr::Bucket(rv)),
     )(i)
 }
 
-// parse to any of the special expressions (dollar, at, angle, bucket)
-pub fn parse_rvalue(i: Span) -> IResult<Span, RvalGeneral> {
+pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
+    let (s, r) = peek(take(2 as usize))(i)?;
+    match r.as_bytes() {
+        b"\\\n" => Ok((s, PathExpr::Literal(String::new()))),
+        b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\<" | b"\\^"  | b"\\|"      =>
+            {
+                let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::ParseTo)))?;
+                Ok( (s,pe))
+            },
+        _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))), //FIXME: what errorkind should we return?
+    }
+}
+// parse basic special expressions (dollar, at, ampersand)
+pub fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
     let (s, r) = peek(take(1 as usize))(i)?;
     match r.as_bytes() {
-        b"$" => parse_rvalue_dollar(s),
-        b"@" => parse_rvalue_at(s),
-        b"&" => parse_rvalue_amp(s),
-        b"<" => parse_rvalue_angle(s),
-        b"{" => parse_rvalue_bucket(s),
-        b"!" => parse_rvalue_exclamation(s),
+        b"$" => parse_pathexpr_dollar(s),
+        b"@" => parse_pathexpr_at(s),
+        b"&" => parse_pathexpr_amp(s),
+    //    b"<" => parse_pathexpr_group(s),
+     //   b"{" => parse_pathexpr_bin(s),
+     //   b"!" => parse_pathexpr_macroref(s),
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))), //fixme: what errorkind should we return?
     }
 }
 
+
+pub fn parse_ws(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = is_a( " \t")(i)?;
+    Ok((s, PathExpr::Sp1))
+}
 // eat up the (dollar or at) that dont parse to (dollar or at) expression
-fn parse_delim<'a>(i: Span<'a>) -> nom::IResult<Span<'a>, Span<'a>> {
-    let (s, _) = peek(one_of("$@!<#&"))(i)?;
-    let (s, _) = not(parse_rvalue)(s)?;
+fn parse_delim<'a,F>(i: Span<'a>, toks:&'static str, f:F) -> nom::IResult<Span<'a>, Span<'a>>
+   where F: Fn(Span<'a>) -> IResult<Span<'a>, PathExpr>,
+{
+    let (s, _) = peek(one_of(toks))(i)?;
+    let (s, _) = not(f)(s)?; //TODO : is this really necessary?
     let (s, r) = take(1 as usize)(s)?;
     Ok((s, r))
 }
 
-// read  a rvalue until delimiter
-// in addition, \\\n , $,@, ! also pause the parsing
-fn parse_greedy<'a, 'b>(input: Span<'a>, delim: &'b str) -> nom::IResult<Span<'a>, Span<'a>> {
-    let mut s = String::from("\\\n$@{<!#&");
-    s.push_str(delim);
+// eats up \\n
+// consume dollar's etc that where left out during previous parsing
+// consume a literal that is not a pathexpr token
+fn parse_misc_bits<'a, 'b, F>(input: Span<'a>, delim: &'b str, pathexpr_toks: &'static str, primary_parser: F)
+    -> nom::IResult<Span<'a>, Span<'a>>
+ where F : Fn(Span<'a>) -> IResult<Span<'a>,PathExpr>
+{
+    let islit = |ref i| { !delim.as_bytes().contains(i) && !pathexpr_toks.as_bytes().contains(i)};
     alt((
-        map(preceded(tag("\\"), line_ending), |_| default_inp()),
-        parse_delim,
-        is_not(s.clone().as_str()), // not sure why we need to clone there, compiler errors otherwise
+        complete(map(preceded(tag("\\"), line_ending), |_| default_inp())),
+        complete(|i| parse_delim(i, pathexpr_toks, &primary_parser)),
+        complete(take_while(islit)),
     ))(input)
 }
-// parse either (dollar|at|curly|angle|exclamation) expression or a general rvalue delimited by delimb
-fn parse_rvalgeneral<'a, 'b>(s: Span<'a>, delim: &'b str) -> nom::IResult<Span<'a>, RvalGeneral> {
+// parse either (dollar|at|) expression or a general rvalue delimited by delim
+// pathexpr_toks are the tokens that identify a tup-expression such as $expr, &expr, {bin} or <grp>
+fn parse_pathexpr_ws<'a, 'b>(s: Span<'a>, delim: &'b str, pathexpr_toks: &'static str) -> nom::IResult<Span<'a>, PathExpr> {
+        alt((
+            complete(parse_ws),
+            complete(parse_escaped),
+            complete(parse_pathexprbasic),
+            complete(map_res(|i| parse_misc_bits(i, delim, pathexpr_toks, parse_pathexprbasic), from_str)),
+        ))(s)
+}
+fn parse_pathexpr_no_ws<'a, 'b>(s: Span<'a>, delim: &'b str, pathexpr_toks: &'static str) -> nom::IResult<Span<'a>, PathExpr> {
     alt((
-        complete(preceded(opt(sp1), parse_rvalue)),
-        complete(map_res(|i| parse_greedy(i, delim), from_str)),
+        complete(parse_escaped),
+        complete(parse_pathexprbasic),
+        complete(map_res(|i| parse_misc_bits(i, delim, pathexpr_toks, parse_pathexprbasic), from_str)),
     ))(s)
 }
 
 // repeatedly invoke the rvalue parser until eof or delim is encountered
-fn parse_rvalgeneral_list_long<'a, 'b>(
+fn parse_pelist_till_delim_with_ws<'a, 'b>(
     input: Span<'a>,
     delim: &'b str,
-) -> nom::IResult<Span<'a>, (Vec<RvalGeneral>, Span<'a>)> {
-    many_till(|i| parse_rvalgeneral(i, delim), tag(delim))(input)
+    pathexpr_delims: &'static str
+) -> nom::IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
+    many_till(|i| parse_pathexpr_ws(i, delim, pathexpr_delims), is_a(delim))(input)
 }
+// repeatedly invoke the rvalue parser until eof or delim is encountered
+fn parse_pelist_till_delim_no_ws<'a, 'b>(
+    input: Span<'a>,
+    delim: &'b str,
+    pathexpr_delims: &'static str
+) -> nom::IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
+    many_till(|i| parse_pathexpr_no_ws(i, delim, pathexpr_delims), is_a(delim))(input)
+}
+
 //  wrapper over the previous parser that handles empty inputs and stops at newline;
-fn parse_rvalgeneral_list(input: Span) -> IResult<Span, (Vec<RvalGeneral>, Span)> {
+fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     alt((
         complete(map(
             delimited(multispace0, line_ending, multispace0),
             |_| (Vec::new(), Span::new(b"".as_ref())),
         )),
-        complete(|i| parse_rvalgeneral_list_long(i, "\n")),
+        complete(|i| parse_pelist_till_delim_with_ws(i, "\r\n", *BRKTOKSWS)),
     ))(input)
 }
 
-fn parse_rvalgeneral_list_sp(input: Span) -> nom::IResult<Span, (Vec<RvalGeneral>, Span)> {
+// read all pathexpr separated by whitespaces, pausing at BRKTOKS
+fn parse_pathexpr_list_until_ws_plus(input: Span) -> nom::IResult<Span, (Vec<PathExpr>, Span)> {
     many_till(
-        |i| parse_rvalgeneral(i, " \t\r\n{<"), // avoid reading tags , newlines, spaces
+        |i| parse_pathexpr_no_ws(i, " \t\r\n", *BRKTOKS),
         ws1,
     )(input)
-}
-
-// wrapper over the previous that handles empty inputs and stops at newline
-fn parse_rvalgeneral_list_until_space(input: Span) -> IResult<Span, (Vec<RvalGeneral>, Span)> {
-    alt((
-        complete(map(peek(one_of("\r\n{<")), |_| {
-            (Vec::new(), Span::new(b"".as_ref()))
-        })),
-        complete(parse_rvalgeneral_list_sp),
-    ))(input)
 }
 
 // parse a lvalue ref to a ident
@@ -225,7 +286,9 @@ fn parse_include(i: Span) -> IResult<Span, Statement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("include")(s)?;
     let (s, _) = sp1(s)?;
-    let (s, r) = context("include statement", cut(parse_rvalgeneral_list))(s)?;
+    let (s, r) = context("include statement", cut(parse_pathexpr_list_until_ws_plus))(s)?;
+    let (s, _) = multispace0(s)?;
+    //let (s, _) = line_ending(s)?;
     Ok((s, Statement::Include(r.0)))
 }
 // parse error expression
@@ -233,41 +296,78 @@ fn parse_error(i: Span) -> IResult<Span, Statement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("error")(s)?;
     let (s, _) = sp1(s)?;
-    let (s, r) = context("error expression", cut(parse_rvalgeneral_list))(s)?;
+    let (s, r) = context("error expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
     Ok((s, Statement::Err(r.0)))
 }
 
 // parse export expression
+// export VARIABLE
 fn parse_export(i: Span) -> IResult<Span, Statement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("export")(s)?;
     let (s, _) = sp1(s)?;
-    let (s, r) = context("export expression", cut(parse_rvalgeneral_list))(s)?;
-    Ok((s, Statement::Export(r.0)))
+    let (s, r) = context("export expression", cut(take_while(is_ident)))(s)?;
+    let (s, _) = multispace0(s)?;
+    let (s, _) = line_ending(s)?;
+    let raw = std::str::from_utf8(r.as_bytes()).unwrap();
+    Ok((s, Statement::Export(raw.to_owned())))
+}
+
+// import VARIABLE[=default]
+//   The import directive sets a variable inside the Tupfile that has the value of the environment variable.
+// If the environment variable is unset, the default value is used instead if provided.
+// This introduces a dependency from the environment variable to the Tupfile,
+// so that if the environment variable changes, the Tupfile is re-parsed. For example:
+//
+// import CC=gcc
+// : foreach *.c |> $(CC) -c %f -o %o |> %B.o
+fn parse_import(i: Span) -> IResult<Span, Statement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("import")(s)?;
+    let (s, _) = sp1(s)?;
+    let (s, r) = context("import expression", cut(take_while(is_ident)))(s)?;
+    let raw = std::str::from_utf8(r.as_bytes()).unwrap();
+    let(s, def) =  opt( preceded(tag("="), preceded(multispace0, cut(take_while(is_ident)))) )(s)?;
+    let (s, _) = multispace0(s)?;
+    let (s, _) = line_ending(s)?;
+
+    // https://stackoverflow.com/questions/52453180/how-do-i-unwrap-an-arbitrary-number-of-nested-option-types
+    let default_raw = def.and_then(|x|from_utf8(x).ok());
+    Ok((s, Statement::Import(raw.to_owned(), default_raw)))
 }
 
 // parse preload expression
+// preload directory
 fn parse_preload(i: Span) -> IResult<Span, Statement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("preload")(s)?;
     let (s, _) = sp1(s)?;
-    let (s, r) = context("preload expression", cut(parse_rvalgeneral_list))(s)?;
+    // preload a single directory
+    let (s, r) = context("preload expression", cut(parse_pathexpr_list_until_ws_plus))(s)?;
+
+    let (s, _) = multispace0(s)?;
+    let (s, _) = line_ending(s)?;
     Ok((s, Statement::Preload(r.0)))
 }
 
 // parse the run expresssion
+// run ./script args
+// reading other directories requires preload
+// run ./build.sh *.c src/*.c
 fn parse_run(i: Span) -> IResult<Span, Statement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("run")(s)?;
     let (s, _) = sp1(s)?;
-    let (s, r) = context("run expression", cut(parse_rvalgeneral_list))(s)?;
+    // run  script paths
+    let (s, r) = context("run expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
     Ok((s, Statement::Run(r.0)))
 }
 // parse include_rules expresssion
 fn parse_include_rules(i: Span) -> IResult<Span, Statement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("include_rules")(s)?;
-    let (s, _) = context("include_rules", cut(multispace0))(s)?;
+    let (s, _) = context("include_rules", multispace0)(s)?;
+    let (s, _) = line_ending(s)?;
     Ok((s, Statement::IncludeRules))
 }
 
@@ -275,8 +375,9 @@ fn parse_include_rules(i: Span) -> IResult<Span, Statement> {
 fn parse_comment(i: Span) -> IResult<Span, Statement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("#")(s)?;
-    let (s, r) = context("comment", cut(map_res(not_line_ending, from_utf8)))(s)?;
-    Ok((s, Statement::Comment(r.to_owned())))
+    let (s, _) = is_not("\n\r")(s)?;
+    let (s, _) = line_ending(s)?;
+    Ok((s, Statement::Comment))
 }
 
 // parse an assignment expression
@@ -286,7 +387,7 @@ fn parse_let_expr(i: Span) -> IResult<Span, Statement> {
     let (s, _) = opt(sp1)(s)?;
     let (s, op) = alt((complete(tag("=")), complete(tag(":=")), complete(tag("+="))))(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, r) = complete(parse_rvalgeneral_list)(s)?;
+    let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
         s,
         Statement::LetExpr {
@@ -304,7 +405,7 @@ fn parse_letref_expr(i: Span) -> IResult<Span, Statement> {
     let (s, _) = opt(sp1)(s)?;
     let (s, op) = alt((complete(tag("=")), complete(tag(":=")), complete(tag("+="))))(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, r) = complete(parse_rvalgeneral_list)(s)?;
+    let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
         s,
         Statement::LetRefExpr {
@@ -315,83 +416,146 @@ fn parse_letref_expr(i: Span) -> IResult<Span, Statement> {
     ))
 }
 // parse description insude a rule (between ^^)
-fn parse_rule_description(i: Span) -> IResult<Span, String> {
+fn parse_rule_flags_or_description(i: Span) -> IResult<Span, String> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("^")(s)?;
-    let (s, r) = context("rule description", cut(map_res(take_until("^"), from_utf8)))(s)?;
+    let (s, r) =  cut(map_res(take_until("^"), from_utf8))(s)?;
     let (s, _) = tag("^")(s)?;
     let (s, _) = multispace0(s)?;
     Ok((s, String::from(r)))
 }
+
 // parse the insides of a rule, which includes a description and rule formula
 fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
-    let (s, desc) = opt(parse_rule_description)(i)?;
-    let (s, formula) = parse_rvalgeneral_list_long(s, "|")?;
+    let (s, desc) = opt(context("parsing rule flags/descriptions", parse_rule_flags_or_description))(i)?;
+    let( s, me) = opt(parse_pathexpr_macroref)(s)?;
+    let (s, formula) = parse_pelist_till_delim_with_ws(s, "|", *BRKTOKSWS)?;
     Ok((
         s,
         RuleFormula {
             description: desc.unwrap_or(String::from("")),
-            formula: formula.0,
+            //macroref : me,
+            formula: me.into_iter().chain(formula.0.into_iter()).collect(),
         },
     ))
 }
 
 // convert the inputs to a rule to 'Source' struct
-fn from_input(primary: Vec<RvalGeneral>, foreach: bool, secondary: Vec<RvalGeneral>) -> Source {
+fn from_input(primary: Vec<PathExpr>, foreach: bool, secondary: Vec<PathExpr>) -> Source {
     Source {
-        primary: primary,
-        foreach: foreach,
-        secondary: secondary,
+        primary,
+        foreach,
+        secondary,
     }
 }
 // convert the output to a rule to 'Target' struct
 fn from_output(
-    primary: Vec<RvalGeneral>,
-    secondary: Vec<RvalGeneral>,
-    tag: Vec<RvalGeneral>,
+    primary: Vec<PathExpr>,
+    secondary: Vec<PathExpr>,
+    group: Option<PathExpr>,
+    bin: Option<PathExpr>,
 ) -> Target {
     Target {
-        primary: primary,
-        secondary: secondary,
-        tag: tag,
+        primary,
+        secondary,
+        group,
+        bin
     }
 }
 
 fn default_inp<'a>() -> Span<'a> {
     Span::new(b"")
 }
+
+fn parse_rule_inp(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Span)>  {
+    let (s, _) = opt(sp1)(i)?;
+    let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
+    many_till( alt( (
+        complete(parse_pathexpr_group),
+        complete(parse_pathexpr_bin),
+        complete(pe),
+    )), tag("|"))(s)
+}
+// parse secondary input in a rule expression
+fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
+    context("read secondary inputs",  preceded( tag("|"),
+    parse_rule_inp ))(i)
+}
+
+fn parse_primary_output1(i: Span) -> nom::IResult<Span, Vec<PathExpr>> {
+    let (s, _) = opt(sp1)(i)?;
+    let pe = |i| parse_pathexpr_ws(i, "\r\n", *BRKTOKSIO);
+    let (s, v0) = many_till( pe,
+     alt((complete(line_ending), complete(peek(tag("{"))),
+             complete(peek(tag("<"))),
+             complete(peek(parse_pathexpr_raw_angle))) ))(s)?;
+
+    Ok((s,v0.0))
+}
+
+fn parse_primary_output0(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, bool) > {
+    let (s, _) = opt(sp1)(i)?;
+    let pe = |i| parse_pathexpr_ws(i, "|\r\n", *BRKTOKSIO);
+    let (s, v0) = many_till(
+        pe,
+        alt((complete(tag("|")),  complete(peek(tag("{"))),
+        complete(peek(parse_pathexpr_raw_angle)),
+             complete(line_ending)) ))(s)?;
+    let has_more =  v0.1.as_bytes().first().cloned().unwrap_or(b' ') == b'|';
+    Ok((s,(v0.0, has_more) ))
+}
 // parse a rule expression
 // : [foreach] [inputs] [ | order-only inputs] |> command |> [outputs] [ | extra outputs] [<group>] [{bin}]
-fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<RvalGeneral>, Span)> {
-    let (s, _) = tag("|")(i)?;
-    let (s, _) = opt(sp1)(s)?;
-    parse_rvalgeneral_list_long(s, "|")
-}
 pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag(":")(s)?;
     let (s, pos) = position(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, for_each) = opt(tag("foreach"))(s)?;
-    let (s, _) = opt(sp1)(s)?;
     let (s, input) = context(
         "rule input",
-        cut(opt(|i| parse_rvalgeneral_list_long(i, "|"))),
+        cut(opt(parse_rule_inp))
     )(s)?;
-    let (s, _) = opt(sp1)(s)?;
-    let (s, secondary_input) = context("rule secondary input", cut(opt(parse_secondary_inp)))(s)?;
+    let (s, c) = peek(take(1 as usize))(s)?;
+    let (s,secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
+        let (s, _) = opt(sp1)(s)?;
+        let (s, secondary_input) = opt(parse_secondary_inp)(s)?;
+        (s,secondary_input)
+    }else {
+        (s,None)
+    };
     let (s, _) = tag(">")(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, rule_formula) = context("rule formula", cut(parse_rule_gut))(s)?;
     let (s, _) = tag(">")(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, secondary_output) = opt(|i| parse_rvalgeneral_list_long(i, "|"))(s)?;
-    let (s, output) = context(
+    // read until "|" or lineending
+    let (s, output0) = context(
         "rule output",
-        opt(complete(parse_rvalgeneral_list_until_space)),
+        opt(parse_primary_output0),
     )(s)?;
+    let has_more = output0.as_ref().map_or(false, |(_,has_more)| has_more.clone());
+    let (s, output1) =
+        if has_more {
+            context( "rule output",
+                     opt(parse_primary_output1))(s)? }
+        else {
+            (s, None)
+        };
+
+    let (output, secondary_output) =
+        if has_more {
+            (output0.unwrap().0, output1.unwrap_or(Vec::new()))
+        } else {
+            (output1.unwrap_or(Vec::new()), Vec::new())
+        };
+    // let secondary_output = if hassecondary { output1.unwrap_or(Vec::new())} else { Vec::new() };
     let (s, _) = opt(sp1)(s)?;
-    let (s, tags) = context("rule tags", cut(opt(parse_rvalgeneral_list)))(s)?;
+    let (s, v1) = opt(parse_pathexpr_group)(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, v2) = opt(parse_pathexpr_bin)(s)?;
+
+    //let (s, _) = line_ending(s)?;
     Ok((
         s,
         Statement::Rule(Link {
@@ -401,9 +565,10 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
                 secondary_input.unwrap_or((Vec::new(), default_inp())).0,
             ),
             t: from_output(
-                output.unwrap_or((Vec::new(), default_inp())).0,
-                secondary_output.unwrap_or((Vec::new(), default_inp())).0,
-                tags.unwrap_or((Vec::new(), default_inp())).0,
+                output,
+                secondary_output,
+                v1,
+                v2
             ),
             r: rule_formula,
             pos: (pos.line, pos.get_column()),
@@ -423,23 +588,49 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
     let (s, _) = opt(sp1)(s)?;
     let (s, for_each) = opt(tag("foreach"))(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, input) = context(
+    let (s, input) = opt(context(
         "rule input",
-        cut(opt(|i| parse_rvalgeneral_list_long(i, "|"))),
+        cut(parse_rule_inp)),
     )(s)?;
-    let (s, _) = opt(sp1)(s)?;
-    let (s, secondary_input) = context("rule secondary input", cut(opt(parse_secondary_inp)))(s)?;
+    let (s, c) = peek(take(1 as usize))(s)?;
+    let (s,secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
+        let (s, _) = opt(sp1)(s)?;
+        let (s, secondary_input) = opt(context(
+            "rule secondary input",
+            cut(parse_secondary_inp))
+        )(s)?;
+        (s,secondary_input)
+    }else {
+        (s,None)
+    };
     let (s, _) = tag(">")(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, rule_formula) = context("rule formula", cut(parse_rule_gut))(s)?;
     let (s, _) = tag(">")(s)?;
-    let (s, _) = opt(sp1)(s)?;
-    let (s, secondary_output) = opt(|i| parse_rvalgeneral_list_long(i, "|"))(s)?;
-    let (s, output) = context(
+    let (s, output0) = context(
         "rule output",
-        opt(complete(parse_rvalgeneral_list_until_space)),
+        opt(parse_primary_output0),
     )(s)?;
-    let (s, _) = opt(sp1)(s)?;
+    let has_more = output0.as_ref().map_or(false, |(_,has_more)| has_more.clone());
+    let (s, output1) =
+        if has_more {
+            context( "rule output",
+                    opt(parse_primary_output1))(s)? }
+        else {
+            (s, None)
+        };
+
+    let (output, secondary_output) =
+        if has_more {
+            (output0.unwrap().0, output1.unwrap_or(Vec::new()))
+        } else {
+            (output1.unwrap_or(Vec::new()), Vec::new())
+        };
+/*    let output = if has_secondary { output0.unwrap() } else { output1.unwrap_or(Vec::new())};
+    let secondary_output = if has_secondary { output1.unwrap_or(Vec::new())} else { Vec::new() };
+*/
+
+
     Ok((
         s,
         Statement::MacroAssignment(
@@ -451,9 +642,10 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
                     secondary_input.unwrap_or((Vec::new(), default_inp())).0,
                 ),
                 t: from_output(
-                    output.unwrap_or((Vec::new(), default_inp())).0,
-                    secondary_output.unwrap_or((Vec::new(), default_inp())).0,
-                    Vec::new(),
+                    output,
+                    secondary_output,
+                    None,
+                    None
                 ),
                 r: rule_formula,
                 pos: (pos.line, pos.get_column()),
@@ -465,19 +657,20 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
 // parse any of the different types of statements in a tupfile
 pub fn parse_statement(i: Span) -> IResult<Span, Statement> {
     alt((
+        complete(parse_comment),
         complete(parse_include),
         complete(parse_include_rules),
         complete(parse_letref_expr),
         complete(parse_let_expr),
         complete(parse_rule),
-        complete(parse_ifelseendif),
-        complete(parse_ifdef),
+        complete(parse_if_else_endif),
+        complete(parse_ifdef_endif),
         complete(parse_macroassignment),
         complete(parse_error),
         complete(parse_export),
         complete(parse_run),
         complete(parse_preload),
-        complete(parse_comment),
+        complete(parse_import),
     ))(i)
 }
 
@@ -499,11 +692,14 @@ pub fn parse_statements_until_eof(i: Span) -> IResult<Span, Vec<Statement>> {
 // parse equality condition (only the condition, not the statements that follow if)
 pub fn parse_eq(i: Span) -> IResult<Span, EqCond> {
     let (s, _) = opt(ws1)(i)?;
-    let (s, not_cond) = alt((map(tag("ifeq"), |_| false), map(tag("ifneq"), |_| true)))(s)?;
+    let (s, not_cond)
+        = alt((complete(value(false, tag("ifeq"))),
+                 complete(value(true, tag("ifneq")))))(s)? ;
     let (s, _) = opt(ws1)(s)?;
     let (s, _) = char('(')(s)?;
-    let (s, e1) = parse_rvalgeneral_list_long(s, ",")?;
-    let (s, e2) = parse_rvalgeneral_list_long(s, ")")?;
+    let (s, e1) = parse_pelist_till_delim_no_ws(s, ",", *BRKTOKS)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, e2) = parse_pelist_till_delim_no_ws(s, ")", *BRKTOKS)?;
     Ok((
         s,
         EqCond {
@@ -514,9 +710,10 @@ pub fn parse_eq(i: Span) -> IResult<Span, EqCond> {
     ))
 }
 
+
 pub fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
     let (s, _) = opt(ws1)(i)?;
-    let (s, negate) = alt((map(tag("ifdef"), |_| false), map(tag("ifndef"), |_| true)))(s)?;
+    let (s, negate) = alt((map(tag("ifdef "), |_| false), map(tag("ifndef "), |_| true)))(s)?;
     let (s, _) = opt(ws1)(s)?;
     let (s, var) = parse_lvalue(s)?;
     let (s, _) = opt(ws1)(s)?;
@@ -547,7 +744,7 @@ pub fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, Stateme
     }
 }
 // parse if else endif block along with condition
-pub fn parse_ifelseendif(i: Span) -> IResult<Span, Statement> {
+pub fn parse_if_else_endif(i: Span) -> IResult<Span, Statement> {
     let (s, eqcond) = parse_eq(i)?;
     let (s, _) = opt(ws1)(s)?;
     context(
@@ -580,7 +777,7 @@ pub fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, Statement> 
     }
 }
 // parse if else endif block
-pub fn parse_ifdef(i: Span) -> IResult<Span, Statement> {
+pub fn parse_ifdef_endif(i: Span) -> IResult<Span, Statement> {
     let (s, cvar) = parse_checked_var(i)?;
     let (s, _) = opt(ws1)(s)?;
     context(
@@ -597,7 +794,7 @@ pub fn parse_tupfile(filename: &str) -> Vec<Statement> {
     let mut contents = String::new();
     if file.read_to_string(&mut contents).ok().is_some() {
         if let Some(v) = parse_statements_until_eof(Span::new(contents.as_bytes())).ok() {
-            (v.1)
+            v.1
         } else {
             Vec::new()
         }
@@ -628,7 +825,7 @@ pub fn parse_config(filename: &str) -> Vec<Statement> {
     let mut contents = String::new();
     if file.read_to_string(&mut contents).ok().is_some() {
         if let Some(v) = parse_statements_until_eof(Span::new(contents.as_bytes())).ok() {
-            (v.1)
+            v.1
         } else {
             Vec::new()
         }
@@ -636,3 +833,88 @@ pub fn parse_config(filename: &str) -> Vec<Statement> {
         Vec::new()
     }
 }
+/*
+struct Tok<'a>
+{
+    pos : Span<'a>,
+    pe: PathExpr
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub enum ExprCtx {
+    Def,
+    EqCond,
+    RuleInput,
+    RuleCommand,
+    RuleOutput,
+    MacroRuleInput,
+    MacroRuleCommand,
+    MacroRuleOutput,
+    Preload,
+    Export,
+    Import,
+    Run,
+    Comment
+}
+use thiserror::Error;
+struct SpanLoc {
+    line : u32,
+    col : usize,
+    program : PathBuf
+}
+#[derive(Error, Debug)]
+pub enum CtxError {
+    #[error("Error: {.0}:{.1}:{.2}: A bin is unexpected here. A bin appears only at the end of a rule.")]
+    BinError(String, u32, usize),
+    #[warn("Warn: {.0}:{.1}:{.2}: Ignoring group here. A group appears only in rule inputs and outputs.")]
+    GroupWarn(String, u32, usize),
+    #[warn("Warn: {.0}:{.1}:{.2}: Ignoring macro ref here. A macro reference appears only in rule commands.")]
+    MacroRefWarn(String, u32, usize),
+    #[error("Error: {.0}:{.1}:{.2} Unexpected white space.")]
+    WhiteSpaceErr(String, u32, usize),
+}
+pub fn validPathExp(tok:&Tok, e: &ExprCtx, tupfile: &Path) -> std::Result<(),CtxError> {
+    let ref pe = tok.pe;
+    let  span = tok.pos;
+    let mut tupfilepath = tupfile.to_str().unwrap().to_owned();
+    match pe
+    {
+        PathExpr::Bucket(_) => {
+            match e {
+                ExprCtx::RuleInput => Ok(()),
+                ExprCtx::RuleOutput => OK(()),
+                _ =>  CtxError::BinError(tupfilepath, span.line, span.get_column())
+            }
+        }
+        PathExpr::Group(_,_) => {
+            match e {
+                ExprCtx::RuleInput => Ok(()),
+                ExprCtx::RuleOutput => Ok(()),
+                _ => CtxError::GroupWarn(tupfilepath, span.line, span.get_column())
+            }
+        }
+        PathExpr::MacroRef(_) => {
+            match e {
+                ExprCtx::RuleCommand=> Ok(()),
+                _ => CtxError::MacroRefWarn(tupfilepath, span.line, span.get_column())
+            }
+        }
+        PathExpr::Literal(s) => {
+            let has_space = s.contains(' ');
+            if has_space {
+                match e {
+                    ExprCtx::Preload |
+                    ExprCtx::Export |
+                    ExprCtx::Run |
+                    ExprCtx::Def =>
+                        CtxError::WhiteSpaceErr(tupfilepath, span.line, span.get_column()),
+                    _ => Ok(()),
+                }
+            }
+        }
+       _ => {
+           Ok(())
+       }
+    }
+}
+*/

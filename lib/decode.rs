@@ -74,12 +74,12 @@ pub trait DecodeInputPaths {
 }
 
 // Decode input paths in RvalGeneral
-impl DecodeInputPaths for RvalGeneral {
+impl DecodeInputPaths for PathExpr {
     // convert globs into regular paths, remember that matched groups
     fn decode(&self, taginfo: &OutputTagInfo) -> Vec<InputGlobType> {
         let mut vs: Vec<InputGlobType> = Vec::new();
         match self {
-            RvalGeneral::Literal(src) => {
+            PathExpr::Literal(src) => {
                 for src in src.split_whitespace() {
                     if let Some(pos) = src.rfind('*') {
                         let (first, last) = src.split_at(pos);
@@ -101,20 +101,16 @@ impl DecodeInputPaths for RvalGeneral {
                     }
                 }
             }
-            RvalGeneral::Group(grp) => {
-                for rval in grp {
-                    if let RvalGeneral::Literal(grp_name) = rval {
-                        if let Some(paths) = taginfo.grouptags.get(grp_name) {
-                            for p in paths {
-                                vs.push(InputGlobType::Group(grp_name.clone(), p.to_path_buf()))
-                            }
-                        }
+            PathExpr::Group(_,_) => {
+                let grp_name = self.cat();
+                if let Some(paths) = taginfo.grouptags.get(grp_name.as_str()) {
+                    for p in paths {
+                        vs.push(InputGlobType::Group(grp_name.clone(), p.to_path_buf()))
                     }
-                    break; // only the first one since we expect subst process to have been done
                 }
             }
-            RvalGeneral::Bucket(str) => {
-                if let Some(paths) = taginfo.buckettags.get(str) {
+            PathExpr::Bucket(str) => {
+                if let Some(paths) = taginfo.buckettags.get(str.as_str()) {
                     for p in paths {
                         vs.push(InputGlobType::Bucket(str.clone(), p.to_path_buf()))
                     }
@@ -125,7 +121,7 @@ impl DecodeInputPaths for RvalGeneral {
         return vs;
     }
 }
-impl DecodeInputPaths for Vec<RvalGeneral> {
+impl DecodeInputPaths for Vec<PathExpr> {
     fn decode(&self, taginfo: &OutputTagInfo) -> Vec<InputGlobType> {
         self.iter().map(|x| x.decode(&taginfo)).flatten().collect()
     }
@@ -150,12 +146,12 @@ trait DecodePlaceHolders {
     fn decode_place_holders(&self, input: &InputGlobType, output: &Option<OutputGlobType>) -> Self;
 }
 
-impl DecodePlaceHolders for RvalGeneral {
+impl DecodePlaceHolders for PathExpr {
     fn decode_place_holders(
         &self,
         input: &InputGlobType,
         output: &Option<OutputGlobType>,
-    ) -> RvalGeneral {
+    ) -> PathExpr {
         let frep = |d: &str| {
             let path = as_path(&input);
             let glb = as_glob(&input);
@@ -197,19 +193,19 @@ impl DecodePlaceHolders for RvalGeneral {
                         .unwrap(),
                 )
         };
-        if let RvalGeneral::Literal(s) = self {
-            RvalGeneral::Literal(frep(s).to_string())
+        if let PathExpr::Literal(s) = self {
+            PathExpr::Literal(frep(s).to_string())
         } else {
             self.clone()
         }
     }
 }
-impl DecodePlaceHolders for Vec<RvalGeneral> {
+impl DecodePlaceHolders for Vec<PathExpr> {
     fn decode_place_holders(
         &self,
         input: &InputGlobType,
         output: &Option<OutputGlobType>,
-    ) -> Vec<RvalGeneral> {
+    ) -> Vec<PathExpr> {
         self.iter()
             .map(|x| x.decode_place_holders(input, output))
             .collect()
@@ -230,7 +226,8 @@ impl DecodePlaceHolders for Target {
         Target {
             primary: newprimary,
             secondary: newsecondary,
-            tag: self.tag.clone(),
+            bin: self.bin.clone(),
+            group: self.group.clone(),
         }
     }
 }
@@ -243,7 +240,7 @@ pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>,
         let secondinpdec = s.secondary.decode(&taginfo);
         let ref mut sinputs = Vec::new();
         for sinput in secondinpdec {
-            sinputs.push(RvalGeneral::Literal(
+            sinputs.push(PathExpr::Literal(
                 as_path(&sinput).to_str().unwrap().to_string(),
             ));
         }
@@ -251,7 +248,7 @@ pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>,
             let tc = t.decode_place_holders(&input, &None);
             let rfc = r.decode_place_holders(&input, &Some(primary_path(&tc)));
             updatetags(&tc, &mut output);
-            let inputc = vec![RvalGeneral::Literal(
+            let inputc = vec![PathExpr::Literal(
                 as_path(&input).to_str().unwrap().to_string(),
             )];
             let src = Source {
@@ -275,13 +272,7 @@ pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>,
 // update the groups with the path to primary target
 fn updatetags(tgt: &Target, taginfo: &mut OutputTagInfo) {
     let pathb = primary_path(tgt);
-    let firstgroupname = tgt.tag.iter().find_map(|x| {
-        if let RvalGeneral::Group(grp) = x {
-            Some(grp)
-        } else {
-            None
-        }
-    });
+    let ref firstgroupname = tgt.group;
     if let Some(grpname) = firstgroupname {
         let grpnamestr = grpname.cat();
         // let pb = PathBuf::from(grouppathstr);
@@ -291,13 +282,7 @@ fn updatetags(tgt: &Target, taginfo: &mut OutputTagInfo) {
             taginfo.grouptags.insert(grpnamestr, vec![pathb.clone()]);
         }
     }
-    let firstbinname = tgt.tag.iter().find_map(|x| {
-        if let RvalGeneral::Bucket(bin) = x {
-            Some(bin)
-        } else {
-            None
-        }
-    });
+    let ref firstbinname = tgt.bin.clone().map(|x| x.cat());
     if let Some(binname) = firstbinname {
         if let Some(paths) = taginfo.buckettags.get_mut(binname) {
             paths.push(pathb);
@@ -315,7 +300,7 @@ impl DecodePlaceHolders for RuleFormula {
         output: &Option<OutputGlobType>,
     ) -> RuleFormula {
         RuleFormula {
-            description: RvalGeneral::Literal(self.description.clone())
+            description: PathExpr::Literal(self.description.clone())
                 .decode_place_holders(input, output)
                 .cat(),
             formula: self.formula.decode_place_holders(input, output),
