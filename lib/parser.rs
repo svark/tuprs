@@ -30,7 +30,8 @@ lazy_static! (
     static ref BRKTOKS : &'static str = "\\\n$@&";
     static ref BRKTOKSWS : &'static str = "\\\n$@& ";
     static ref BRKTOKSIO : &'static str = "\\\n $@&^<{";
-    static ref BRKTAGS : &'static str = " <|{";
+    static ref BRKTAGSNOWS : &'static str = "<|{^";
+    static ref BRKTAGS : &'static str = " <|{^";
 );
 
 // convert byte str to PathExpr::Literal
@@ -61,13 +62,14 @@ fn manynewlineesc(input : Span) -> IResult<Span, Span>
 fn sp1(input: Span) -> IResult<Span, Span> {
     alt((complete(manynewlineesc), space1))(input)
 }
-
+// checks for presence of a group expression that begins with some path.`
 fn parse_pathexpr_raw_angle(input : Span) -> IResult<Span, Span>
 {
     let i = input.clone();
     preceded( is_not(*BRKTAGS), tag("<"))(i)
 }
-// parse rvalue wrapped inside dollar or at
+
+// parse expession wrapped inside dollar or at
 fn parse_pathexpr_ref_raw(input: Span) -> IResult<Span, String> {
     let (s, _) = alt((tag("$("), tag("@("), tag("&(")))(input)?;
     let (s, r) = take_while(is_ident_perc)(s)?;
@@ -90,6 +92,12 @@ fn parse_pathexpr_raw_bin(i: Span) -> IResult<Span, String> {
     let (s, _) = tag("{")(i)?;
     let (s, r) = take_while(is_ident)(s)?;
     let (s, _) = tag("}")(s)?;
+    let raw = std::str::from_utf8(r.as_bytes()).unwrap();
+    Ok((s, raw.to_owned()))
+}
+fn parse_pathexpr_hat(i: Span) -> IResult<Span, String> {
+    let (s, _) = tag("^")(i)?;
+    let (s, r) = is_not(" \t\n\r")(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
     Ok((s, raw.to_owned()))
 }
@@ -146,6 +154,14 @@ fn parse_pathexpr_macroref(i: Span) -> IResult<Span, PathExpr> {
         }),
     )(i)
 }
+fn parse_pathexpr_exclude_pattern(i: Span) -> IResult<Span, PathExpr> {
+    context(
+        "exclude pattern",
+        map(parse_pathexpr_hat,
+            |rv| PathExpr::ExcludePattern(rv)),
+    )(i)
+}
+
 fn parse_pathexpr_group(i: Span) -> IResult<Span, PathExpr> {
     context(
         "group",
@@ -452,12 +468,14 @@ fn from_input(primary: Vec<PathExpr>, foreach: bool, secondary: Vec<PathExpr>) -
 fn from_output(
     primary: Vec<PathExpr>,
     secondary: Vec<PathExpr>,
+    exclude : Option<PathExpr>,
     group: Option<PathExpr>,
     bin: Option<PathExpr>,
 ) -> Target {
     Target {
         primary,
         secondary,
+        exclude,
         group,
         bin
     }
@@ -471,6 +489,7 @@ fn parse_rule_inp(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Span)>  {
     let (s, _) = opt(sp1)(i)?;
     let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
     many_till( alt( (
+        complete(parse_pathexpr_exclude_pattern),
         complete(parse_pathexpr_group),
         complete(parse_pathexpr_bin),
         complete(pe),
@@ -478,30 +497,39 @@ fn parse_rule_inp(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Span)>  {
 }
 // parse secondary input in a rule expression
 fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
-    context("read secondary inputs",  preceded( tag("|"),
-    parse_rule_inp ))(i)
+    //context("read secondary inputs",  preceded( tag("|"),
+    let (s, _) = opt(sp1)(i)?;
+    let (s, _) = tag("|")(s)?;
+    let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
+    many_till( alt( (
+        complete(parse_pathexpr_group),
+        complete(parse_pathexpr_bin),
+        complete(pe),
+    )), tag("|"))(s)
+}
+
+fn parse_output_delim(i: Span) -> IResult<Span,Span>
+{
+    //let inp = i.clone();
+    alt((complete(line_ending),
+        complete(map(peek(one_of(*BRKTAGSNOWS)),|_| i)),
+         complete(peek(parse_pathexpr_raw_angle))))(i)
 }
 
 fn parse_primary_output1(i: Span) -> nom::IResult<Span, Vec<PathExpr>> {
-    let (s, _) = opt(sp1)(i)?;
-    let pe = |i| parse_pathexpr_ws(i, "\r\n", *BRKTOKSIO);
-    let (s, v0) = many_till( pe,
-     alt((complete(line_ending), complete(peek(tag("{"))),
-             complete(peek(tag("<"))),
-             complete(peek(parse_pathexpr_raw_angle))) ))(s)?;
-
+    let (s, _) = tag("|")(i)?;
+    let pe = |i| parse_pathexpr_ws(i, "|\r\n", *BRKTOKSIO);
+    let (s, v0) = many_till( pe, parse_output_delim)(s)?;
     Ok((s,v0.0))
 }
 
 fn parse_primary_output0(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, bool) > {
     let (s, _) = opt(sp1)(i)?;
-    let pe = |i| parse_pathexpr_ws(i, "|\r\n", *BRKTOKSIO);
+    let pe = |i| parse_pathexpr_ws(i, "|<{^\r\n", *BRKTOKSIO);
     let (s, v0) = many_till(
-        pe,
-        alt((complete(tag("|")),  complete(peek(tag("{"))),
-        complete(peek(parse_pathexpr_raw_angle)),
-             complete(line_ending)) ))(s)?;
-    let has_more =  v0.1.as_bytes().first().cloned().unwrap_or(b' ') == b'|';
+        pe, parse_output_delim)(s)?;
+    //eprintln!("{}", v0.1.as_bytes().first().unwrap_or(&b' ').as_char());
+    let has_more =  v0.1.as_bytes().first().map(|& c| c == b'|').unwrap_or(false);
     Ok((s,(v0.0, has_more) ))
 }
 // parse a rule expression
@@ -519,7 +547,7 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
     let (s, c) = peek(take(1 as usize))(s)?;
     let (s,secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
         let (s, _) = opt(sp1)(s)?;
-        let (s, secondary_input) = opt(parse_secondary_inp)(s)?;
+        let (s, secondary_input) = context("secondary inputs", opt(parse_secondary_inp))(s)?;
         (s,secondary_input)
     }else {
         (s,None)
@@ -538,17 +566,18 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
     let (s, output1) =
         if has_more {
             context( "rule output",
-                     opt(parse_primary_output1))(s)? }
+                     cut(parse_primary_output1))(s)? }
         else {
-            (s, None)
+            (s, vec![])
         };
 
     let (output, secondary_output) =
         if has_more {
-            (output0.unwrap().0, output1.unwrap_or(Vec::new()))
+            (output0.unwrap().0, output1)
         } else {
-            (output1.unwrap_or(Vec::new()), Vec::new())
+            (output1, Vec::new())
         };
+    let (s, exclude_patterns) = opt(parse_pathexpr_exclude_pattern)(s)?;
     // let secondary_output = if hassecondary { output1.unwrap_or(Vec::new())} else { Vec::new() };
     let (s, _) = opt(sp1)(s)?;
     let (s, v1) = opt(parse_pathexpr_group)(s)?;
@@ -559,18 +588,19 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
     Ok((
         s,
         Statement::Rule(Link {
-            s: from_input(
+            source: from_input(
                 input.map(|(x, _)| x).unwrap_or(Vec::new()),
                 for_each.is_some(),
                 secondary_input.unwrap_or((Vec::new(), default_inp())).0,
             ),
-            t: from_output(
+            target: from_output(
                 output,
                 secondary_output,
+                 exclude_patterns,
                 v1,
                 v2
             ),
-            r: rule_formula,
+            rule_formula,
             pos: (pos.line, pos.get_column()),
         }),
     ))
@@ -636,18 +666,19 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
         Statement::MacroAssignment(
             from_utf8(macroname).unwrap_or("".to_owned()),
             Link {
-                s: from_input(
+                source: from_input(
                     input.map(|(x, _)| x).unwrap_or(Vec::new()),
                     for_each.is_some(),
                     secondary_input.unwrap_or((Vec::new(), default_inp())).0,
                 ),
-                t: from_output(
+                target: from_output(
                     output,
                     secondary_output,
                     None,
+                    None,
                     None
                 ),
-                r: rule_formula,
+                rule_formula,
                 pos: (pos.line, pos.get_column()),
             },
         ),
@@ -705,7 +736,7 @@ pub fn parse_eq(i: Span) -> IResult<Span, EqCond> {
         EqCond {
             lhs: e1.0,
             rhs: e2.0,
-            not_cond: not_cond,
+            not_cond,
         },
     ))
 }

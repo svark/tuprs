@@ -88,7 +88,7 @@ impl Deps for Vec<PathExpr> {
 }
 impl Deps for Statement {
     fn input_groups(&self) -> Vec<String> {
-        if let Statement::Rule(Link { s, .. }) = self {
+        if let Statement::Rule(Link { source: s, .. }) = self {
             let mut inp_groups_prim = s.primary.input_groups();
             let mut inp_groups_sec = s.secondary.input_groups();
             inp_groups_prim.append(&mut inp_groups_sec);
@@ -99,7 +99,7 @@ impl Deps for Statement {
     }
 
     fn output_groups(&self) -> Vec<String> {
-        if let Statement::Rule(Link { s: _s, t, .. }) = self {
+        if let Statement::Rule(Link { source: _s, target: t, .. }) = self {
             let mut out_groups_prim = t.primary.output_groups();
             let mut out_groups_sec = t.secondary.output_groups();
             out_groups_prim.append(&mut out_groups_sec);
@@ -200,6 +200,7 @@ impl Subst for Target {
         Target {
             primary: self.primary.subst(m),
             secondary: self.secondary.subst(m),
+            exclude : self.exclude.clone(),
             group: self.group.clone().map(|x| x.subst(m)),
             bin: self.bin.clone().map(|x| x.subst(m))
         }
@@ -216,7 +217,7 @@ impl Subst for RuleFormula {
 // replace occurences of a macro ref with link data from previous assignments in namedrules
 impl ExpandMacro for Link {
     fn hasref(&self) -> bool {
-        for rval in self.r.formula.iter() {
+        for rval in self.rule_formula.formula.iter() {
             if let PathExpr::MacroRef(_) = *rval {
                 return true;
             }
@@ -224,21 +225,21 @@ impl ExpandMacro for Link {
         false
     }
     fn expand(&self, m: &mut SubstMap) -> Self {
-        let mut source = self.s.clone();
-        let mut target = self.t.clone();
-        let mut desc = self.r.description.clone();
+        let mut source = self.source.clone();
+        let mut target = self.target.clone();
+        let mut desc = self.rule_formula.description.clone();
         let pos = self.pos;
         let mut formulae = Vec::new();
         let emptylink: Link = Default::default();
-        for rval in self.r.formula.iter() {
+        for rval in self.rule_formula.formula.iter() {
             match rval {
                 &PathExpr::MacroRef(ref name) => {
                     let explink = m.rule_map.get(name.as_str()).unwrap_or(&emptylink);
-                    source += explink.s.clone();
-                    target += explink.t.clone();
-                    desc += explink.r.description.as_str();
+                    source += explink.source.clone();
+                    target += explink.target.clone();
+                    desc += explink.rule_formula.description.as_str();
                     //formulae.strip_trailing_ws();
-                    let mut r = explink.r.formula.clone();
+                    let mut r = explink.rule_formula.formula.clone();
                     r.strip_trailing_ws();
                     formulae.append( &mut r);
                 }
@@ -246,13 +247,13 @@ impl ExpandMacro for Link {
             }
         }
         Link {
-            s: source,
-            t: target,
-            r: RuleFormula {
+            source,
+            target,
+            rule_formula: RuleFormula {
                 description: desc,
                 formula: formulae,
             },
-            pos: pos,
+            pos,
         }
     }
 }
@@ -309,9 +310,9 @@ pub fn set_cwd(filename: &Path, m: &mut SubstMap) -> PathBuf {
 impl Subst for Link {
     fn subst(&self, m: &mut SubstMap) -> Self {
         Link {
-            s: self.s.subst(m),
-            t: self.t.subst(m),
-            r: self.r.subst(m),
+            source: self.source.subst(m),
+            target: self.target.subst(m),
+            rule_formula: self.rule_formula.subst(m),
             pos: self.pos,
         }
     }

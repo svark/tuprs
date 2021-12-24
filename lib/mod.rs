@@ -6,12 +6,12 @@ extern crate capturing_glob as glob;
 extern crate nom_locate;
 
 
+
 pub mod decode;
 pub mod parser;
 mod platform;
 pub mod statements;
 pub mod transform;
-//use statements::StripTrailingWs;
 //#[macro_use]
 //extern crate thiserror;
 
@@ -34,8 +34,8 @@ fn test_op() {
         file.write_all(stmts).expect("write failed");
         let stmts1 = b"include tupdata0.txt\n\
                        ifeq ($(DEBUG),1) \n \
-                       :foreach $(SRCS) ../<grp> ../<grp2> |> \
-                  !CC %<grp> %<grp2> |> command.pch | {objs}\
+                       :foreach $(SRCS)  ../<grp> ../<grp2> |> \
+                  !CC %<grp> %<grp2> |> command.pch | ^exclude_pattern.* {objs}\
                   \n &v := src/main.rs\n\
                   :&(v) |> type %f > file.txt |> \\\nfile.txt |\n\
                   : |> type &(v) |> \n\
@@ -49,8 +49,7 @@ fn test_op() {
     }
     {
         let stmts = parser::parse_tupfile("tupdata1.txt");
-        use statements::PathExpr::Group;
-        use statements::PathExpr::{Bucket, Literal};
+        use statements::PathExpr::{Bucket, Literal, Group, ExcludePattern};
         use statements::{Link, RuleFormula, Source, Statement, Target};
         use transform::*;
 
@@ -70,7 +69,7 @@ fn test_op() {
         assert_eq!(stmts_.len(), 3);
         let resolvedexpr = [
             Statement::Rule(Link {
-                s: Source {
+                source: Source {
                     primary: vec![
                         Literal("*.cxx impl/*.cxx *.cpp".to_string()),
                         Sp1,
@@ -81,13 +80,14 @@ fn test_op() {
                     foreach: true,
                     secondary: vec![],
                 },
-                t: Target {
+                target: Target {
                     primary: vec![Literal("command.pch".to_string())],
                     secondary: vec![],
+                    exclude: Some(ExcludePattern("exclude_pattern.*".to_string())),
                     group : None,
                     bin: Some( Bucket("objs".to_string()) ),
                 },
-                r: RuleFormula {
+                rule_formula: RuleFormula {
                     description: "".to_string(),
                     formula: vec![
                         Literal("cl".to_string()), Sp1, Literal("%f".to_string()), Sp1,
@@ -98,18 +98,19 @@ fn test_op() {
                 pos: (3, 3),
             }),
             Statement::Rule(Link {
-                s: Source {
+                source: Source {
                     primary: vec![Literal("./src/main.rs".to_string())],
                     foreach: false,
                     secondary: vec![],
                 },
-                t: Target {
+                target: Target {
                     primary: vec![Literal("file.txt".to_string())],
                     secondary: vec![],
+                    exclude : None,
                     group : None,
                     bin: None,
                 },
-                r: RuleFormula {
+                rule_formula: RuleFormula {
                     description: "".to_string(),
                     formula : vec![Literal("type".to_string()), Sp1, Literal("%f".to_string()), Sp1,
                     Literal(">".to_string()), Sp1, Literal("file.txt".to_string())],
@@ -118,18 +119,19 @@ fn test_op() {
                 pos: (5, 2),
             }),
             Statement::Rule(Link {
-                s: Source {
+                source: Source {
                     primary: vec![],
                     foreach: false,
                     secondary: vec![],
                 },
-                t: Target {
+                target: Target {
                     primary: vec![],
                     secondary: vec![],
+                    exclude: None,
                     group: None,
                     bin : None,
                 },
-                r: RuleFormula {
+                rule_formula: RuleFormula {
                     description: "".to_string(),
                     formula: vec![
                         Literal("type".to_string()),
@@ -207,18 +209,19 @@ fn test_parse() {
     let stmts_ = stmts.subst(&mut map);
     assert_eq!(stmts_.len(), 1);
     let prog = vec![Statement::Rule(Link {
-        s: Source {
+        source: Source {
             primary: vec![Literal("*.cxx *.cpp".to_string())],
             foreach: true,
             secondary: vec![],
         },
-        t: Target {
+        target: Target {
             primary: vec![Literal("command.pch".to_string())],
             secondary: vec![Literal("%B.o".to_string())],
+            exclude : None,
             group: Some( Group(vec![Literal("../".to_string())],  vec![Literal("grp3".to_string())])),
             bin : None
         },
-        r: RuleFormula {
+        rule_formula: RuleFormula {
             description: "".to_string(),
             formula: vec![
                 Literal("cl".to_string()),

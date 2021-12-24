@@ -129,7 +129,7 @@ impl DecodeInputPaths for Vec<PathExpr> {
 
 impl DecodeInputPaths for Statement {
     fn decode(&self, taginfo: &OutputTagInfo) -> Vec<InputGlobType> {
-        if let Statement::Rule(Link { s, .. }) = self {
+        if let Statement::Rule(Link { source: s, .. }) = self {
             let inputs = s.primary.decode(taginfo);
             inputs
         } else {
@@ -226,6 +226,7 @@ impl DecodePlaceHolders for Target {
         Target {
             primary: newprimary,
             secondary: newsecondary,
+            exclude : self.exclude.clone(),
             bin: self.bin.clone(),
             group: self.group.clone(),
         }
@@ -235,7 +236,7 @@ impl DecodePlaceHolders for Target {
 pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>, OutputTagInfo) {
     let mut deglobbed = Vec::new();
     let mut output: OutputTagInfo = Default::default();
-    if let Statement::Rule(Link { s, t, r, pos }) = stmt {
+    if let Statement::Rule(Link { source: s, target: t, rule_formula: r, pos }) = stmt {
         let inpdec = s.primary.decode(&taginfo);
         let secondinpdec = s.secondary.decode(&taginfo);
         let ref mut sinputs = Vec::new();
@@ -258,9 +259,9 @@ pub fn deglobrule(stmt: &Statement, taginfo: &OutputTagInfo) -> (Vec<Statement>,
             }; // single source input
                // tc.tags
             deglobbed.push(Statement::Rule(Link {
-                s: src,
-                t: tc,
-                r: rfc,
+                source: src,
+                target: tc,
+                rule_formula: rfc,
                 pos: *pos,
             }))
         }

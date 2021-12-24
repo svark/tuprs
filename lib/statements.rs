@@ -5,6 +5,7 @@
 pub enum PathExpr {
     Literal(String),         // a normal string
     Sp1, // spaces between paths
+    ExcludePattern(String),
     DollarExpr(String),      // this is dollar expr eg $(EXPR)
     AtExpr(String),          // @(EXPR)
     AmpExpr(String),         //&(Expr)
@@ -45,6 +46,7 @@ pub struct Source {
 pub struct Target {
     pub primary: Vec<PathExpr>,
     pub secondary: Vec<PathExpr>,
+    pub exclude : Option<PathExpr>,
     pub group: Option<PathExpr>, // this is Some(Group(_,_)) if not null
     pub bin : Option<PathExpr>, // this is  Some(Bucket(_)) is not null
 }
@@ -58,9 +60,9 @@ pub struct RuleFormula {
 // combined representation of a tup rule consisting of source/target and rule formula
 #[derive(PartialEq, Debug, Clone, Default)]
 pub struct Link {
-    pub s: Source,
-    pub t: Target,
-    pub r: RuleFormula,
+    pub source: Source,
+    pub target: Target,
+    pub rule_formula: RuleFormula,
     pub pos: (u32, usize),
 }
 // any of the valid statements that can appear in a tupfile
@@ -129,11 +131,11 @@ impl StripTrailingWs for RuleFormula
 impl StripTrailingWs for Link
 {
     fn strip_trailing_ws(&mut self) {
-        self.t.primary.strip_trailing_ws();
-        self.t.secondary.strip_trailing_ws();
-        self.s.primary.strip_trailing_ws();
-        self.s.secondary.strip_trailing_ws();
-        self.r.formula.strip_trailing_ws();
+        self.target.primary.strip_trailing_ws();
+        self.target.secondary.strip_trailing_ws();
+        self.source.primary.strip_trailing_ws();
+        self.source.secondary.strip_trailing_ws();
+        self.rule_formula.formula.strip_trailing_ws();
     }
 }
 
@@ -204,7 +206,7 @@ impl CatRef for PathExpr {
 impl Cat for &Statement {
     fn cat(self) -> String {
         match self {
-            Statement::Rule(Link { s: _, t: _, r, pos }) => {
+            Statement::Rule(Link { source: _, target: _, rule_formula: r, pos }) => {
                 let mut desc: String = r.description.clone();
                 let formula: String = r
                     .formula
