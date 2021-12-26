@@ -475,7 +475,7 @@ fn from_output(
     Target {
         primary,
         secondary,
-        exclude,
+        exclude_pattern: exclude,
         group,
         bin
     }
@@ -544,6 +544,7 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
         "rule input",
         cut(opt(parse_rule_inp))
     )(s)?;
+    let (s, _) = opt(sp1)(s)?;
     let (s, c) = peek(take(1 as usize))(s)?;
     let (s,secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
         let (s, _) = opt(sp1)(s)?;

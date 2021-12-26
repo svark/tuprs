@@ -13,4 +13,4 @@ capturing-glob = "*"
 nom_locate = "4.0.0"
 lazy_static = "1.4.0"
 thiserror = "1.0.30"
-
+regex = "1.5.4"

@@ -54,7 +54,7 @@ pub trait Subst {
 }
 
 pub trait ExpandMacro {
-    fn hasref(&self) -> bool;
+    fn has_ref(&self) -> bool;
     fn expand(&self, m: &mut SubstMap) -> Self;
 }
 
@@ -200,7 +200,7 @@ impl Subst for Target {
         Target {
             primary: self.primary.subst(m),
             secondary: self.secondary.subst(m),
-            exclude : self.exclude.clone(),
+            exclude_pattern: self.exclude_pattern.clone(),
             group: self.group.clone().map(|x| x.subst(m)),
             bin: self.bin.clone().map(|x| x.subst(m))
         }
@@ -216,7 +216,7 @@ impl Subst for RuleFormula {
 }
 // replace occurences of a macro ref with link data from previous assignments in namedrules
 impl ExpandMacro for Link {
-    fn hasref(&self) -> bool {
+    fn has_ref(&self) -> bool {
         for rval in self.rule_formula.formula.iter() {
             if let PathExpr::MacroRef(_) = *rval {
                 return true;
@@ -230,20 +230,22 @@ impl ExpandMacro for Link {
         let mut desc = self.rule_formula.description.clone();
         let pos = self.pos;
         let mut formulae = Vec::new();
-        let emptylink: Link = Default::default();
-        for rval in self.rule_formula.formula.iter() {
-            match rval {
+        for pathexpr in self.rule_formula.formula.iter() {
+            match pathexpr {
                 &PathExpr::MacroRef(ref name) => {
-                    let explink = m.rule_map.get(name.as_str()).unwrap_or(&emptylink);
-                    source += explink.source.clone();
-                    target += explink.target.clone();
-                    desc += explink.rule_formula.description.as_str();
-                    //formulae.strip_trailing_ws();
-                    let mut r = explink.rule_formula.formula.clone();
-                    r.strip_trailing_ws();
-                    formulae.append( &mut r);
+                    if let Some(explink) = m.rule_map.get(name.as_str()) {
+                        source += explink.source.clone();
+                        target += explink.target.clone();
+                        desc += explink.rule_formula.description.as_str();
+                        //formulae.strip_trailing_ws();
+                        let mut r = explink.rule_formula.formula.clone();
+                        r.strip_trailing_ws();
+                        formulae.append(&mut r);
+                    }else {
+                        eprintln!("ignored missing macro definition for :{}", name);
+                    }
                 }
-                _ => formulae.push(rval.clone()),
+                _ => formulae.push(pathexpr.clone()),
             }
         }
         Link {
@@ -374,7 +376,7 @@ impl Subst for Vec<Statement> {
                         rhs: eq.rhs.subst(m),
                         not_cond: eq.not_cond,
                     };
-                    if &e.lhs.cat() == &e.rhs.cat() && !e.not_cond {
+                    if e.lhs.cat().eq(&e.rhs.cat()) && !e.not_cond {
                         newstats.append(&mut then_statements.subst(m));
                     } else {
                         newstats.append(&mut else_statements.subst(m));
@@ -421,7 +423,7 @@ impl Subst for Vec<Statement> {
                 }
                 Statement::Rule(link) => {
                     let mut l = link.clone();
-                    while l.hasref() {
+                    while l.has_ref() {
                         l = l.expand(m); // expand all nested macro refs
                     }
                     newstats.push(Statement::Rule(l.subst(m)));

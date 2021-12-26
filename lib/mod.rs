@@ -4,8 +4,7 @@ extern crate nom;
 extern crate lazy_static;
 extern crate capturing_glob as glob;
 extern crate nom_locate;
-
-
+extern crate regex;
 
 pub mod decode;
 pub mod parser;
@@ -83,7 +82,7 @@ fn test_op() {
                 target: Target {
                     primary: vec![Literal("command.pch".to_string())],
                     secondary: vec![],
-                    exclude: Some(ExcludePattern("exclude_pattern.*".to_string())),
+                    exclude_pattern: Some(ExcludePattern("exclude_pattern.*".to_string())),
                     group : None,
                     bin: Some( Bucket("objs".to_string()) ),
                 },
@@ -106,7 +105,7 @@ fn test_op() {
                 target: Target {
                     primary: vec![Literal("file.txt".to_string())],
                     secondary: vec![],
-                    exclude : None,
+                    exclude_pattern: None,
                     group : None,
                     bin: None,
                 },
@@ -127,7 +126,7 @@ fn test_op() {
                 target: Target {
                     primary: vec![],
                     secondary: vec![],
-                    exclude: None,
+                    exclude_pattern: None,
                     group: None,
                     bin : None,
                 },
@@ -217,7 +216,7 @@ fn test_parse() {
         target: Target {
             primary: vec![Literal("command.pch".to_string())],
             secondary: vec![Literal("%B.o".to_string())],
-            exclude : None,
+            exclude_pattern: None,
             group: Some( Group(vec![Literal("../".to_string())],  vec![Literal("grp3".to_string())])),
             bin : None
         },

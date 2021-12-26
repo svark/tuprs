@@ -46,7 +46,7 @@ pub struct Source {
 pub struct Target {
     pub primary: Vec<PathExpr>,
     pub secondary: Vec<PathExpr>,
-    pub exclude : Option<PathExpr>,
+    pub exclude_pattern: Option<PathExpr>,
     pub group: Option<PathExpr>, // this is Some(Group(_,_)) if not null
     pub bin : Option<PathExpr>, // this is  Some(Bucket(_)) is not null
 }
@@ -208,11 +208,7 @@ impl Cat for &Statement {
         match self {
             Statement::Rule(Link { source: _, target: _, rule_formula: r, pos }) => {
                 let mut desc: String = r.description.clone();
-                let formula: String = r
-                    .formula
-                    .iter()
-                    .map(|x| x.cat_ref())
-                    .fold("".to_owned(), |x, y| x + y);
+                let formula: String = r.formula.cat();
                 desc += formula.as_str();
                 desc + ":" + pos.0.to_string().as_str() + "," + pos.1.to_string().as_str()
             }
