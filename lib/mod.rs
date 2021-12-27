@@ -35,7 +35,7 @@ fn test_op() {
         let stmts1 = b"include tupdata0.txt\n\
                        ifeq ($(DEBUG),1) \n \
                        :foreach $(SRCS)  ../<grp> ../<grp2> |> \
-                  !CC %<grp> %<grp2> |> command.pch | ^exclude_pattern.* {objs}\
+                  !CC %<grp> %<grp2> \\\n |> command.pch | ^exclude_pattern.* {objs}\
                   \n &v := src/main.rs\n\
                   :&(v) |> type %f > file.txt |> \\\nfile.txt |\n\
                   : |> type &(v) |> \n\
@@ -117,7 +117,7 @@ fn test_op() {
                     Literal(">".to_string()), Sp1, Literal("file.txt".to_string())],
                     //formula: vec![Literal("type %f > file.txt ".to_string())],
                 },
-                pos: (5, 2),
+                pos: (6, 2),
             }),
             Statement::Rule(Link {
                 source: Source {
@@ -140,7 +140,7 @@ fn test_op() {
                         Literal("./src/main.rs".to_string()),
                     ],
                 },
-                pos: (7, 2),
+                pos: (8, 2),
             }),
         ];
 

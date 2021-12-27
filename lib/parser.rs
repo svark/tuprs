@@ -34,9 +34,9 @@ lazy_static! (
     static ref BRKTAGS : &'static str = " <|{^";
 );
 
-// convert byte str to PathExpr::Literal
+// convert byte str to PathExpr
 fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
-    from_utf8(res).map(|s| PathExpr::Literal(s))
+    from_utf8(res).map(|s| PathExpr::from(s))
 }
 // check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
@@ -181,7 +181,10 @@ fn parse_pathexpr_bin(i: Span) -> IResult<Span, PathExpr> {
 pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
     let (s, r) = peek(take(2 as usize))(i)?;
     match r.as_bytes() {
-        b"\\\n" => Ok((s, PathExpr::Literal(String::new()))),
+        b"\\\n" => {
+            let (s, _) = take(2 as usize)(i)?;
+            Ok((s, PathExpr::from("".to_string())))
+        },
         b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\<" | b"\\^"  | b"\\|"      =>
             {
                 let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;

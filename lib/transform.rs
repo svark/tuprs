@@ -165,11 +165,13 @@ fn intersperse_sp1(val: &Vec<String>) -> Vec<PathExpr> {
 
 impl Subst for Vec<PathExpr> {
     fn subst(&self, m: &mut SubstMap) -> Self {
-        self.iter()
+        let mut newpe : Vec<_> = self.iter()
             .map(|x| x.subst(m))
             .flatten()
             .filter(|x| !is_empty(x))
-            .collect()
+            .collect();
+        newpe.strip_trailing_ws();
+        newpe
     }
 }
 impl Subst for Source {
