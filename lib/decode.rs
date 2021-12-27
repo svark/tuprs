@@ -391,6 +391,13 @@ fn convert_to_pathexprs(tupcwd: &Path, inpdec : &Vec<&InputGlobType>) -> Vec<Pat
               vec![PathExpr::Literal(tupcwd.join(x.to_string()).to_str().unwrap().to_string()),
                    PathExpr::Sp1]).flatten().collect()
 }
+fn convert_to_pathexprs_x(tupcwd: &Path, inpdec : &Vec<InputGlobType>) -> Vec<PathExpr> {
+    inpdec.iter()
+        .map(|ref x|
+            vec![PathExpr::Literal(tupcwd.join(x.to_string()).to_str().unwrap().to_string()),
+                 PathExpr::Sp1]).flatten().collect()
+}
+
 
 
 // replace % specifiers in a target of rule statement which has already been
@@ -489,14 +496,9 @@ pub fn deglobrule(tupfile: &Path, stmt: &Statement, taginfo: &OutputTagInfo) -> 
     if let Statement::Rule(Link { source: s, target: t, rule_formula: r, pos }) = stmt {
         let inpdec = s.primary.decode(tupcwd, &taginfo);
         let secondinpdec = s.secondary.decode(tupcwd, &taginfo);
-        let for_each = s.foreach;
+        let for_each = s.for_each;
         let secondaryinputsasref: Vec<&InputGlobType> = secondinpdec.iter().collect();
-        let ref mut sinputs = Vec::new();
-        for sinput in &secondinpdec {
-            sinputs.push(PathExpr::Literal(
-                as_path(&sinput).to_str().unwrap().to_string(),
-            ));
-        }
+        let ref mut sinputs = convert_to_pathexprs_x(tupcwd, &secondinpdec);
         if for_each {
             for input in inpdec {
                 let vis = vec![&input];
@@ -544,7 +546,7 @@ fn get_deglobbed_rule(tupcwd: &Path, t: &&Target, r: &RuleFormula, pos: &(u32, u
     let src = Source {
         primary: inputc,
         secondary: sinputs.clone(),
-        foreach: false,
+        for_each: false,
     }; // single source input
     // tc.tags
     Statement::Rule(Link {

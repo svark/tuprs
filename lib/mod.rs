@@ -1,3 +1,4 @@
+#![feature(iter_intersperse)]
 #[macro_use]
 extern crate nom;
 #[macro_use]
@@ -20,6 +21,7 @@ fn test_op() {
     use std::io::Write;
     use statements::StripTrailingWs;
     use statements::PathExpr::Sp1;
+    use statements::PathExpr;
     {
         let mut file = File::create("tupdata0.txt").expect("cannot open file");
         let stmts = b"DEBUG =1\n\
@@ -60,8 +62,8 @@ fn test_op() {
         };
         set_cwd(tuppath, &mut map);
 
-        assert_eq!(map.conf_map.get("PLATFORM"), Some(&"win64".to_owned()));
-        assert_eq!(map.conf_map.get("CVAR"), Some(&"1".to_owned()));
+        assert_eq!(map.conf_map.get("PLATFORM").and_then(|x| x.first()), Some(&"win64".to_owned()));
+        assert_eq!(map.conf_map.get("CVAR").and_then(|x| x.first()), Some(&"1".to_owned()));
 
         let mut stmts_ = stmts.subst(&mut map);
         stmts_.strip_trailing_ws();
@@ -70,13 +72,14 @@ fn test_op() {
             Statement::Rule(Link {
                 source: Source {
                     primary: vec![
-                        Literal("*.cxx impl/*.cxx *.cpp".to_string()),
-                        Sp1,
+                        PathExpr::from("*.cxx".to_string()), Sp1,
+                        PathExpr::from("impl/*.cxx".to_string()), Sp1,
+                        PathExpr::from("*.cpp".to_string()), Sp1,
                         Group(vec![Literal("../".to_string())], vec![Literal("grp".to_string())]),
                         Sp1,
                         Group(vec![Literal("../".to_string())],vec![Literal("grp2".to_string())]),
                     ],
-                    foreach: true,
+                    for_each: true,
                     secondary: vec![],
                 },
                 target: Target {
@@ -99,7 +102,7 @@ fn test_op() {
             Statement::Rule(Link {
                 source: Source {
                     primary: vec![Literal("./src/main.rs".to_string())],
-                    foreach: false,
+                    for_each: false,
                     secondary: vec![],
                 },
                 target: Target {
@@ -120,7 +123,7 @@ fn test_op() {
             Statement::Rule(Link {
                 source: Source {
                     primary: vec![],
-                    foreach: false,
+                    for_each: false,
                     secondary: vec![],
                 },
                 target: Target {
@@ -152,6 +155,7 @@ fn test_op() {
 fn test_parse() {
     use nom_locate::LocatedSpan;
     use statements::StripTrailingWs;
+    //use statements::PathExpr;
     use statements::PathExpr::DollarExpr;
     use statements::PathExpr::Group;
     use statements::PathExpr::Literal;
@@ -209,8 +213,8 @@ fn test_parse() {
     assert_eq!(stmts_.len(), 1);
     let prog = vec![Statement::Rule(Link {
         source: Source {
-            primary: vec![Literal("*.cxx *.cpp".to_string())],
-            foreach: true,
+            primary: vec![Literal("*.cxx".to_string()),Sp1, Literal("*.cpp".to_string())],
+            for_each: true,
             secondary: vec![],
         },
         target: Target {
@@ -235,6 +239,6 @@ fn test_parse() {
         pos: (2, 2),
     })];
 
-    assert_eq!(prog[0], stmts_[0]);
+    assert_eq!(stmts_[0], prog[0], "\r\nfound first but expected second");
     // assert_eq!(deglob(&prog[0]).len(), 18);
 }

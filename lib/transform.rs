@@ -14,12 +14,13 @@ pub enum StatementContext {
 }
 
 pub struct SubstMap {
-    pub expr_map: HashMap<String, String>,
-    pub rexpr_map: HashMap<String, String>,
-    pub conf_map: HashMap<String, String>,
+    pub expr_map: HashMap<String, Vec<String> >,
+    pub rexpr_map: HashMap<String, Vec<String> >,
+    pub conf_map: HashMap<String, Vec<String> >,
     pub rule_map: HashMap<String, Link>,
     pub cur_file: PathBuf,
     pub sc: StatementContext,
+    pub waitforpercs : bool,
 }
 
 impl Default for SubstMap {
@@ -31,15 +32,16 @@ impl Default for SubstMap {
             rule_map: HashMap::new(),
             cur_file: PathBuf::new(),
             sc: StatementContext::Other,
+            waitforpercs : true,
         }
     }
 }
 
 impl SubstMap {
-    pub fn new(conf_map: &HashMap<String, String>, cur_file: &Path) -> Self {
+    pub fn new(conf_map: &HashMap<String, Vec<String> >, cur_file: &Path) -> Self {
         let mut def_vars = HashMap::new();
         if let Some(p) = get_parent(cur_file).to_str() {
-            def_vars.insert("TUP_CWD".to_owned(), p.to_owned());
+            def_vars.insert("TUP_CWD".to_owned(), vec![p.to_owned()]);
         }
         SubstMap {
             conf_map: conf_map.clone(),
@@ -109,45 +111,50 @@ impl Deps for Statement {
         }
     }
 }
-impl Subst for PathExpr {
-    fn subst(&self, m: &mut SubstMap) -> Self {
+impl PathExpr {
+    fn subst(&self, m: &mut SubstMap) -> Vec<PathExpr> {
         match self{
             &PathExpr::DollarExpr(ref x) => {
                 if let Some(val) = m.expr_map.get(x.as_str()) {
-                    PathExpr::Literal(val.to_string())
+                    val.iter()
+                        .map(|x| PathExpr::from(x.clone()))
+                        .intersperse(PathExpr::Sp1)
+                        .collect()
                 } else if !x.contains("%") {
-                    PathExpr::Literal("".to_owned())
+                    vec![PathExpr::from("".to_owned())] // postpone subst until placeholders are fixed
                 } else {
-                    self.clone()
+                    vec![self.clone()]
                 }
             }
             &PathExpr::AtExpr(ref x) => {
                 if let Some(val) = m.conf_map.get(x.as_str()) {
-                    PathExpr::Literal(val.to_string())
+                    val.iter().map(|x| PathExpr::from(x.clone()))
+                        .intersperse(PathExpr::Sp1)
+                        .collect()
                 } else if !x.contains("%") {
-                    PathExpr::Literal("".to_owned())
+                    vec![PathExpr::Literal("".to_owned())]
                 } else {
-                    self.clone()
+                    vec![self.clone()]
                 }
             }
             &PathExpr::AmpExpr(ref x) => {
                 if let Some(val) = m.rexpr_map.get(x.as_str()) {
-                    PathExpr::Literal(val.to_string())
+                    val.iter().map(|x| PathExpr::from(x.clone())).collect()
                 } else if !x.contains("%") {
-                    PathExpr::Literal("".to_owned())
+                    vec![PathExpr::Literal("".to_owned())]
                 } else {
-                    self.clone()
+                    vec![self.clone()]
                 }
             }
 
             &PathExpr::Group(ref xs, ref ys) => {
-                PathExpr::Group(xs.into_iter().map(|x| x.subst(m)).collect(),
-                                ys.into_iter().map(|y| y.subst(m)).collect())
+                vec![PathExpr::Group(xs.iter().map(|x| x.subst(m)).flatten().collect(),
+                                ys.iter().map(|y| y.subst(m)).flatten().collect())]
             }
             /*&PathExpr::Sp1 => {
                 PathExpr::Literal(" ".to_string())
             }*/
-            _ => self.clone(),
+            _ => vec![self.clone()],
         }
     }
 }
@@ -156,6 +163,7 @@ impl Subst for Vec<PathExpr> {
     fn subst(&self, m: &mut SubstMap) -> Self {
         self.iter()
             .map(|x| x.subst(m))
+            .flatten()
             .filter(|x| !is_empty(x))
             .collect()
     }
@@ -164,7 +172,7 @@ impl Subst for Source {
     fn subst(&self, m: &mut SubstMap) -> Self {
         Source {
             primary: self.primary.subst(m),
-            foreach: self.foreach,
+            for_each: self.for_each,
             secondary: self.secondary.subst(m),
         }
     }
@@ -177,7 +185,7 @@ impl AddAssign for Source {
         self.primary.append(&mut o.primary);
         self.secondary.strip_trailing_ws();
         self.secondary.append(&mut o.secondary);
-        self.foreach |= o.foreach;
+        self.for_each |= o.for_each;
     }
 }
 
@@ -194,15 +202,22 @@ impl AddAssign for Target {
         self.bin = self.bin.clone().or(o.bin);
     }
 }
-
+fn takefirst(o: &Option<PathExpr>, m: &mut SubstMap ) -> Option<PathExpr> {
+    if let &Some(ref pe) = o {
+        pe.subst(m).first().cloned()
+    } else
+    {
+        None
+    }
+}
 impl Subst for Target {
     fn subst(&self, m: &mut SubstMap) -> Self {
         Target {
             primary: self.primary.subst(m),
             secondary: self.secondary.subst(m),
             exclude_pattern: self.exclude_pattern.clone(),
-            group: self.group.clone().map(|x| x.subst(m)),
-            bin: self.bin.clone().map(|x| x.subst(m))
+            group: takefirst(&self.group, m),
+            bin: takefirst(&self.bin, m),
         }
     }
 }
@@ -263,10 +278,15 @@ impl ExpandMacro for Link {
 fn get_parent(cur_file: &Path) -> PathBuf {
     PathBuf::from(cur_file.parent().unwrap().to_str().unwrap())
 }
-
+// strings in pathexpr that are space separated
+fn tovecstring(right: &Vec<PathExpr>) -> Vec<String> {
+    right.split(|x| x == &PathExpr::Sp1)
+        .map(|x| x.to_vec().cat())
+        .collect()
+}
 // load the conf variables in tup.config in the root directory
-pub fn load_conf_vars(filename: &Path) -> HashMap<String, String> {
-    let mut conf_vars: HashMap<String, String> = HashMap::new();
+pub fn load_conf_vars(filename: &Path) -> HashMap<String, Vec<String> > {
+    let mut conf_vars= HashMap::new();
 
     if let Some(conf_file) = locate_file(filename, "tup.config") {
         if let Some(fstr) = conf_file.to_str() {
@@ -274,7 +294,7 @@ pub fn load_conf_vars(filename: &Path) -> HashMap<String, String> {
                 match stmt {
                     Statement::LetExpr { left, right, .. } => {
                         if left.name.starts_with("CONFIG_") {
-                            conf_vars.insert(left.name[7..].to_string(), right.cat());
+                            conf_vars.insert(left.name[7..].to_string(), tovecstring(right));
                         }
                     }
                     _ => (),
@@ -283,10 +303,10 @@ pub fn load_conf_vars(filename: &Path) -> HashMap<String, String> {
         }
     }
     if !conf_vars.contains_key("TUP_PLATFORM") {
-        conf_vars.insert("TUP_PLATFORM".to_owned(), get_platform());
+        conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform()]);
     }
     if !conf_vars.contains_key("TUP_ARCH") {
-        conf_vars.insert("TUP_ARCH".to_owned(), get_arch());
+        conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch()]);
     }
 
     // @(TUP_PLATFORM)
@@ -304,7 +324,7 @@ pub fn set_cwd(filename: &Path, m: &mut SubstMap) -> PathBuf {
     let ref mut def_vars = m.expr_map;
     if let Some(p) = get_parent(m.cur_file.as_path()).to_str() {
         def_vars.remove("TUP_CWD");
-        def_vars.insert("TUP_CWD".to_owned(), p.to_owned());
+        def_vars.insert("TUP_CWD".to_owned(), vec![p.to_owned()]);
     }
     cf
 }
@@ -324,6 +344,7 @@ impl Subst for Link {
 impl Subst for Vec<Statement> {
     fn subst(&self, m: &mut SubstMap) -> Vec<Statement> {
         let mut newstats = Vec::new();
+        //let sp1 = PathExpr::Sp1;
         for statement in self.iter() {
             match statement {
                 Statement::LetExpr {
@@ -332,10 +353,16 @@ impl Subst for Vec<Statement> {
                     is_append,
                 } => {
                     let &app = is_append;
-                    let subst_right = right.subst(m).cat().clone();
-                    let curright = if app {
+                    let subst_right : Vec<_> = right.split(|x| x == &PathExpr::Sp1)
+                        .map(|x| x.to_vec().subst(m).cat())
+                        .collect();
+
+                    let curright: Vec<String> = if app {
                         match m.expr_map.get(left.name.as_str()) {
-                            Some(prevright) => prevright.to_string() + " " + subst_right.as_str(),
+                            Some(prevright) =>
+                                prevright.iter().map(|x| x.clone())
+                                    .chain( subst_right)
+                                    .collect(),
                             _ => subst_right,
                         }
                     } else {
@@ -353,11 +380,18 @@ impl Subst for Vec<Statement> {
                         PathExpr::DollarExpr("TUP_CWD".to_owned()),
                         PathExpr::Literal("/".to_owned()),
                     ]
-                    .subst(m);
-                    let subst_right = prefix.cat() + (right.subst(m)).cat().as_str();
+                    .subst(m).cat();
+                    let subst_right : Vec<String> = right.split(|x| x == &PathExpr::Sp1)
+                        .map(|x| prefix.clone() + x.to_vec().subst(m).cat().as_str())
+                        .collect();
+
+                    //let subst_right = prefix.cat() + (right.subst(m)).cat().as_str();
                     let curright = if app {
                         match m.rexpr_map.get(left.name.as_str()) {
-                            Some(prevright) => prevright.to_string() + " " + subst_right.as_str(),
+                            Some(prevright) =>
+                                prevright.iter().map(|x| x.clone())
+                                    .chain( subst_right)
+                                    .collect(),
                             _ => subst_right,
                         }
                     } else {
@@ -388,7 +422,7 @@ impl Subst for Vec<Statement> {
                     else_statements,
                 } => {
                     let cvar = PathExpr::AtExpr(checked_var.0.name.clone());
-                    if is_empty(&cvar.subst(m)) == checked_var.1 {
+                    if cvar.subst(m).iter().any(|x| is_empty(x)) == checked_var.1 {
                         newstats.append(&mut then_statements.subst(m));
                     } else {
                         newstats.append(&mut else_statements.subst(m));

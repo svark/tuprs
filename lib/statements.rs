@@ -37,7 +37,7 @@ pub struct CheckedVar(pub Ident, pub bool);
 #[derive(PartialEq, Debug, Clone, Default)]
 pub struct Source {
     pub primary: Vec<PathExpr>,
-    pub foreach: bool,
+    pub for_each: bool,
     pub secondary: Vec<PathExpr>,
 }
 

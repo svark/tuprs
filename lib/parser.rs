@@ -457,10 +457,10 @@ fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
 }
 
 // convert the inputs to a rule to 'Source' struct
-fn from_input(primary: Vec<PathExpr>, foreach: bool, secondary: Vec<PathExpr>) -> Source {
+fn from_input(primary: Vec<PathExpr>, for_each: bool, secondary: Vec<PathExpr>) -> Source {
     Source {
         primary,
-        foreach,
+        for_each,
         secondary,
     }
 }
