@@ -521,7 +521,7 @@ fn parse_output_delim(i: Span) -> IResult<Span,Span>
 
 fn parse_primary_output1(i: Span) -> nom::IResult<Span, Vec<PathExpr>> {
     let (s, _) = tag("|")(i)?;
-    let pe = |i| parse_pathexpr_ws(i, "|\r\n", *BRKTOKSIO);
+    let pe = |i| parse_pathexpr_ws(i, "\r\n", *BRKTOKSIO);
     let (s, v0) = many_till( pe, parse_output_delim)(s)?;
     Ok((s,v0.0))
 }
@@ -577,9 +577,9 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
 
     let (output, secondary_output) =
         if has_more {
-            (output0.unwrap().0, output1)
+            (output1, output0.unwrap().0)
         } else {
-            (output1, Vec::new())
+            (output0.unwrap().0, Vec::new())
         };
     let (s, exclude_patterns) = opt(parse_pathexpr_exclude_pattern)(s)?;
     // let secondary_output = if hassecondary { output1.unwrap_or(Vec::new())} else { Vec::new() };

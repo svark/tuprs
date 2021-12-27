@@ -6,6 +6,8 @@ extern crate capturing_glob as glob;
 extern crate nom_locate;
 extern crate regex;
 
+//use statements::StripTrailingWs;
+
 pub mod decode;
 pub mod parser;
 mod platform;
@@ -82,8 +84,8 @@ fn test_op() {
                     secondary: vec![],
                 },
                 target: Target {
-                    primary: vec![Literal("command.pch".to_string())],
-                    secondary: vec![],
+                    secondary: vec![Literal("command.pch".to_string())],
+                    primary: vec![],
                     exclude_pattern: Some(ExcludePattern("exclude_pattern.*".to_string())),
                     group : None,
                     bin: Some( Bucket("objs".to_string()) ),
@@ -105,8 +107,8 @@ fn test_op() {
                     secondary: vec![],
                 },
                 target: Target {
-                    primary: vec![Literal("file.txt".to_string())],
-                    secondary: vec![],
+                    primary: vec![],
+                    secondary: vec![Literal("file.txt".to_string())],
                     exclude_pattern: None,
                     group : None,
                     bin: None,
@@ -183,12 +185,11 @@ fn test_parse() {
         };
         assert_eq!(res1.unwrap().1, prog1);
     }
-
     let comment = parser::parse_statement(Span::new(b"#Source files\n"));
     let res64 = comment.unwrap().1;
     assert_eq!(res64, Statement::Comment);
-    let res65 = parser::parse_statement(Span::new(b"DEBUG =1\n")).unwrap().1;
-    let res66 = parser::parse_statement(Span::new(b"SRCS=*.cxx\n"))
+    let res65 = parser::parse_statement(Span::new(b"DEBUG = 1\n")).unwrap().1;
+    let res66 = parser::parse_statement(Span::new(b"SRCS= *.cxx\n"))
         .unwrap()
         .1;
     let res67 = parser::parse_statement(Span::new(b"SRCS +=*.cpp\n"))
@@ -217,8 +218,8 @@ fn test_parse() {
             secondary: vec![],
         },
         target: Target {
-            primary: vec![Literal("command.pch".to_string())],
-            secondary: vec![Literal("%B.o".to_string())],
+            secondary: vec![Literal("command.pch".to_string())],
+            primary: vec![Literal("%B.o".to_string())],
             exclude_pattern: None,
             group: Some( Group(vec![Literal("../".to_string())],  vec![Literal("grp3".to_string())])),
             bin : None
@@ -239,5 +240,18 @@ fn test_parse() {
     })];
 
     assert_eq!(stmts_[0], prog[0], "\r\nfound first but expected second");
+    let rule = parser::parse_statement(Span::new(b":|> ^ touch %o^ touch > %o |> out.txt\n")).unwrap().1;
+    use statements::PathExpr;
+   // use statements::Link;
+    assert_eq!( rule,
+                Statement::Rule(Link {
+                                target: Target { primary: vec![PathExpr::from("out.txt".to_string())], ..Default::default() },
+                                rule_formula:
+                                RuleFormula { description: " touch %o".to_string(),
+                                    formula: vec![ Literal("touch".to_string()), Sp1, Literal(">".to_string()), Sp1,
+                                        Literal("%o".to_string()), Sp1], },
+                                pos : (1,2),
+                                ..Default::default()}));
+
     // assert_eq!(deglob(&prog[0]).len(), 18);
 }
