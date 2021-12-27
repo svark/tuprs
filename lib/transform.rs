@@ -116,10 +116,7 @@ impl PathExpr {
         match self{
             &PathExpr::DollarExpr(ref x) => {
                 if let Some(val) = m.expr_map.get(x.as_str()) {
-                    val.iter()
-                        .map(|x| PathExpr::from(x.clone()))
-                        .intersperse(PathExpr::Sp1)
-                        .collect()
+                    intersperse_sp1(val)
                 } else if !x.contains("%") {
                     vec![PathExpr::from("".to_owned())] // postpone subst until placeholders are fixed
                 } else {
@@ -128,9 +125,7 @@ impl PathExpr {
             }
             &PathExpr::AtExpr(ref x) => {
                 if let Some(val) = m.conf_map.get(x.as_str()) {
-                    val.iter().map(|x| PathExpr::from(x.clone()))
-                        .intersperse(PathExpr::Sp1)
-                        .collect()
+                    intersperse_sp1(val)
                 } else if !x.contains("%") {
                     vec![PathExpr::Literal("".to_owned())]
                 } else {
@@ -139,7 +134,8 @@ impl PathExpr {
             }
             &PathExpr::AmpExpr(ref x) => {
                 if let Some(val) = m.rexpr_map.get(x.as_str()) {
-                    val.iter().map(|x| PathExpr::from(x.clone())).collect()
+                   intersperse_sp1(val)
+                   // val.iter().map(|x| PathExpr::from(x.clone())).collect()
                 } else if !x.contains("%") {
                     vec![PathExpr::Literal("".to_owned())]
                 } else {
@@ -151,12 +147,20 @@ impl PathExpr {
                 vec![PathExpr::Group(xs.iter().map(|x| x.subst(m)).flatten().collect(),
                                 ys.iter().map(|y| y.subst(m)).flatten().collect())]
             }
-            /*&PathExpr::Sp1 => {
-                PathExpr::Literal(" ".to_string())
-            }*/
             _ => vec![self.clone()],
         }
     }
+
+}
+
+fn intersperse_sp1(val: &Vec<String>) -> Vec<PathExpr> {
+    let mut vs = Vec::new();
+    for pe in val.iter().map(|x| PathExpr::from(x.clone())) {
+        vs.push(pe);
+        vs.push(PathExpr::Sp1);
+    }
+    vs.pop();
+    vs
 }
 
 impl Subst for Vec<PathExpr> {
