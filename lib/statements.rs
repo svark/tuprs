@@ -3,15 +3,15 @@
 // in general they can be constituents of any tup expression that is not on lhs of assignment
 #[derive(PartialEq, Debug, Clone)]
 pub enum PathExpr {
-    Literal(String),         // a normal string
-    Sp1, // spaces between paths
+    Literal(String), // a normal string
+    Sp1,             // spaces between paths
     ExcludePattern(String),
-    DollarExpr(String),      // this is dollar expr eg $(EXPR)
-    AtExpr(String),          // @(EXPR)
-    AmpExpr(String),         //&(Expr)
-    Group(Vec<PathExpr>,Vec<PathExpr>), // reference to an output available globally
-    Bucket(String),          // {objs} a collector of output
-    MacroRef(String),        // !cc_name reference to a macro to be expanded
+    DollarExpr(String),                  // this is dollar expr eg $(EXPR)
+    AtExpr(String),                      // @(EXPR)
+    AmpExpr(String),                     //&(Expr)
+    Group(Vec<PathExpr>, Vec<PathExpr>), // reference to an output available globally
+    Bucket(String),                      // {objs} a collector of output
+    MacroRef(String),                    // !cc_name reference to a macro to be expanded
 }
 
 // represents the equality condition in if(n)eq (LHS,RHS)
@@ -48,13 +48,13 @@ pub struct Target {
     pub secondary: Vec<PathExpr>,
     pub exclude_pattern: Option<PathExpr>,
     pub group: Option<PathExpr>, // this is Some(Group(_,_)) if not null
-    pub bin : Option<PathExpr>, // this is  Some(Bucket(_)) is not null
+    pub bin: Option<PathExpr>,   // this is  Some(Bucket(_)) is not null
 }
 // formula for a tup rule
 #[derive(PartialEq, Debug, Clone, Default)]
 pub struct RuleFormula {
     pub description: String,
- //   pub macroref: Option<PathExpr>,
+    //   pub macroref: Option<PathExpr>,
     pub formula: Vec<PathExpr>,
 }
 // combined representation of a tup rule consisting of source/target and rule formula
@@ -94,7 +94,7 @@ pub enum Statement {
     Err(Vec<PathExpr>),
     MacroAssignment(String, Link), /* !macro = [inputs] | [order-only inputs] |> command |> [outputs] */
     Export(String),
-    Import(String,Option<String>),
+    Import(String, Option<String>),
     Preload(Vec<PathExpr>),
     Run(Vec<PathExpr>),
     Comment,
@@ -113,23 +113,20 @@ pub trait StripTrailingWs {
     fn strip_trailing_ws(&mut self);
 }
 
-impl StripTrailingWs for Vec<PathExpr>
-{
+impl StripTrailingWs for Vec<PathExpr> {
     fn strip_trailing_ws(&mut self) {
         if let Some(PathExpr::Sp1) = self.last() {
             self.pop();
         }
     }
 }
-impl StripTrailingWs for RuleFormula
-{
-    fn strip_trailing_ws(&mut self){
+impl StripTrailingWs for RuleFormula {
+    fn strip_trailing_ws(&mut self) {
         self.formula.strip_trailing_ws();
     }
 }
 
-impl StripTrailingWs for Link
-{
+impl StripTrailingWs for Link {
     fn strip_trailing_ws(&mut self) {
         self.target.primary.strip_trailing_ws();
         self.target.secondary.strip_trailing_ws();
@@ -139,23 +136,55 @@ impl StripTrailingWs for Link
     }
 }
 
-
 impl StripTrailingWs for Statement {
     fn strip_trailing_ws(&mut self) {
         match self {
-            Statement::Rule(l) => {l.strip_trailing_ws();()},
-            Statement::LetExpr{ left: _left,right,.. } => {right.strip_trailing_ws();()}
-            Statement::LetRefExpr{ left: _left,right,..} => {right.strip_trailing_ws();()}
-            Statement::IfElseEndIf{ eq: _,then_statements, else_statements} => { then_statements.strip_trailing_ws();
+            Statement::Rule(l) => {
+                l.strip_trailing_ws();
+                ()
+            }
+            Statement::LetExpr {
+                left: _left, right, ..
+            } => {
+                right.strip_trailing_ws();
+                ()
+            }
+            Statement::LetRefExpr {
+                left: _left, right, ..
+            } => {
+                right.strip_trailing_ws();
+                ()
+            }
+            Statement::IfElseEndIf {
+                eq: _,
+                then_statements,
+                else_statements,
+            } => {
+                then_statements.strip_trailing_ws();
                 else_statements.strip_trailing_ws();
                 ()
-            },
-            Statement::Include(r)=> {r.strip_trailing_ws();()}
-            Statement::Err(r)=> {r.strip_trailing_ws();()}
-            Statement::MacroAssignment(_, link)=> {link.strip_trailing_ws();()}
-            Statement::Preload(v)=>{v.strip_trailing_ws();()}
-            Statement::Run(v)  => {v.strip_trailing_ws();()}
-            _ => ()
+            }
+            Statement::Include(r) => {
+                r.strip_trailing_ws();
+                ()
+            }
+            Statement::Err(r) => {
+                r.strip_trailing_ws();
+                ()
+            }
+            Statement::MacroAssignment(_, link) => {
+                link.strip_trailing_ws();
+                ()
+            }
+            Statement::Preload(v) => {
+                v.strip_trailing_ws();
+                ()
+            }
+            Statement::Run(v) => {
+                v.strip_trailing_ws();
+                ()
+            }
+            _ => (),
         }
     }
 }
@@ -174,14 +203,12 @@ impl Cat for &Vec<PathExpr> {
     }
 }
 
-
 // conversion to from string
 impl From<String> for PathExpr {
     fn from(s: String) -> PathExpr {
         PathExpr::Literal(s)
     }
 }
-
 
 impl Cat for &PathExpr {
     fn cat(self) -> String {
@@ -206,7 +233,12 @@ impl CatRef for PathExpr {
 impl Cat for &Statement {
     fn cat(self) -> String {
         match self {
-            Statement::Rule(Link { source: _, target: _, rule_formula: r, pos }) => {
+            Statement::Rule(Link {
+                source: _,
+                target: _,
+                rule_formula: r,
+                pos,
+            }) => {
                 let mut desc: String = r.description.clone();
                 let formula: String = r.formula.cat();
                 desc += formula.as_str();

@@ -18,11 +18,11 @@ pub mod transform;
 
 #[test]
 fn test_op() {
+    use statements::PathExpr;
+    use statements::PathExpr::Sp1;
+    use statements::StripTrailingWs;
     use std::fs::File;
     use std::io::Write;
-    use statements::StripTrailingWs;
-    use statements::PathExpr::Sp1;
-    use statements::PathExpr;
     {
         let mut file = File::create("tupdata0.txt").expect("cannot open file");
         let stmts = b"DEBUG =1\n\
@@ -51,7 +51,7 @@ fn test_op() {
     }
     {
         let stmts = parser::parse_tupfile("tupdata1.txt");
-        use statements::PathExpr::{Bucket, Literal, Group, ExcludePattern};
+        use statements::PathExpr::{Bucket, ExcludePattern, Group, Literal};
         use statements::{Link, RuleFormula, Source, Statement, Target};
         use transform::*;
 
@@ -63,8 +63,14 @@ fn test_op() {
         };
         set_cwd(tuppath, &mut map);
 
-        assert_eq!(map.conf_map.get("PLATFORM").and_then(|x| x.first()), Some(&"win64".to_owned()));
-        assert_eq!(map.conf_map.get("CVAR").and_then(|x| x.first()), Some(&"1".to_owned()));
+        assert_eq!(
+            map.conf_map.get("PLATFORM").and_then(|x| x.first()),
+            Some(&"win64".to_owned())
+        );
+        assert_eq!(
+            map.conf_map.get("CVAR").and_then(|x| x.first()),
+            Some(&"1".to_owned())
+        );
 
         let mut stmts_ = stmts.subst(&mut map);
         stmts_.strip_trailing_ws();
@@ -73,12 +79,21 @@ fn test_op() {
             Statement::Rule(Link {
                 source: Source {
                     primary: vec![
-                        PathExpr::from("*.cxx".to_string()), Sp1,
-                        PathExpr::from("impl/*.cxx".to_string()), Sp1,
-                        PathExpr::from("*.cpp".to_string()), Sp1,
-                        Group(vec![Literal("../".to_string())], vec![Literal("grp".to_string())]),
+                        PathExpr::from("*.cxx".to_string()),
                         Sp1,
-                        Group(vec![Literal("../".to_string())],vec![Literal("grp2".to_string())]),
+                        PathExpr::from("impl/*.cxx".to_string()),
+                        Sp1,
+                        PathExpr::from("*.cpp".to_string()),
+                        Sp1,
+                        Group(
+                            vec![Literal("../".to_string())],
+                            vec![Literal("grp".to_string())],
+                        ),
+                        Sp1,
+                        Group(
+                            vec![Literal("../".to_string())],
+                            vec![Literal("grp2".to_string())],
+                        ),
                     ],
                     for_each: true,
                     secondary: vec![],
@@ -87,15 +102,21 @@ fn test_op() {
                     secondary: vec![Literal("command.pch".to_string())],
                     primary: vec![],
                     exclude_pattern: Some(ExcludePattern("exclude_pattern.*".to_string())),
-                    group : None,
-                    bin: Some( Bucket("objs".to_string()) ),
+                    group: None,
+                    bin: Some(Bucket("objs".to_string())),
                 },
                 rule_formula: RuleFormula {
                     description: "".to_string(),
                     formula: vec![
-                        Literal("cl".to_string()), Sp1, Literal("%f".to_string()), Sp1,
-                        Literal("/Fout:%o".to_string()), Sp1, Literal("%<grp>".to_string()),
-                        Sp1, Literal("%<grp2>".to_string())
+                        Literal("cl".to_string()),
+                        Sp1,
+                        Literal("%f".to_string()),
+                        Sp1,
+                        Literal("/Fout:%o".to_string()),
+                        Sp1,
+                        Literal("%<grp>".to_string()),
+                        Sp1,
+                        Literal("%<grp2>".to_string()),
                     ],
                 },
                 pos: (3, 3),
@@ -110,13 +131,20 @@ fn test_op() {
                     primary: vec![],
                     secondary: vec![Literal("file.txt".to_string())],
                     exclude_pattern: None,
-                    group : None,
+                    group: None,
                     bin: None,
                 },
                 rule_formula: RuleFormula {
                     description: "".to_string(),
-                    formula : vec![Literal("type".to_string()), Sp1, Literal("%f".to_string()), Sp1,
-                    Literal(">".to_string()), Sp1, Literal("file.txt".to_string())],
+                    formula: vec![
+                        Literal("type".to_string()),
+                        Sp1,
+                        Literal("%f".to_string()),
+                        Sp1,
+                        Literal(">".to_string()),
+                        Sp1,
+                        Literal("file.txt".to_string()),
+                    ],
                     //formula: vec![Literal("type %f > file.txt ".to_string())],
                 },
                 pos: (6, 2),
@@ -132,7 +160,7 @@ fn test_op() {
                     secondary: vec![],
                     exclude_pattern: None,
                     group: None,
-                    bin : None,
+                    bin: None,
                 },
                 rule_formula: RuleFormula {
                     description: "".to_string(),
@@ -188,14 +216,18 @@ fn test_parse() {
     let comment = parser::parse_statement(Span::new(b"#Source files\n"));
     let res64 = comment.unwrap().1;
     assert_eq!(res64, Statement::Comment);
-    let res65 = parser::parse_statement(Span::new(b"DEBUG = 1\n")).unwrap().1;
+    let res65 = parser::parse_statement(Span::new(b"DEBUG = 1\n"))
+        .unwrap()
+        .1;
     let res66 = parser::parse_statement(Span::new(b"SRCS= *.cxx\n"))
         .unwrap()
         .1;
     let res67 = parser::parse_statement(Span::new(b"SRCS +=*.cpp\n"))
-        .unwrap().1;
+        .unwrap()
+        .1;
     let res68 = parser::parse_macroassignment(Span::new(b"!CC = |> cl %f /Fout:a.o |> \n"))
-        .unwrap().1;
+        .unwrap()
+        .1;
     let res7 = parser::parse_statement(Span::new(
         b"ifeq ($(DEBUG),1)\n: foreach $(SRCS) |>\
                                  !CC %<grp> %<grp2> |> command.pch |\
@@ -213,7 +245,11 @@ fn test_parse() {
     assert_eq!(stmts_.len(), 1);
     let prog = vec![Statement::Rule(Link {
         source: Source {
-            primary: vec![Literal("*.cxx".to_string()),Sp1, Literal("*.cpp".to_string())],
+            primary: vec![
+                Literal("*.cxx".to_string()),
+                Sp1,
+                Literal("*.cpp".to_string()),
+            ],
             for_each: true,
             secondary: vec![],
         },
@@ -221,8 +257,11 @@ fn test_parse() {
             secondary: vec![Literal("command.pch".to_string())],
             primary: vec![Literal("%B.o".to_string())],
             exclude_pattern: None,
-            group: Some( Group(vec![Literal("../".to_string())],  vec![Literal("grp3".to_string())])),
-            bin : None
+            group: Some(Group(
+                vec![Literal("../".to_string())],
+                vec![Literal("grp3".to_string())],
+            )),
+            bin: None,
         },
         rule_formula: RuleFormula {
             description: "".to_string(),
@@ -240,18 +279,55 @@ fn test_parse() {
     })];
 
     assert_eq!(stmts_[0], prog[0], "\r\nfound first but expected second");
-    let rule = parser::parse_statement(Span::new(b":|> ^ touch %o^ touch > %o |> out.txt\n")).unwrap().1;
+    let rule = parser::parse_rule(Span::new(b":|> ^ touch %o^ touch %o |> out.txt\n"))
+        .unwrap()
+        .1;
     use statements::PathExpr;
-   // use statements::Link;
-    assert_eq!( rule,
-                Statement::Rule(Link {
-                                target: Target { primary: vec![PathExpr::from("out.txt".to_string())], ..Default::default() },
-                                rule_formula:
-                                RuleFormula { description: " touch %o".to_string(),
-                                    formula: vec![ Literal("touch".to_string()), Sp1, Literal(">".to_string()), Sp1,
-                                        Literal("%o".to_string()), Sp1], },
-                                pos : (1,2),
-                                ..Default::default()}));
+    // use statements::Link;
+    assert_eq!(
+        rule,
+        Statement::Rule(Link {
+            target: Target {
+                primary: vec![PathExpr::from("out.txt".to_string())],
+                ..Default::default()
+            },
+            rule_formula: RuleFormula {
+                description: " touch %o".to_string(),
+                formula: vec![
+                    Literal("touch".to_string()),
+                    Sp1,
+                    Literal("%o".to_string()),
+                    Sp1
+                ],
+            },
+            pos: (1, 2),
+            ..Default::default()
+        })
+    );
+    use decode::*;
+    let taginfo = OutputTagInfo::new();
+    use decode::DeGlobber;
+    let decodedrule = rule.deglob_and_decode(Path::new("."), &taginfo);
+    use statements::Cat;
+    if let Some(Statement::Rule(Link {
+        ref rule_formula, ..
+    })) = decodedrule.0.first()
+    {
+        assert_eq!(rule_formula.formula.cat(), "touch out.txt ".to_string());
+        assert_eq!(rule_formula.description, " touch out.txt".to_string());
+    }
+    let rule1 = parser::parse_rule(Span::new(b": file.txt |> type %f|>"))
+        .unwrap()
+        .1;
+
+    let decodedrule1 = rule1.deglob_and_decode(Path::new("."), &taginfo);
+    if let Some(Statement::Rule(Link {
+        ref rule_formula, ..
+    })) = decodedrule1.0.first()
+    {
+        let rf = rule_formula.formula.cat();
+        assert_eq!(rf, "type file.txt".to_string());
+    }
 
     // assert_eq!(deglob(&prog[0]).len(), 18);
 }

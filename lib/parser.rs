@@ -1,10 +1,11 @@
 use nom::character::complete::{line_ending, multispace0, multispace1, space1};
 use nom::combinator::{complete, cut, map, map_res, not, opt, peek, value};
 use nom::error::{context, ErrorKind};
-use nom::multi::{many1, many0, many_till};
+use nom::multi::{many0, many1, many_till};
 use nom::sequence::{delimited, preceded};
-use nom::{AsBytes};
+use nom::AsBytes;
 
+use nom::bytes::complete::{is_a, is_not};
 use nom::Err;
 use nom::IResult;
 use nom::{
@@ -15,7 +16,6 @@ use nom::{
 use nom_locate::{position, LocatedSpan};
 use statements::*;
 use std::path::{Path, PathBuf};
-use nom::bytes::complete::{is_a, is_not};
 
 type Span<'a> = LocatedSpan<&'a [u8]>;
 fn to_lval(name: String) -> Ident {
@@ -25,14 +25,14 @@ fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
 }
 
-lazy_static! (
+lazy_static! {
     static ref BRKTOKSINNER: &'static str = "\\\n$&";
-    static ref BRKTOKS : &'static str = "\\\n$@&";
-    static ref BRKTOKSWS : &'static str = "\\\n$@& ";
-    static ref BRKTOKSIO : &'static str = "\\\n $@&^<{";
-    static ref BRKTAGSNOWS : &'static str = "<|{^";
-    static ref BRKTAGS : &'static str = " <|{^";
-);
+    static ref BRKTOKS: &'static str = "\\\n$@&";
+    static ref BRKTOKSWS: &'static str = "\\\n$@& ";
+    static ref BRKTOKSIO: &'static str = "\\\n $@&^<{";
+    static ref BRKTAGSNOWS: &'static str = "<|{^";
+    static ref BRKTAGS: &'static str = " <|{^";
+}
 
 // convert byte str to PathExpr
 fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
@@ -53,8 +53,7 @@ fn ws1(input: Span) -> IResult<Span, Span> {
         map(peek(one_of("<{")), |_| Span::new(b"".as_ref())),
     ))(input)
 }
-fn manynewlineesc(input : Span) -> IResult<Span, Span>
-{
+fn manynewlineesc(input: Span) -> IResult<Span, Span> {
     let (s, _) = many1(preceded(tag("\\"), line_ending))(input)?;
     Ok((s, default_inp()))
 }
@@ -63,10 +62,9 @@ fn sp1(input: Span) -> IResult<Span, Span> {
     alt((complete(manynewlineesc), space1))(input)
 }
 // checks for presence of a group expression that begins with some path.`
-fn parse_pathexpr_raw_angle(input : Span) -> IResult<Span, Span>
-{
+fn parse_pathexpr_raw_angle(input: Span) -> IResult<Span, Span> {
     let i = input.clone();
-    preceded( is_not(*BRKTAGS), tag("<"))(i)
+    preceded(is_not(*BRKTAGS), tag("<"))(i)
 }
 
 // parse expession wrapped inside dollar or at
@@ -103,19 +101,16 @@ fn parse_pathexpr_hat(i: Span) -> IResult<Span, String> {
 }
 
 // read '<' and the list of rvals inside it until '>'
-fn parse_pathexpr_angle(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Vec<PathExpr>) >  {
+fn parse_pathexpr_angle(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)> {
     //let input = i.clone();
-    let (s, v0) = many_till(
-        |i| parse_pathexpr_no_ws(i, " \t\r\n<{", *BRKTOKS),
-        tag("<")
-    )(i)?;
+    let (s, v0) = many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n<{", *BRKTOKS), tag("<"))(i)?;
     //let (s, _) = tag("<")(s)?;
-   let (s, v) =  many_till(
+    let (s, v) = many_till(
         |i| parse_pathexpr_ws(i, ">", *BRKTOKSWS), // avoid reading tags , newlines, spaces
         tag(">"),
     )(s)?;
     //let v0 = v0.map(|x| x.0);
-    Ok( (s, (v0.0, v.0)))
+    Ok((s, (v0.0, v.0)))
 }
 // parse rvalue at expression eg $(H) for config vars
 fn parse_pathexpr_at(i: Span) -> IResult<Span, PathExpr> {
@@ -149,7 +144,7 @@ fn parse_pathexpr_amp(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_macroref(i: Span) -> IResult<Span, PathExpr> {
     context(
         "reference to macro",
-       map(parse_pathexpr_raw_macroref, |rv| {
+        map(parse_pathexpr_raw_macroref, |rv| {
             PathExpr::MacroRef(rv.to_owned())
         }),
     )(i)
@@ -157,16 +152,14 @@ fn parse_pathexpr_macroref(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_exclude_pattern(i: Span) -> IResult<Span, PathExpr> {
     context(
         "exclude pattern",
-        map(parse_pathexpr_hat,
-            |rv| PathExpr::ExcludePattern(rv)),
+        map(parse_pathexpr_hat, |rv| PathExpr::ExcludePattern(rv)),
     )(i)
 }
 
 fn parse_pathexpr_group(i: Span) -> IResult<Span, PathExpr> {
     context(
         "group",
-        map(parse_pathexpr_angle,
-                |rv| PathExpr::Group(rv.0, rv.1)),
+        map(parse_pathexpr_angle, |rv| PathExpr::Group(rv.0, rv.1)),
     )(i)
 }
 
@@ -184,12 +177,11 @@ pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
         b"\\\n" => {
             let (s, _) = take(2 as usize)(i)?;
             Ok((s, PathExpr::from("".to_string())))
-        },
-        b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\<" | b"\\^"  | b"\\|"      =>
-            {
-                let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
-                Ok( (s,pe))
-            },
+        }
+        b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\<" | b"\\^" | b"\\|" => {
+            let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
+            Ok((s, pe))
+        }
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))), //FIXME: what errorkind should we return?
     }
 }
@@ -200,21 +192,18 @@ pub fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
         b"$" => parse_pathexpr_dollar(s),
         b"@" => parse_pathexpr_at(s),
         b"&" => parse_pathexpr_amp(s),
-    //    b"<" => parse_pathexpr_group(s),
-     //   b"{" => parse_pathexpr_bin(s),
-     //   b"!" => parse_pathexpr_macroref(s),
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))), //fixme: what errorkind should we return?
     }
 }
 
-
 pub fn parse_ws(i: Span) -> IResult<Span, PathExpr> {
-    let (s, _) = is_a( " \t")(i)?;
+    let (s, _) = is_a(" \t")(i)?;
     Ok((s, PathExpr::Sp1))
 }
 // eat up the (dollar or at) that dont parse to (dollar or at) expression
-fn parse_delim<'a,F>(i: Span<'a>, toks:&'static str, f:F) -> nom::IResult<Span<'a>, Span<'a>>
-   where F: Fn(Span<'a>) -> IResult<Span<'a>, PathExpr>,
+fn parse_delim<'a, F>(i: Span<'a>, toks: &'static str, f: F) -> nom::IResult<Span<'a>, Span<'a>>
+where
+    F: Fn(Span<'a>) -> IResult<Span<'a>, PathExpr>,
 {
     let (s, _) = peek(one_of(toks))(i)?;
     let (s, _) = not(f)(s)?; //TODO : is this really necessary?
@@ -225,11 +214,16 @@ fn parse_delim<'a,F>(i: Span<'a>, toks:&'static str, f:F) -> nom::IResult<Span<'
 // eats up \\n
 // consume dollar's etc that where left out during previous parsing
 // consume a literal that is not a pathexpr token
-fn parse_misc_bits<'a, 'b, F>(input: Span<'a>, delim: &'b str, pathexpr_toks: &'static str, primary_parser: F)
-    -> nom::IResult<Span<'a>, Span<'a>>
- where F : Fn(Span<'a>) -> IResult<Span<'a>,PathExpr>
+fn parse_misc_bits<'a, 'b, F>(
+    input: Span<'a>,
+    delim: &'b str,
+    pathexpr_toks: &'static str,
+    primary_parser: F,
+) -> nom::IResult<Span<'a>, Span<'a>>
+where
+    F: Fn(Span<'a>) -> IResult<Span<'a>, PathExpr>,
 {
-    let islit = |ref i| { !delim.as_bytes().contains(i) && !pathexpr_toks.as_bytes().contains(i)};
+    let islit = |ref i| !delim.as_bytes().contains(i) && !pathexpr_toks.as_bytes().contains(i);
     alt((
         complete(map(preceded(tag("\\"), line_ending), |_| default_inp())),
         complete(|i| parse_delim(i, pathexpr_toks, &primary_parser)),
@@ -238,19 +232,33 @@ fn parse_misc_bits<'a, 'b, F>(input: Span<'a>, delim: &'b str, pathexpr_toks: &'
 }
 // parse either (dollar|at|) expression or a general rvalue delimited by delim
 // pathexpr_toks are the tokens that identify a tup-expression such as $expr, &expr, {bin} or <grp>
-fn parse_pathexpr_ws<'a, 'b>(s: Span<'a>, delim: &'b str, pathexpr_toks: &'static str) -> nom::IResult<Span<'a>, PathExpr> {
-        alt((
-            complete(parse_ws),
-            complete(parse_escaped),
-            complete(parse_pathexprbasic),
-            complete(map_res(|i| parse_misc_bits(i, delim, pathexpr_toks, parse_pathexprbasic), from_str)),
-        ))(s)
+fn parse_pathexpr_ws<'a, 'b>(
+    s: Span<'a>,
+    delim: &'b str,
+    pathexpr_toks: &'static str,
+) -> nom::IResult<Span<'a>, PathExpr> {
+    alt((
+        complete(parse_ws),
+        complete(parse_escaped),
+        complete(parse_pathexprbasic),
+        complete(map_res(
+            |i| parse_misc_bits(i, delim, pathexpr_toks, parse_pathexprbasic),
+            from_str,
+        )),
+    ))(s)
 }
-fn parse_pathexpr_no_ws<'a, 'b>(s: Span<'a>, delim: &'b str, pathexpr_toks: &'static str) -> nom::IResult<Span<'a>, PathExpr> {
+fn parse_pathexpr_no_ws<'a, 'b>(
+    s: Span<'a>,
+    delim: &'b str,
+    pathexpr_toks: &'static str,
+) -> nom::IResult<Span<'a>, PathExpr> {
     alt((
         complete(parse_escaped),
         complete(parse_pathexprbasic),
-        complete(map_res(|i| parse_misc_bits(i, delim, pathexpr_toks, parse_pathexprbasic), from_str)),
+        complete(map_res(
+            |i| parse_misc_bits(i, delim, pathexpr_toks, parse_pathexprbasic),
+            from_str,
+        )),
     ))(s)
 }
 
@@ -258,17 +266,23 @@ fn parse_pathexpr_no_ws<'a, 'b>(s: Span<'a>, delim: &'b str, pathexpr_toks: &'st
 fn parse_pelist_till_delim_with_ws<'a, 'b>(
     input: Span<'a>,
     delim: &'b str,
-    pathexpr_delims: &'static str
+    pathexpr_delims: &'static str,
 ) -> nom::IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
-    many_till(|i| parse_pathexpr_ws(i, delim, pathexpr_delims), is_a(delim))(input)
+    many_till(
+        |i| parse_pathexpr_ws(i, delim, pathexpr_delims),
+        is_a(delim),
+    )(input)
 }
 // repeatedly invoke the rvalue parser until eof or delim is encountered
 fn parse_pelist_till_delim_no_ws<'a, 'b>(
     input: Span<'a>,
     delim: &'b str,
-    pathexpr_delims: &'static str
+    pathexpr_delims: &'static str,
 ) -> nom::IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
-    many_till(|i| parse_pathexpr_no_ws(i, delim, pathexpr_delims), is_a(delim))(input)
+    many_till(
+        |i| parse_pathexpr_no_ws(i, delim, pathexpr_delims),
+        is_a(delim),
+    )(input)
 }
 
 //  wrapper over the previous parser that handles empty inputs and stops at newline;
@@ -284,10 +298,7 @@ fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExp
 
 // read all pathexpr separated by whitespaces, pausing at BRKTOKS
 fn parse_pathexpr_list_until_ws_plus(input: Span) -> nom::IResult<Span, (Vec<PathExpr>, Span)> {
-    many_till(
-        |i| parse_pathexpr_no_ws(i, " \t\r\n", *BRKTOKS),
-        ws1,
-    )(input)
+    many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n", *BRKTOKS), ws1)(input)
 }
 
 // parse a lvalue ref to a ident
@@ -346,12 +357,15 @@ fn parse_import(i: Span) -> IResult<Span, Statement> {
     let (s, _) = sp1(s)?;
     let (s, r) = context("import expression", cut(take_while(is_ident)))(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
-    let(s, def) =  opt( preceded(tag("="), preceded(multispace0, cut(take_while(is_ident)))) )(s)?;
+    let (s, def) = opt(preceded(
+        tag("="),
+        preceded(multispace0, cut(take_while(is_ident))),
+    ))(s)?;
     let (s, _) = multispace0(s)?;
     let (s, _) = line_ending(s)?;
 
     // https://stackoverflow.com/questions/52453180/how-do-i-unwrap-an-arbitrary-number-of-nested-option-types
-    let default_raw = def.and_then(|x|from_utf8(x).ok());
+    let default_raw = def.and_then(|x| from_utf8(x).ok());
     Ok((s, Statement::Import(raw.to_owned(), default_raw)))
 }
 
@@ -438,7 +452,7 @@ fn parse_letref_expr(i: Span) -> IResult<Span, Statement> {
 fn parse_rule_flags_or_description(i: Span) -> IResult<Span, String> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("^")(s)?;
-    let (s, r) =  cut(map_res(take_until("^"), from_utf8))(s)?;
+    let (s, r) = cut(map_res(take_until("^"), from_utf8))(s)?;
     let (s, _) = tag("^")(s)?;
     let (s, _) = multispace0(s)?;
     Ok((s, String::from(r)))
@@ -446,8 +460,11 @@ fn parse_rule_flags_or_description(i: Span) -> IResult<Span, String> {
 
 // parse the insides of a rule, which includes a description and rule formula
 fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
-    let (s, desc) = opt(context("parsing rule flags/descriptions", parse_rule_flags_or_description))(i)?;
-    let( s, me) = opt(parse_pathexpr_macroref)(s)?;
+    let (s, desc) = opt(context(
+        "parsing rule flags/descriptions",
+        parse_rule_flags_or_description,
+    ))(i)?;
+    let (s, me) = opt(parse_pathexpr_macroref)(s)?;
     let (s, formula) = parse_pelist_till_delim_with_ws(s, "|", *BRKTOKSWS)?;
     Ok((
         s,
@@ -471,7 +488,7 @@ fn from_input(primary: Vec<PathExpr>, for_each: bool, secondary: Vec<PathExpr>) 
 fn from_output(
     primary: Vec<PathExpr>,
     secondary: Vec<PathExpr>,
-    exclude : Option<PathExpr>,
+    exclude: Option<PathExpr>,
     group: Option<PathExpr>,
     bin: Option<PathExpr>,
 ) -> Target {
@@ -480,7 +497,7 @@ fn from_output(
         secondary,
         exclude_pattern: exclude,
         group,
-        bin
+        bin,
     }
 }
 
@@ -488,15 +505,18 @@ fn default_inp<'a>() -> Span<'a> {
     Span::new(b"")
 }
 
-fn parse_rule_inp(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Span)>  {
+fn parse_rule_inp(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Span)> {
     let (s, _) = opt(sp1)(i)?;
     let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
-    many_till( alt( (
-        complete(parse_pathexpr_exclude_pattern),
-        complete(parse_pathexpr_group),
-        complete(parse_pathexpr_bin),
-        complete(pe),
-    )), tag("|"))(s)
+    many_till(
+        alt((
+            complete(parse_pathexpr_exclude_pattern),
+            complete(parse_pathexpr_group),
+            complete(parse_pathexpr_bin),
+            complete(pe),
+        )),
+        tag("|"),
+    )(s)
 }
 // parse secondary input in a rule expression
 fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
@@ -504,36 +524,39 @@ fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     let (s, _) = opt(sp1)(i)?;
     let (s, _) = tag("|")(s)?;
     let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
-    many_till( alt( (
-        complete(parse_pathexpr_group),
-        complete(parse_pathexpr_bin),
-        complete(pe),
-    )), tag("|"))(s)
+    many_till(
+        alt((
+            complete(parse_pathexpr_group),
+            complete(parse_pathexpr_bin),
+            complete(pe),
+        )),
+        tag("|"),
+    )(s)
 }
 
-fn parse_output_delim(i: Span) -> IResult<Span,Span>
-{
+fn parse_output_delim(i: Span) -> IResult<Span, Span> {
     //let inp = i.clone();
-    alt((complete(line_ending),
-        complete(map(peek(one_of(*BRKTAGSNOWS)),|_| i)),
-         complete(peek(parse_pathexpr_raw_angle))))(i)
+    alt((
+        complete(line_ending),
+        complete(map(peek(one_of(*BRKTAGSNOWS)), |_| i)),
+        complete(peek(parse_pathexpr_raw_angle)),
+    ))(i)
 }
 
 fn parse_primary_output1(i: Span) -> nom::IResult<Span, Vec<PathExpr>> {
     let (s, _) = tag("|")(i)?;
     let pe = |i| parse_pathexpr_ws(i, "\r\n", *BRKTOKSIO);
-    let (s, v0) = many_till( pe, parse_output_delim)(s)?;
-    Ok((s,v0.0))
+    let (s, v0) = many_till(pe, parse_output_delim)(s)?;
+    Ok((s, v0.0))
 }
 
-fn parse_primary_output0(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, bool) > {
+fn parse_primary_output0(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, bool)> {
     let (s, _) = opt(sp1)(i)?;
     let pe = |i| parse_pathexpr_ws(i, "|<{^\r\n", *BRKTOKSIO);
-    let (s, v0) = many_till(
-        pe, parse_output_delim)(s)?;
+    let (s, v0) = many_till(pe, parse_output_delim)(s)?;
     //eprintln!("{}", v0.1.as_bytes().first().unwrap_or(&b' ').as_char());
-    let has_more =  v0.1.as_bytes().first().map(|& c| c == b'|').unwrap_or(false);
-    Ok((s,(v0.0, has_more) ))
+    let has_more = v0.1.as_bytes().first().map(|&c| c == b'|').unwrap_or(false);
+    Ok((s, (v0.0, has_more)))
 }
 // parse a rule expression
 // : [foreach] [inputs] [ | order-only inputs] |> command |> [outputs] [ | extra outputs] [<group>] [{bin}]
@@ -543,18 +566,15 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
     let (s, pos) = position(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, for_each) = opt(tag("foreach"))(s)?;
-    let (s, input) = context(
-        "rule input",
-        cut(opt(parse_rule_inp))
-    )(s)?;
+    let (s, input) = context("rule input", cut(opt(parse_rule_inp)))(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, c) = peek(take(1 as usize))(s)?;
-    let (s,secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
+    let (s, secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
         let (s, _) = opt(sp1)(s)?;
         let (s, secondary_input) = context("secondary inputs", opt(parse_secondary_inp))(s)?;
-        (s,secondary_input)
-    }else {
-        (s,None)
+        (s, secondary_input)
+    } else {
+        (s, None)
     };
     let (s, _) = tag(">")(s)?;
     let (s, _) = opt(sp1)(s)?;
@@ -562,25 +582,21 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
     let (s, _) = tag(">")(s)?;
     let (s, _) = opt(sp1)(s)?;
     // read until "|" or lineending
-    let (s, output0) = context(
-        "rule output",
-        opt(parse_primary_output0),
-    )(s)?;
-    let has_more = output0.as_ref().map_or(false, |(_,has_more)| has_more.clone());
-    let (s, output1) =
-        if has_more {
-            context( "rule output",
-                     cut(parse_primary_output1))(s)? }
-        else {
-            (s, vec![])
-        };
+    let (s, output0) = context("rule output", opt(parse_primary_output0))(s)?;
+    let has_more = output0
+        .as_ref()
+        .map_or(false, |(_, has_more)| has_more.clone());
+    let (s, output1) = if has_more {
+        context("rule output", cut(parse_primary_output1))(s)?
+    } else {
+        (s, vec![])
+    };
 
-    let (output, secondary_output) =
-        if has_more {
-            (output1, output0.unwrap().0)
-        } else {
-            (output0.unwrap().0, Vec::new())
-        };
+    let (output, secondary_output) = if has_more {
+        (output1, output0.unwrap_or((Vec::new(), false)).0)
+    } else {
+        (output0.unwrap_or((Vec::new(), false)).0, Vec::new())
+    };
     let (s, exclude_patterns) = opt(parse_pathexpr_exclude_pattern)(s)?;
     // let secondary_output = if hassecondary { output1.unwrap_or(Vec::new())} else { Vec::new() };
     let (s, _) = opt(sp1)(s)?;
@@ -597,13 +613,7 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
                 for_each.is_some(),
                 secondary_input.unwrap_or((Vec::new(), default_inp())).0,
             ),
-            target: from_output(
-                output,
-                secondary_output,
-                 exclude_patterns,
-                v1,
-                v2
-            ),
+            target: from_output(output, secondary_output, exclude_patterns, v1, v2),
             rule_formula,
             pos: (pos.location_line(), pos.get_column()),
         }),
@@ -622,48 +632,38 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
     let (s, _) = opt(sp1)(s)?;
     let (s, for_each) = opt(tag("foreach"))(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, input) = opt(context(
-        "rule input",
-        cut(parse_rule_inp)),
-    )(s)?;
+    let (s, input) = opt(context("rule input", cut(parse_rule_inp)))(s)?;
     let (s, c) = peek(take(1 as usize))(s)?;
-    let (s,secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
+    let (s, secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
         let (s, _) = opt(sp1)(s)?;
-        let (s, secondary_input) = opt(context(
-            "rule secondary input",
-            cut(parse_secondary_inp))
-        )(s)?;
-        (s,secondary_input)
-    }else {
-        (s,None)
+        let (s, secondary_input) =
+            opt(context("rule secondary input", cut(parse_secondary_inp)))(s)?;
+        (s, secondary_input)
+    } else {
+        (s, None)
     };
     let (s, _) = tag(">")(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, rule_formula) = context("rule formula", cut(parse_rule_gut))(s)?;
     let (s, _) = tag(">")(s)?;
-    let (s, output0) = context(
-        "rule output",
-        opt(parse_primary_output0),
-    )(s)?;
-    let has_more = output0.as_ref().map_or(false, |(_,has_more)| has_more.clone());
-    let (s, output1) =
-        if has_more {
-            context( "rule output",
-                    opt(parse_primary_output1))(s)? }
-        else {
-            (s, None)
-        };
+    let (s, output0) = context("rule output", opt(parse_primary_output0))(s)?;
+    let has_more = output0
+        .as_ref()
+        .map_or(false, |(_, has_more)| has_more.clone());
+    let (s, output1) = if has_more {
+        context("rule output", opt(parse_primary_output1))(s)?
+    } else {
+        (s, None)
+    };
 
-    let (output, secondary_output) =
-        if has_more {
-            (output0.unwrap().0, output1.unwrap_or(Vec::new()))
-        } else {
-            (output1.unwrap_or(Vec::new()), Vec::new())
-        };
-/*    let output = if has_secondary { output0.unwrap() } else { output1.unwrap_or(Vec::new())};
-    let secondary_output = if has_secondary { output1.unwrap_or(Vec::new())} else { Vec::new() };
-*/
-
+    let (output, secondary_output) = if has_more {
+        (output0.unwrap().0, output1.unwrap_or(Vec::new()))
+    } else {
+        (output1.unwrap_or(Vec::new()), Vec::new())
+    };
+    /*    let output = if has_secondary { output0.unwrap() } else { output1.unwrap_or(Vec::new())};
+        let secondary_output = if has_secondary { output1.unwrap_or(Vec::new())} else { Vec::new() };
+    */
 
     Ok((
         s,
@@ -675,13 +675,7 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
                     for_each.is_some(),
                     secondary_input.unwrap_or((Vec::new(), default_inp())).0,
                 ),
-                target: from_output(
-                    output,
-                    secondary_output,
-                    None,
-                    None,
-                    None
-                ),
+                target: from_output(output, secondary_output, None, None, None),
                 rule_formula,
                 pos: (pos.location_line(), pos.get_column()),
             },
@@ -727,9 +721,10 @@ pub fn parse_statements_until_eof(i: Span) -> IResult<Span, Vec<Statement>> {
 // parse equality condition (only the condition, not the statements that follow if)
 pub fn parse_eq(i: Span) -> IResult<Span, EqCond> {
     let (s, _) = opt(ws1)(i)?;
-    let (s, not_cond)
-        = alt((complete(value(false, tag("ifeq"))),
-                 complete(value(true, tag("ifneq")))))(s)? ;
+    let (s, not_cond) = alt((
+        complete(value(false, tag("ifeq"))),
+        complete(value(true, tag("ifneq"))),
+    ))(s)?;
     let (s, _) = opt(ws1)(s)?;
     let (s, _) = char('(')(s)?;
     let (s, e1) = parse_pelist_till_delim_no_ws(s, ",", *BRKTOKS)?;
@@ -744,7 +739,6 @@ pub fn parse_eq(i: Span) -> IResult<Span, EqCond> {
         },
     ))
 }
-
 
 pub fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
     let (s, _) = opt(ws1)(i)?;
