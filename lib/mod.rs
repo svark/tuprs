@@ -9,12 +9,14 @@ extern crate regex;
 //use statements::StripTrailingWs;
 
 pub mod decode;
+pub mod errors;
 pub mod parser;
 mod platform;
 pub mod statements;
 pub mod transform;
-//#[macro_use]
-//extern crate thiserror;
+extern crate thiserror;
+
+use statements::LocatedStatement;
 
 #[test]
 fn test_op() {
@@ -50,7 +52,7 @@ fn test_op() {
         file.write_all(stmts2).expect("write failed to config file");
     }
     {
-        let stmts = parser::parse_tupfile("tupdata1.txt");
+        let stmts = parser::parse_tupfile("tupdata1.txt").expect("failed to parse tupdata1.txt");
         use statements::PathExpr::{Bucket, ExcludePattern, Group, Literal};
         use statements::{Link, RuleFormula, Source, Statement, Target};
         use transform::*;
@@ -58,7 +60,7 @@ fn test_op() {
         use std::path::Path;
         let tuppath = Path::new("./tupdata1.txt");
         let mut map = SubstMap {
-            conf_map: load_conf_vars(tuppath),
+            conf_map: load_conf_vars(tuppath).expect("conf var open error from tupdata1.txt"),
             ..SubstMap::default()
         };
         set_cwd(tuppath, &mut map);
@@ -72,7 +74,7 @@ fn test_op() {
             Some(&"1".to_owned())
         );
 
-        let mut stmts_ = stmts.subst(&mut map);
+        let mut stmts_ = stmts.subst(&mut map).unwrap();
         stmts_.strip_trailing_ws();
         assert_eq!(stmts_.len(), 3);
         let resolvedexpr = [
@@ -174,9 +176,9 @@ fn test_op() {
             }),
         ];
 
-        assert_eq!(stmts_[0], resolvedexpr[0]);
-        assert_eq!(stmts_[1], resolvedexpr[1]);
-        assert_eq!(stmts_[2], resolvedexpr[2]);
+        assert_eq!(stmts_[0].statement, resolvedexpr[0]);
+        assert_eq!(stmts_[1].statement, resolvedexpr[1]);
+        assert_eq!(stmts_[2].statement, resolvedexpr[2]);
     }
 }
 
@@ -214,34 +216,49 @@ fn test_parse() {
         assert_eq!(res1.unwrap().1, prog1);
     }
     let comment = parser::parse_statement(Span::new(b"#Source files\n"));
-    let res64 = comment.unwrap().1;
+    let res64 = comment.unwrap().1.statement;
     assert_eq!(res64, Statement::Comment);
     let res65 = parser::parse_statement(Span::new(b"DEBUG = 1\n"))
         .unwrap()
-        .1;
+        .1
+        .statement;
     let res66 = parser::parse_statement(Span::new(b"SRCS= *.cxx\n"))
         .unwrap()
-        .1;
+        .1
+        .statement;
     let res67 = parser::parse_statement(Span::new(b"SRCS +=*.cpp\n"))
         .unwrap()
-        .1;
+        .1
+        .statement;
     let res68 = parser::parse_macroassignment(Span::new(b"!CC = |> cl %f /Fout:a.o |> \n"))
         .unwrap()
-        .1;
+        .1
+        .statement;
     let res7 = parser::parse_statement(Span::new(
         b"ifeq ($(DEBUG),1)\n: foreach $(SRCS) |>\
                                  !CC %<grp> %<grp2> |> command.pch |\
                                  %B.o ../<grp3>\nelse\nx+=eere\nendif\n",
     ))
     .unwrap()
-    .1;
-    let mut stmts = vec![res64, res65, res66, res67, res68, res7];
+    .1
+    .statement;
+    let loc = statements::Loc::new(0, 0);
+    let stmts_raw = vec![res64, res65, res66, res67, res68, res7];
+    let mut stmtsloc: Vec<_> = stmts_raw
+        .into_iter()
+        .map(|x| LocatedStatement::new(x, loc))
+        .collect();
     use std::path::Path;
-    stmts.strip_trailing_ws();
+    stmtsloc.strip_trailing_ws();
 
     let mut map = SubstMap::default();
     set_cwd(Path::new("."), &mut map);
-    let stmts_ = stmts.subst(&mut map);
+    let stmts_ = stmtsloc
+        .subst(&mut map)
+        .expect("subst failure")
+        .into_iter()
+        .map(|x| x.statement)
+        .collect::<Vec<_>>();
     assert_eq!(stmts_.len(), 1);
     let prog = vec![Statement::Rule(Link {
         source: Source {
@@ -281,7 +298,8 @@ fn test_parse() {
     assert_eq!(stmts_[0], prog[0], "\r\nfound first but expected second");
     let rule = parser::parse_rule(Span::new(b":|> ^ touch %o^ touch %o |> out.txt\n"))
         .unwrap()
-        .1;
+        .1
+        .statement;
     use statements::PathExpr;
     // use statements::Link;
     assert_eq!(
@@ -306,24 +324,36 @@ fn test_parse() {
     );
     use decode::*;
     let taginfo = OutputTagInfo::new();
-    use decode::DeGlobber;
-    let decodedrule = rule.deglob_and_decode(Path::new("."), &taginfo);
+    use decode::PathDecoder;
+    use statements::Loc;
+    let decodedrule = LocatedStatement::new(rule, Loc::new(0, 0))
+        .decode(Path::new("."), &taginfo)
+        .unwrap();
     use statements::Cat;
-    if let Some(Statement::Rule(Link {
-        ref rule_formula, ..
-    })) = decodedrule.0.first()
+    if let Some(&LocatedStatement {
+        statement: Statement::Rule(Link {
+            ref rule_formula, ..
+        }),
+        ..
+    }) = decodedrule.0.first()
     {
         assert_eq!(rule_formula.formula.cat(), "touch out.txt ".to_string());
         assert_eq!(rule_formula.description, " touch out.txt".to_string());
     }
     let rule1 = parser::parse_rule(Span::new(b": file.txt |> type %f|>"))
         .unwrap()
-        .1;
+        .1
+        .statement;
 
-    let decodedrule1 = rule1.deglob_and_decode(Path::new("."), &taginfo);
-    if let Some(Statement::Rule(Link {
-        ref rule_formula, ..
-    })) = decodedrule1.0.first()
+    let decodedrule1 = LocatedStatement::new(rule1, Loc::new(0, 0))
+        .decode(Path::new("."), &taginfo)
+        .unwrap();
+    if let Some(&LocatedStatement {
+        statement: Statement::Rule(Link {
+            ref rule_formula, ..
+        }),
+        ..
+    }) = decodedrule1.0.first()
     {
         let rf = rule_formula.formula.cat();
         assert_eq!(rf, "type file.txt".to_string());

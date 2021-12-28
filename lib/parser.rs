@@ -24,7 +24,12 @@ fn to_lval(name: String) -> Ident {
 fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
 }
-
+impl Loc {
+    pub fn from_span(span: &Span) -> Loc
+    {
+        Loc::new(span.location_line(), span.get_column() as u32)
+    }
+}
 lazy_static! {
     static ref BRKTOKSINNER: &'static str = "\\\n$&";
     static ref BRKTOKS: &'static str = "\\\n$@&";
@@ -311,28 +316,32 @@ fn parse_lvalue(input: Span) -> IResult<Span, Ident> {
     map(map_res(take_while(is_ident), from_utf8), to_lval)(input)
 }
 
+pub fn to_located_statement(stmt: Statement, i: Span) -> LocatedStatement
+{
+    LocatedStatement::new(stmt, Loc::from_span(&i))
+}
 // parse include expression
-fn parse_include(i: Span) -> IResult<Span, Statement> {
+fn parse_include(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("include")(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context("include statement", cut(parse_pathexpr_list_until_ws_plus))(s)?;
     let (s, _) = multispace0(s)?;
     //let (s, _) = line_ending(s)?;
-    Ok((s, Statement::Include(r.0)))
+    Ok((s, to_located_statement(Statement::Include(r.0), i)))
 }
 // parse error expression
-fn parse_error(i: Span) -> IResult<Span, Statement> {
+fn parse_error(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("error")(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context("error expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
-    Ok((s, Statement::Err(r.0)))
+    Ok((s, to_located_statement(Statement::Err(r.0), i)))
 }
 
 // parse export expression
 // export VARIABLE
-fn parse_export(i: Span) -> IResult<Span, Statement> {
+fn parse_export(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("export")(s)?;
     let (s, _) = sp1(s)?;
@@ -340,7 +349,7 @@ fn parse_export(i: Span) -> IResult<Span, Statement> {
     let (s, _) = multispace0(s)?;
     let (s, _) = line_ending(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
-    Ok((s, Statement::Export(raw.to_owned())))
+    Ok((s, to_located_statement(Statement::Export(raw.to_owned()), i)))
 }
 
 // import VARIABLE[=default]
@@ -351,7 +360,7 @@ fn parse_export(i: Span) -> IResult<Span, Statement> {
 //
 // import CC=gcc
 // : foreach *.c |> $(CC) -c %f -o %o |> %B.o
-fn parse_import(i: Span) -> IResult<Span, Statement> {
+fn parse_import(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("import")(s)?;
     let (s, _) = sp1(s)?;
@@ -366,12 +375,12 @@ fn parse_import(i: Span) -> IResult<Span, Statement> {
 
     // https://stackoverflow.com/questions/52453180/how-do-i-unwrap-an-arbitrary-number-of-nested-option-types
     let default_raw = def.and_then(|x| from_utf8(x).ok());
-    Ok((s, Statement::Import(raw.to_owned(), default_raw)))
+    Ok((s, to_located_statement(Statement::Import(raw.to_owned(), default_raw), i)))
 }
 
 // parse preload expression
 // preload directory
-fn parse_preload(i: Span) -> IResult<Span, Statement> {
+fn parse_preload(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("preload")(s)?;
     let (s, _) = sp1(s)?;
@@ -380,41 +389,41 @@ fn parse_preload(i: Span) -> IResult<Span, Statement> {
 
     let (s, _) = multispace0(s)?;
     let (s, _) = line_ending(s)?;
-    Ok((s, Statement::Preload(r.0)))
+    Ok((s, to_located_statement(Statement::Preload(r.0), i)))
 }
 
 // parse the run expresssion
 // run ./script args
 // reading other directories requires preload
 // run ./build.sh *.c src/*.c
-fn parse_run(i: Span) -> IResult<Span, Statement> {
+fn parse_run(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("run")(s)?;
     let (s, _) = sp1(s)?;
     // run  script paths
     let (s, r) = context("run expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
-    Ok((s, Statement::Run(r.0)))
+    Ok((s, to_located_statement(Statement::Run(r.0), i)))
 }
 // parse include_rules expresssion
-fn parse_include_rules(i: Span) -> IResult<Span, Statement> {
+fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("include_rules")(s)?;
     let (s, _) = context("include_rules", multispace0)(s)?;
     let (s, _) = line_ending(s)?;
-    Ok((s, Statement::IncludeRules))
+    Ok((s, to_located_statement(Statement::IncludeRules, i)))
 }
 
 // parse comment expresssion
-fn parse_comment(i: Span) -> IResult<Span, Statement> {
+fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("#")(s)?;
     let (s, _) = is_not("\n\r")(s)?;
     let (s, _) = line_ending(s)?;
-    Ok((s, Statement::Comment))
+    Ok((s, to_located_statement(Statement::Comment, i)))
 }
 
 // parse an assignment expression
-fn parse_let_expr(i: Span) -> IResult<Span, Statement> {
+fn parse_let_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, l) = parse_lvalue(s)?;
     let (s, _) = opt(sp1)(s)?;
@@ -423,16 +432,16 @@ fn parse_let_expr(i: Span) -> IResult<Span, Statement> {
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
         s,
-        Statement::LetExpr {
+        to_located_statement(Statement::LetExpr {
             left: l,
             right: r.0,
             is_append: (op.as_bytes() == b"+="),
-        },
+        }, i)
     ))
 }
 
 // parse an assignment expression
-fn parse_letref_expr(i: Span) -> IResult<Span, Statement> {
+fn parse_letref_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, l) = parse_lvalue_ref(s)?;
     let (s, _) = opt(sp1)(s)?;
@@ -441,11 +450,11 @@ fn parse_letref_expr(i: Span) -> IResult<Span, Statement> {
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
         s,
-        Statement::LetRefExpr {
+        to_located_statement(Statement::LetRefExpr {
             left: l,
             right: r.0,
             is_append: (op.as_bytes() == b"+="),
-        },
+        }, i)
     ))
 }
 // parse description insude a rule (between ^^)
@@ -505,7 +514,7 @@ fn default_inp<'a>() -> Span<'a> {
     Span::new(b"")
 }
 
-fn parse_rule_inp(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Span)> {
+fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     let (s, _) = opt(sp1)(i)?;
     let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
     many_till(
@@ -543,14 +552,14 @@ fn parse_output_delim(i: Span) -> IResult<Span, Span> {
     ))(i)
 }
 
-fn parse_primary_output1(i: Span) -> nom::IResult<Span, Vec<PathExpr>> {
+fn parse_primary_output1(i: Span) -> IResult<Span, Vec<PathExpr>> {
     let (s, _) = tag("|")(i)?;
     let pe = |i| parse_pathexpr_ws(i, "\r\n", *BRKTOKSIO);
     let (s, v0) = many_till(pe, parse_output_delim)(s)?;
     Ok((s, v0.0))
 }
 
-fn parse_primary_output0(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, bool)> {
+fn parse_primary_output0(i: Span) -> IResult<Span, (Vec<PathExpr>, bool)> {
     let (s, _) = opt(sp1)(i)?;
     let pe = |i| parse_pathexpr_ws(i, "|<{^\r\n", *BRKTOKSIO);
     let (s, v0) = many_till(pe, parse_output_delim)(s)?;
@@ -560,7 +569,7 @@ fn parse_primary_output0(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, bool)> {
 }
 // parse a rule expression
 // : [foreach] [inputs] [ | order-only inputs] |> command |> [outputs] [ | extra outputs] [<group>] [{bin}]
-pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
+pub fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag(":")(s)?;
     let (s, pos) = position(s)?;
@@ -607,7 +616,7 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
     //let (s, _) = line_ending(s)?;
     Ok((
         s,
-        Statement::Rule(Link {
+        to_located_statement(Statement::Rule(Link {
             source: from_input(
                 input.map(|(x, _)| x).unwrap_or(Vec::new()),
                 for_each.is_some(),
@@ -616,13 +625,13 @@ pub fn parse_rule(i: Span) -> IResult<Span, Statement> {
             target: from_output(output, secondary_output, exclude_patterns, v1, v2),
             rule_formula,
             pos: (pos.location_line(), pos.get_column()),
-        }),
+        }), i)
     ))
 }
 
 // parse a macro assignment which is more or less same as parsing a rule expression
 // !macro = [inputs] | [order-only inputs] |> command |> [outputs]
-pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
+pub fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("!")(s)?;
     let (s, macroname) = take_while(is_ident)(s)?;
@@ -667,7 +676,7 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
 
     Ok((
         s,
-        Statement::MacroAssignment(
+        to_located_statement(Statement::MacroAssignment(
             from_utf8(macroname).unwrap_or("".to_owned()),
             Link {
                 source: from_input(
@@ -679,12 +688,12 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, Statement> {
                 rule_formula,
                 pos: (pos.location_line(), pos.get_column()),
             },
-        ),
+        ),i)
     ))
 }
 
 // parse any of the different types of statements in a tupfile
-pub fn parse_statement(i: Span) -> IResult<Span, Statement> {
+pub fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
     alt((
         complete(parse_comment),
         complete(parse_include),
@@ -704,18 +713,28 @@ pub fn parse_statement(i: Span) -> IResult<Span, Statement> {
 }
 
 // parse until the start of else block
-fn parse_statements_until_else(i: Span) -> IResult<Span, (Vec<Statement>, Span)> {
+fn parse_statements_until_else(i: Span) -> IResult<Span, (Vec<LocatedStatement>, Span)> {
     many_till(parse_statement, delimited(opt(ws1), tag("else"), opt(ws1)))(i)
 }
 
 // parse until endif statement
-fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<Statement>, Span)> {
+fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>, Span)> {
     many_till(parse_statement, delimited(opt(ws1), tag("endif"), opt(ws1)))(i)
 }
 
 // parse statements till end of file
-pub fn parse_statements_until_eof(i: Span) -> IResult<Span, Vec<Statement>> {
+pub fn parse_statements_until_eof(i: Span) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
     many0(parse_statement)(i)
+        .map(|v| v.1)
+        .map_err(|e|
+            match e {
+                nom::Err::Incomplete(_) => crate::errors::Error::ParseError("Incomplete data found".to_string(), Loc::new(0,0)),
+                nom::Err::Error(e) => crate::errors::Error::ParseError(format!("Parse Error {:?}", e.code),
+                                                                       Loc::from_span(&e.input)),
+                nom::Err::Failure(e) => crate::errors::Error::ParseError(format!("Parse Failure {:?}", e.code),
+                                                                         Loc::from_span(&e.input)),
+            }
+        )
 }
 
 // parse equality condition (only the condition, not the statements that follow if)
@@ -749,31 +768,31 @@ pub fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
     Ok((s, CheckedVar(var, negate)))
 }
 // parse contents inside if else endif bocks(without condition)
-pub fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, Statement> {
+pub fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, LocatedStatement> {
     let (s, then_else_s) = opt(parse_statements_until_else)(i)?;
     let (s, then_endif_s) = parse_statements_until_endif(s)?;
     if let Some(then_s) = then_else_s {
         Ok((
             s,
-            Statement::IfElseEndIf {
+            to_located_statement(Statement::IfElseEndIf {
                 eq: eqcond,
                 then_statements: then_s.0,
                 else_statements: then_endif_s.0,
-            },
+            }, i)
         ))
     } else {
         Ok((
             s,
-            Statement::IfElseEndIf {
+            to_located_statement(Statement::IfElseEndIf {
                 eq: eqcond,
                 then_statements: then_endif_s.0,
                 else_statements: Vec::new(),
-            },
+            }, i)
         ))
     }
 }
 // parse if else endif block along with condition
-pub fn parse_if_else_endif(i: Span) -> IResult<Span, Statement> {
+pub fn parse_if_else_endif(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, eqcond) = parse_eq(i)?;
     let (s, _) = opt(ws1)(s)?;
     context(
@@ -782,31 +801,31 @@ pub fn parse_if_else_endif(i: Span) -> IResult<Span, Statement> {
     )(s)
 }
 // parse inside a ifdef block
-pub fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, Statement> {
+pub fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, LocatedStatement> {
     let (s, then_else_s) = opt(parse_statements_until_else)(i)?;
     let (s, then_endif_s) = parse_statements_until_endif(s)?;
     if let Some(then_s) = then_else_s {
         Ok((
             s,
-            Statement::IfDef {
+            to_located_statement(Statement::IfDef {
                 checked_var: cvar,
                 then_statements: then_s.0,
                 else_statements: then_endif_s.0,
-            },
+            }, i)
         ))
     } else {
         Ok((
             s,
-            Statement::IfDef {
+            to_located_statement(Statement::IfDef {
                 checked_var: cvar,
                 then_statements: then_endif_s.0,
                 else_statements: Vec::new(),
-            },
+            }, i)
         ))
     }
 }
 // parse if else endif block
-pub fn parse_ifdef_endif(i: Span) -> IResult<Span, Statement> {
+pub fn parse_ifdef_endif(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, cvar) = parse_checked_var(i)?;
     let (s, _) = opt(ws1)(s)?;
     context(
@@ -816,20 +835,14 @@ pub fn parse_ifdef_endif(i: Span) -> IResult<Span, Statement> {
 }
 
 // parse statements in a tupfile
-pub fn parse_tupfile(filename: &str) -> Vec<Statement> {
+pub fn parse_tupfile(filename: &str) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
     use std::fs::File;
     use std::io::prelude::*;
-    let mut file = File::open(filename).expect("no such file");
+    use errors::Error as Err;
+    let mut file = File::open(filename).map_err(|e| Err::IoError(e))?;
     let mut contents = String::new();
-    if file.read_to_string(&mut contents).ok().is_some() {
-        if let Some(v) = parse_statements_until_eof(Span::new(contents.as_bytes())).ok() {
-            v.1
-        } else {
-            Vec::new()
-        }
-    } else {
-        Vec::new()
-    }
+    file.read_to_string(&mut contents).map_err(|e| Err::IoError(e))?;
+    parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
 pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
     let mut cwd = cur_tupfile;
@@ -847,17 +860,13 @@ pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
     locate_file(cur_tupfile, "Tuprules.tup")
 }
 
-pub fn parse_config(filename: &str) -> Vec<Statement> {
+pub fn parse_config(filename: &str) -> Vec<LocatedStatement> {
     use std::fs::File;
     use std::io::prelude::*;
     let mut file = File::open(filename).expect("no such file");
     let mut contents = String::new();
     if file.read_to_string(&mut contents).ok().is_some() {
-        if let Some(v) = parse_statements_until_eof(Span::new(contents.as_bytes())).ok() {
-            v.1
-        } else {
-            Vec::new()
-        }
+        parse_statements_until_eof(Span::new(contents.as_bytes())).ok().unwrap_or(Vec::new())
     } else {
         Vec::new()
     }

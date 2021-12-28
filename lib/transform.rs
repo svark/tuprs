@@ -1,10 +1,10 @@
+use errors::Error as Err;
 use parser::parse_tupfile;
 use parser::{locate_file, locate_tuprules};
 use platform::*;
 use statements::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-
 pub enum StatementContext {
     Export,
     Preload,
@@ -52,12 +52,15 @@ impl SubstMap {
 }
 
 pub trait Subst {
-    fn subst(&self, m: &mut SubstMap) -> Self;
+    fn subst(&self, m: &mut SubstMap) -> Result<Self, Err>
+    where
+        Self: Sized;
 }
 
 pub trait ExpandMacro {
     fn has_ref(&self) -> bool;
-    fn expand(&self, m: &mut SubstMap) -> Self;
+    fn expand(&self, m: &mut SubstMap) -> Result<Self, Err>
+    where  Self:Sized;
 }
 
 fn is_empty(rval: &PathExpr) -> bool {
@@ -170,7 +173,7 @@ fn intersperse_sp1(val: &Vec<String>) -> Vec<PathExpr> {
 }
 
 impl Subst for Vec<PathExpr> {
-    fn subst(&self, m: &mut SubstMap) -> Self {
+    fn subst(&self, m: &mut SubstMap) -> Result<Self,Err> {
         let mut newpe: Vec<_> = self
             .iter()
             .map(|x| x.subst(m))
@@ -178,16 +181,16 @@ impl Subst for Vec<PathExpr> {
             .filter(|x| !is_empty(x))
             .collect();
         newpe.strip_trailing_ws();
-        newpe
+        Ok(newpe)
     }
 }
 impl Subst for Source {
-    fn subst(&self, m: &mut SubstMap) -> Self {
-        Source {
-            primary: self.primary.subst(m),
+    fn subst(&self, m: &mut SubstMap) -> Result<Self, Err> {
+        Ok(Source {
+            primary: self.primary.subst(m)?,
             for_each: self.for_each,
-            secondary: self.secondary.subst(m),
-        }
+            secondary: self.secondary.subst(m)?,
+        })
     }
 }
 use std::ops::AddAssign;
@@ -215,30 +218,30 @@ impl AddAssign for Target {
         self.bin = self.bin.clone().or(o.bin);
     }
 }
-fn takefirst(o: &Option<PathExpr>, m: &mut SubstMap) -> Option<PathExpr> {
+fn takefirst(o: &Option<PathExpr>, m: &mut SubstMap) -> Result<Option<PathExpr>,Err> {
     if let &Some(ref pe) = o {
-        pe.subst(m).first().cloned()
+        Ok(pe.subst(m).first().cloned())
     } else {
-        None
+        Ok(None)
     }
 }
 impl Subst for Target {
-    fn subst(&self, m: &mut SubstMap) -> Self {
-        Target {
-            primary: self.primary.subst(m),
-            secondary: self.secondary.subst(m),
+    fn subst(&self, m: &mut SubstMap) -> Result<Self,Err> {
+        Ok(Target {
+            primary: self.primary.subst(m)?,
+            secondary: self.secondary.subst(m)?,
             exclude_pattern: self.exclude_pattern.clone(),
-            group: takefirst(&self.group, m),
-            bin: takefirst(&self.bin, m),
-        }
+            group: takefirst(&self.group, m)?,
+            bin: takefirst(&self.bin, m)?,
+        })
     }
 }
 impl Subst for RuleFormula {
-    fn subst(&self, m: &mut SubstMap) -> Self {
-        RuleFormula {
+    fn subst(&self, m: &mut SubstMap) -> Result<Self,Err> {
+        Ok(RuleFormula {
             description: self.description.clone(), // todo : convert to rval and subst here as well,
-            formula: self.formula.subst(m),
-        }
+            formula: self.formula.subst(m)?,
+        })
     }
 }
 // replace occurences of a macro ref with link data from previous assignments in namedrules
@@ -251,7 +254,7 @@ impl ExpandMacro for Link {
         }
         false
     }
-    fn expand(&self, m: &mut SubstMap) -> Self {
+    fn expand(&self, m: &mut SubstMap) -> Result<Self, Err> {
         let mut source = self.source.clone();
         let mut target = self.target.clone();
         let mut desc = self.rule_formula.description.clone();
@@ -269,13 +272,13 @@ impl ExpandMacro for Link {
                         r.strip_trailing_ws();
                         formulae.append(&mut r);
                     } else {
-                        eprintln!("ignored missing macro definition for :{}", name);
+                        return Err(Err::UnknownMacroRef(name.clone(), Loc::new(pos.0, pos.1 as u32) ))
                     }
                 }
                 _ => formulae.push(pathexpr.clone()),
             }
         }
-        Link {
+        Ok(Link {
             source,
             target,
             rule_formula: RuleFormula {
@@ -283,7 +286,7 @@ impl ExpandMacro for Link {
                 formula: formulae,
             },
             pos,
-        }
+        })
     }
 }
 
@@ -298,13 +301,13 @@ fn tovecstring(right: &Vec<PathExpr>) -> Vec<String> {
         .collect()
 }
 // load the conf variables in tup.config in the root directory
-pub fn load_conf_vars(filename: &Path) -> HashMap<String, Vec<String>> {
+pub fn load_conf_vars(filename: &Path) -> Result<HashMap<String, Vec<String>>,crate::errors::Error> {
     let mut conf_vars = HashMap::new();
 
     if let Some(conf_file) = locate_file(filename, "tup.config") {
         if let Some(fstr) = conf_file.to_str() {
-            for stmt in parse_tupfile(fstr).iter() {
-                match stmt {
+            for LocatedStatement{statement,..} in parse_tupfile(fstr)?.iter() {
+                match statement {
                     Statement::LetExpr { left, right, .. } => {
                         if left.name.starts_with("CONFIG_") {
                             conf_vars.insert(left.name[7..].to_string(), tovecstring(right));
@@ -327,7 +330,7 @@ pub fn load_conf_vars(filename: &Path) -> HashMap<String, Vec<String>> {
     //     @(TUP_ARCH)
     //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
 
-    conf_vars
+    Ok(conf_vars)
 }
 
 pub fn set_cwd(filename: &Path, m: &mut SubstMap) -> PathBuf {
@@ -343,23 +346,24 @@ pub fn set_cwd(filename: &Path, m: &mut SubstMap) -> PathBuf {
 }
 
 impl Subst for Link {
-    fn subst(&self, m: &mut SubstMap) -> Self {
-        Link {
-            source: self.source.subst(m),
-            target: self.target.subst(m),
-            rule_formula: self.rule_formula.subst(m),
+    fn subst(&self, m: &mut SubstMap) -> Result<Self, Err> {
+        Ok(Link {
+            source: self.source.subst(m)?,
+            target: self.target.subst(m)?,
+            rule_formula: self.rule_formula.subst(m)?,
             pos: self.pos,
-        }
+        })
     }
 }
 // substitute variables in a sequence of statements from previous assignments
 // update variable assignments into substmap as you go.
-impl Subst for Vec<Statement> {
-    fn subst(&self, m: &mut SubstMap) -> Vec<Statement> {
+impl Subst for Vec<LocatedStatement> {
+    fn subst(&self, m: &mut SubstMap) -> Result<Vec<LocatedStatement>, Err> {
         let mut newstats = Vec::new();
         //let sp1 = PathExpr::Sp1;
         for statement in self.iter() {
-            match statement {
+            let ref loc = statement.loc;
+            match &statement.statement {
                 Statement::LetExpr {
                     left,
                     right,
@@ -368,7 +372,7 @@ impl Subst for Vec<Statement> {
                     let &app = is_append;
                     let subst_right: Vec<_> = right
                         .split(|x| x == &PathExpr::Sp1)
-                        .map(|x| x.to_vec().subst(m).cat())
+                        .map(|x| x.to_vec().subst(m).expect("subst failure in let expr").cat())
                         .collect();
 
                     let curright: Vec<String> = if app {
@@ -395,11 +399,12 @@ impl Subst for Vec<Statement> {
                         PathExpr::DollarExpr("TUP_CWD".to_owned()),
                         PathExpr::Literal("/".to_owned()),
                     ]
-                    .subst(m)
+                    .subst(m).expect("no errors expected in subst of TUP_CWD")
                     .cat();
                     let subst_right: Vec<String> = right
                         .split(|x| x == &PathExpr::Sp1)
-                        .map(|x| prefix.clone() + x.to_vec().subst(m).cat().as_str())
+                        .map(|x| prefix.clone() + x.to_vec().subst(m)
+                            .expect("no errors expected in subst").cat().as_str())
                         .collect();
 
                     //let subst_right = prefix.cat() + (right.subst(m)).cat().as_str();
@@ -424,14 +429,14 @@ impl Subst for Vec<Statement> {
                     else_statements,
                 } => {
                     let e = EqCond {
-                        lhs: eq.lhs.subst(m),
-                        rhs: eq.rhs.subst(m),
+                        lhs: eq.lhs.subst(m).expect("no errors expected in subst"),
+                        rhs: eq.rhs.subst(m).expect("no errors expected in subst"),
                         not_cond: eq.not_cond,
                     };
                     if e.lhs.cat().eq(&e.rhs.cat()) && !e.not_cond {
-                        newstats.append(&mut then_statements.subst(m));
+                        newstats.append(&mut then_statements.subst(m)?);
                     } else {
-                        newstats.append(&mut else_statements.subst(m));
+                        newstats.append(&mut else_statements.subst(m)?);
                     }
                 }
                 Statement::IfDef {
@@ -441,22 +446,22 @@ impl Subst for Vec<Statement> {
                 } => {
                     let cvar = PathExpr::AtExpr(checked_var.0.name.clone());
                     if cvar.subst(m).iter().any(|x| is_empty(x)) == checked_var.1 {
-                        newstats.append(&mut then_statements.subst(m));
+                        newstats.append(&mut then_statements.subst(m)?);
                     } else {
-                        newstats.append(&mut else_statements.subst(m));
+                        newstats.append(&mut else_statements.subst(m)?);
                     }
                 }
 
                 Statement::IncludeRules => {
                     let parent = get_parent(m.cur_file.as_path());
                     if let Some(f) = locate_tuprules(parent.as_path()) {
-                        let include_stmts = parse_tupfile(f.to_str().unwrap());
+                        let include_stmts = parse_tupfile(f.to_str().unwrap())?;
                         m.cur_file = f;
-                        newstats.append(&mut include_stmts.subst(m));
+                        newstats.append(&mut include_stmts.subst(m)?);
                     }
                 }
                 Statement::Include(s) => {
-                    let s = s.subst(m);
+                    let s = s.subst(m)?;
                     let scat = &s.cat();
                     let longp = get_parent(m.cur_file.as_path());
                     let pscat = Path::new(scat.as_str());
@@ -467,18 +472,21 @@ impl Subst for Vec<Statement> {
                         pscat
                     };
                     if p.is_file() {
-                        let include_stmmts = parse_tupfile(p.to_str().unwrap());
+                        let include_stmmts = parse_tupfile(p.to_str().unwrap())?;
                         let cf = set_cwd(p, m);
-                        newstats.append(&mut include_stmmts.subst(m));
+                        newstats.append(&mut include_stmmts.subst(m)?);
                         set_cwd(cf.as_path(), m);
                     }
                 }
                 Statement::Rule(link) => {
                     let mut l = link.clone();
                     while l.has_ref() {
-                        l = l.expand(m); // expand all nested macro refs
+                        l = l.expand(m)?; // expand all nested macro refs
                     }
-                    newstats.push(Statement::Rule(l.subst(m)));
+                    newstats.push(LocatedStatement::new(
+                        Statement::Rule(l.subst(m)?),
+                        loc.clone(),
+                    ));
                 }
                 // dont subst inside a macro assignment
                 // just update the rule_map
@@ -487,12 +495,15 @@ impl Subst for Vec<Statement> {
                     m.rule_map.insert(name.clone(), l);
                 }
                 Statement::Err(v) => {
-                    let v = v.subst(m);
+                    let v = v.subst(m)?;
                     eprintln!("{}\n", &v.cat().as_str());
                     break;
                 }
                 Statement::Preload(v) => {
-                    newstats.push(Statement::Preload(v.subst(m)));
+                    newstats.push(LocatedStatement::new(
+                        Statement::Preload(v.subst(m)?),
+                        loc.clone(),
+                    ));
                 }
                 Statement::Export(_) => {
                     newstats.push(statement.clone());
@@ -501,13 +512,14 @@ impl Subst for Vec<Statement> {
                     newstats.push(statement.clone());
                 }
                 Statement::Run(r) => {
-                    newstats.push(Statement::Run(r.subst(m)));
+                    newstats.push(LocatedStatement::new(Statement::Run(r.subst(m)?),
+                                                        loc.clone()));
                 }
                 Statement::Comment => {
                     // ignore
                 }
             }
         }
-        newstats
+        Ok(newstats)
     }
 }

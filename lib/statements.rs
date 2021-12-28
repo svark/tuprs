@@ -1,3 +1,5 @@
+use std::fmt::{Display, Formatter};
+
 //use std::path::Path;
 // rvalue typically appears on the right side of assignment statement
 // in general they can be constituents of any tup expression that is not on lhs of assignment
@@ -65,6 +67,50 @@ pub struct Link {
     pub rule_formula: RuleFormula,
     pub pos: (u32, usize),
 }
+#[derive(PartialEq, Debug, Clone, Copy)]
+pub struct Loc {
+    pub line: u32,
+    pub offset: u32,
+}
+impl Display for Loc {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f,"line:{}, offset:{}", self.line,self.offset)
+    }
+}
+impl Loc {
+    pub fn new(line : u32, offset: u32) -> Loc
+    {
+         Loc{line, offset}
+    }
+    pub fn getline(&self) -> u32
+    {
+        self.line
+    }
+    pub fn getoffset(&self) -> u32 { self.offset}
+
+
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct LocatedStatement
+{
+    pub statement: Statement,
+    pub loc: Loc
+}
+impl  LocatedStatement {
+    pub fn new(stmt: Statement, l: Loc) -> LocatedStatement
+    {
+         LocatedStatement{statement:stmt, loc:l}
+    }
+    pub fn getstatement(&self) -> &Statement {
+        &self.statement
+    }
+
+    pub fn getloc(&self) -> &Loc {
+        &self.loc
+    }
+
+}
 // any of the valid statements that can appear in a tupfile
 #[derive(PartialEq, Debug, Clone)]
 pub enum Statement {
@@ -80,13 +126,13 @@ pub enum Statement {
     },
     IfElseEndIf {
         eq: EqCond,
-        then_statements: Vec<Statement>,
-        else_statements: Vec<Statement>,
+        then_statements: Vec<LocatedStatement>,
+        else_statements: Vec<LocatedStatement>,
     },
     IfDef {
         checked_var: CheckedVar,
-        then_statements: Vec<Statement>,
-        else_statements: Vec<Statement>,
+        then_statements: Vec<LocatedStatement>,
+        else_statements: Vec<LocatedStatement>,
     },
     IncludeRules,
     Include(Vec<PathExpr>),
@@ -192,6 +238,14 @@ impl StripTrailingWs for Vec<Statement> {
     fn strip_trailing_ws(&mut self) {
         for f in self {
             f.strip_trailing_ws();
+        }
+    }
+}
+
+impl  StripTrailingWs for Vec<LocatedStatement> {
+    fn strip_trailing_ws(&mut self) {
+        for f in self {
+            f.statement.strip_trailing_ws();
         }
     }
 }

@@ -1,3 +1,4 @@
+use errors::Error as Err;
 use glob::{glob, Entry};
 use regex::{Captures, Error, Regex};
 use statements::*;
@@ -139,13 +140,13 @@ impl ExcludeInputPaths for PathExpr {
 }
 // Decode input paths from file globs, bins(buckets), and groups
 pub trait DecodeInputPaths {
-    fn decode(&self, tupcwd: &Path, taginfo: &OutputTagInfo) -> Vec<InputGlobType>;
+    fn decode(&self, tupcwd: &Path, taginfo: &OutputTagInfo) -> Result<Vec<InputGlobType>, Err>;
 }
 
 // Decode input paths in RvalGeneral
 impl DecodeInputPaths for PathExpr {
     // convert globs into regular paths, remember that matched groups
-    fn decode(&self, tupcwd: &Path, taginfo: &OutputTagInfo) -> Vec<InputGlobType> {
+    fn decode(&self, tupcwd: &Path, taginfo: &OutputTagInfo) -> Result<Vec<InputGlobType>, Err> {
         let mut vs = Vec::new();
         // deglob * patterns,
         match self {
@@ -189,12 +190,12 @@ impl DecodeInputPaths for PathExpr {
             }
             _ => {}
         }
-        return vs;
+        return Ok(vs);
     }
 }
 // decode input paths
 impl DecodeInputPaths for Vec<PathExpr> {
-    fn decode(&self, tupcwd: &Path, taginfo: &OutputTagInfo) -> Vec<InputGlobType> {
+    fn decode(&self, tupcwd: &Path, taginfo: &OutputTagInfo) -> Result<Vec<InputGlobType>, Err> {
         // gather locations where exclude patterns show up
         let excludeindices: Vec<_> = self
             .iter()
@@ -203,7 +204,7 @@ impl DecodeInputPaths for Vec<PathExpr> {
             .map(|ref pi| pi.0)
             .collect();
         // ....
-        let filteroutexcludes = |(i, ips)| {
+        let filteroutexcludes = |(i, ips): (usize, Vec<InputGlobType>)| -> Vec<InputGlobType> {
             // find exclude patterns after current glob pattern
             let pp = excludeindices.partition_point(|&j| j <= i);
             if pp < excludeindices.len() {
@@ -215,14 +216,18 @@ impl DecodeInputPaths for Vec<PathExpr> {
                 ips
             }
         };
-        self.iter()
+        let decoded: Result<Vec<_>, _> = self
+            .iter()
             //.inspect(|x| eprintln!("before decode {:?}", x))
             .map(|x| x.decode(tupcwd, &taginfo))
-            //.inspect(|x| eprintln!("after {:?}", x))
+            .collect();
+        Ok(decoded?
+            .into_iter()
             .enumerate()
             .map(filteroutexcludes)
             .flatten()
-            .collect()
+            .collect())
+        //.inspect(|x| eprintln!("after {:?}", x))
     }
 }
 
@@ -410,17 +415,6 @@ impl DecodeOutputPlaceHolders for PathExpr {
         let frep = |d: &str| {
             d.replace("%o", space_separated_outputs.as_str()).replace(
                 "%O",
-                /*
-                %O
-                    The name of the output file without the extension.
-                     This only works in the extra-outputs section if there is exactly one output file specified.
-                     A use-case for this is if you have a !-macro that generates files not specified on the command
-                     line, but are based off of the output that is named. For example, if a linker creates a map
-                      file by taking the specified output "foo.so", removing the ".so" and adding ".map", then you
-                      may want a !-macro like so:
-                    !ldmap = |> ld ... -o %o |> | %O.map
-                    : foo1.o foo2.o |> !ldmap |> foo.so
-                                     */
                 outputs
                     .first()
                     .and_then(|x| x.file_stem())
@@ -458,17 +452,24 @@ fn convert_to_pathexprs(tupcwd: &Path, inpdec: &Vec<&InputGlobType>) -> Vec<Path
         .flatten()
         .collect()
 }
-fn convert_to_pathexprs_x(tupcwd: &Path, inpdec: &Vec<InputGlobType>) -> Vec<PathExpr> {
-    inpdec
+
+fn convert_to_pathexprs_x(
+    tupcwd: &Path,
+    inpdec: &Vec<InputGlobType>,
+    l: &Loc,
+) -> Result<Vec<PathExpr>, Err> {
+    let res: Result<Vec<_>, _> = inpdec
         .iter()
-        .map(|ref x| {
-            vec![
-                PathExpr::Literal(tupcwd.join(x.to_string()).to_str().unwrap().to_string()),
-                PathExpr::Sp1,
-            ]
+        .map(|x| -> Result<Vec<PathExpr>, Err> {
+            let fullpath = tupcwd
+                .join(x.to_string())
+                .into_os_string()
+                .into_string()
+                .map_err(|x| Err::PathError(x, l.clone()))?;
+            Ok(vec![PathExpr::Literal(fullpath), PathExpr::Sp1])
         })
-        .flatten()
-        .collect()
+        .collect();
+    Ok(res?.into_iter().flatten().collect())
 }
 
 // replace % specifiers in a target of rule statement which has already been
@@ -581,7 +582,7 @@ fn get_deglobbed_rule(
         secondary: sinputs.clone(),
         for_each: false,
     }; // single source input
-    // tc.tags
+       // tc.tags
     Statement::Rule(Link {
         source: src,
         target: tc,
@@ -612,71 +613,73 @@ fn updatetags(tgt: &Target, taginfo: &mut OutputTagInfo) {
         }
     }
 }
-pub trait DeGlobber
-{
-    fn deglob_and_decode(&self, tupfile: &Path, taginfo: &OutputTagInfo)
-    -> (Vec<Statement>, OutputTagInfo);
-}
-
-// deglob rule statement into multiple deglobbed rules, update the buckets corresponding to the deglobed targets
-impl DeGlobber for Statement {
-    fn deglob_and_decode(
+pub trait PathDecoder {
+    fn decode(
         &self,
         tupfile: &Path,
         taginfo: &OutputTagInfo,
-    ) -> (Vec<Statement>, OutputTagInfo) {
+    ) -> Result<(Vec<LocatedStatement>, OutputTagInfo), Err>;
+}
+
+// deglob rule statement into multiple deglobbed rules, update the buckets corresponding to the deglobed targets
+impl PathDecoder for LocatedStatement {
+    fn decode(
+        &self,
+        tupfile: &Path,
+        taginfo: &OutputTagInfo,
+    ) -> Result<(Vec<LocatedStatement>, OutputTagInfo), Err> {
         let mut deglobbed = Vec::new();
         let mut output: OutputTagInfo = Default::default();
         let tupcwd = tupfile.parent().unwrap();
-        if let Statement::Rule(Link {
-            source: s,
-            target: t,
-            rule_formula: r,
-            pos,
-        }) = self
+        if let LocatedStatement {
+            statement:
+                Statement::Rule(Link {
+                    source: s,
+                    target: t,
+                    rule_formula: r,
+                    pos,
+                }),
+            loc,
+        } = self
         {
-            let inpdec = s.primary.decode(tupcwd, &taginfo);
-            let secondinpdec = s.secondary.decode(tupcwd, &taginfo);
+            let inpdec = s.primary.decode(tupcwd, &taginfo)?;
+            let secondinpdec = s.secondary.decode(tupcwd, &taginfo)?;
             let for_each = s.for_each;
             let secondaryinputsasref: Vec<&InputGlobType> = secondinpdec.iter().collect();
-            let ref sinputs = convert_to_pathexprs_x(tupcwd, &secondinpdec);
+            let ref sinputs = convert_to_pathexprs_x(tupcwd, &secondinpdec, &loc)?;
             if for_each {
                 for input in inpdec {
                     let vis = vec![&input];
-                    deglobbed.push(get_deglobbed_rule(
-                        tupcwd,
-                        &t,
-                        r,
-                        pos,
-                        &secondaryinputsasref,
-                        sinputs,
-                        &vis,
+                    deglobbed.push(LocatedStatement::new(
+                        get_deglobbed_rule(
+                            tupcwd,
+                            &t,
+                            r,
+                            pos,
+                            &secondaryinputsasref,
+                            sinputs,
+                            &vis,
+                        ),
+                        loc.clone(),
                     ));
-                    if let Some(&Statement::Rule(Link {
-                        source: _,
-                        ref target,
+                    if let Some(&LocatedStatement {
+                        statement: Statement::Rule(Link { ref target, .. }),
                         ..
-                    })) = deglobbed.last()
+                    }) = deglobbed.last()
                     {
                         updatetags(&target, &mut output);
                     }
                 }
             } else {
                 let vis: Vec<&_> = inpdec.iter().collect();
-                deglobbed.push(get_deglobbed_rule(
-                    tupcwd,
-                    &t,
-                    r,
-                    pos,
-                    &secondaryinputsasref,
-                    sinputs,
-                    &vis,
+                deglobbed.push(LocatedStatement::new(
+                    get_deglobbed_rule(tupcwd, &t, r, pos, &secondaryinputsasref, sinputs, &vis),
+                    loc.clone(),
                 ));
-                if let Some(&Statement::Rule(Link {
-                    source: _,
-                    ref target,
+                if let Some(&LocatedStatement {
+                    statement: Statement::Rule(Link { ref target, .. }),
                     ..
-                })) = deglobbed.last()
+                }) = deglobbed.last()
                 {
                     updatetags(&target, &mut output);
                 }
@@ -684,24 +687,24 @@ impl DeGlobber for Statement {
         } else {
             deglobbed.push(self.clone())
         }
-        (deglobbed, output)
+        Ok((deglobbed, output))
     }
 }
 
-impl DeGlobber for Vec<Statement> {
-    fn deglob_and_decode(
+impl PathDecoder for Vec<LocatedStatement> {
+    fn decode(
         &self,
         tupfile: &Path,
         taginfo: &OutputTagInfo,
-    ) -> (Vec<Statement>, OutputTagInfo) {
+    ) -> Result<(Vec<LocatedStatement>, OutputTagInfo), Err> {
         let mut vs = Vec::new();
         let mut alltaginfos = OutputTagInfo::new();
         for stmt in self.iter() {
-           let (ref mut stmts, ref mut outputtaginfo) = stmt.deglob_and_decode(tupfile, taginfo);
-            alltaginfos.merge_group_tags( outputtaginfo);
+            let (ref mut stmts, ref mut outputtaginfo) = stmt.decode(tupfile, taginfo)?;
+            alltaginfos.merge_group_tags(outputtaginfo);
             alltaginfos.merge_bin_tags(outputtaginfo);
             vs.append(stmts);
         }
-        (vs,alltaginfos)
+        Ok((vs, alltaginfos))
     }
 }
