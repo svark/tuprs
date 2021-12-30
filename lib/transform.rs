@@ -407,16 +407,18 @@ pub fn load_conf_vars(
 ) -> Result<HashMap<String, Vec<String>>, crate::errors::Error> {
     let mut conf_vars = HashMap::new();
 
-    if let Some(conf_file) = locate_file(filename, "tup.config") {
-        if let Some(fstr) = conf_file.to_str() {
-            for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
-                match statement {
-                    Statement::LetExpr { left, right, .. } => {
-                        if left.name.starts_with("CONFIG_") {
-                            conf_vars.insert(left.name[7..].to_string(), tovecstring(right));
+    if let Some(conf_file)  = Path::new(filename).parent().map(|x| x.join( "tup.config")) {
+        if conf_file.is_file() {
+            if let Some(fstr) = conf_file.to_str() {
+                for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
+                    match statement {
+                        Statement::LetExpr { left, right, .. } => {
+                            if left.name.starts_with("CONFIG_") {
+                                conf_vars.insert(left.name[7..].to_string(), tovecstring(right));
+                            }
                         }
+                        _ => (),
                     }
-                    _ => (),
                 }
             }
         }
@@ -662,14 +664,14 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Er
         .into_iter()
         .filter_map(|e| e.ok())
     {
-        let f_name = entry.file_name().to_string_lossy();
-        if f_name.as_ref().eq("Tupfile") {
+        let f_name = entry.file_name().to_string_lossy().as_ref().to_string();
+        if f_name.as_str().eq("Tupfile") {
             let tupfilepath = entry.path().to_string_lossy().as_ref().to_string();
             tupfiles.push(tupfilepath);
         }
     }
     let rootfolder =
-        locate_file(Path::new("."), "Tupfile.ini").ok_or(crate::errors::Error::RootNotFound)?;
+        locate_file(root, "Tupfile.ini").ok_or(crate::errors::Error::RootNotFound)?;
     let confvars = load_conf_vars(rootfolder.as_path())?;
     let mut rules = Vec::new();
     let mut ids = Vec::new();
@@ -722,9 +724,12 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Er
             tupfile: p.to_path_buf(),
         });
     }
-    //ids.push(dag.node_count());
+    ids.push(dag.node_count());
     let statement_from_id = |i: NodeIndex| {
-        let x = ids.partition_point(|&j| j >= i.index());
+        let mut x = ids.partition_point(|&j| j < i.index());
+        if ids[x] > i.index() {
+            x = x - 1;
+        }
         (&rules[x].tupfile, &rules[x].statements[i.index() - ids[x]])
     };
     for (group, nodeids) in required_by.iter() {

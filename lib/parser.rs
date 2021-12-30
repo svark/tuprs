@@ -1,5 +1,5 @@
 use nom::character::complete::{line_ending, multispace0, multispace1, space1};
-use nom::combinator::{complete, cut, map, map_res, not, opt, peek, value};
+use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
 use nom::sequence::{delimited, preceded};
@@ -67,8 +67,8 @@ fn sp1(input: Span) -> IResult<Span, Span> {
 }
 // checks for presence of a group expression that begins with some path.`
 fn parse_pathexpr_raw_angle(input: Span) -> IResult<Span, Span> {
-    let i = input.clone();
-    preceded(is_not(*BRKTAGS), tag("<"))(i)
+    //let i = input.clone();
+    preceded(is_not(*BRKTAGS), tag("<"))(input)
 }
 
 // parse expession wrapped inside dollar or at
@@ -110,7 +110,7 @@ fn parse_pathexpr_angle(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Vec<PathE
     let (s, v0) = many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n<{", *BRKTOKS), tag("<"))(i)?;
     //let (s, _) = tag("<")(s)?;
     let (s, v) = many_till(
-        |i| parse_pathexpr_ws(i, ">", *BRKTOKSWS), // avoid reading tags , newlines, spaces
+        |i| parse_pathexpr_no_ws(i, ">", *BRKTOKS), // avoid reading tags , newlines, spaces
         tag(">"),
     )(s)?;
     //let v0 = v0.map(|x| x.0);
@@ -186,13 +186,26 @@ pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))), //FIXME: what errorkind should we return?
     }
 }
+pub fn test_pathexpr_ref(i: Span) -> bool {
+    let res =  || -> IResult<Span, bool> {
+        let (_, r) = (peek(take(1 as usize))(i))?;
+        let ismatch = match r.as_bytes() {
+            b"$" => true,
+            b"@" => true,
+            b"&" => true,
+            _ => false,
+        };
+        Ok((i, ismatch))
+    };
+    return res().map(|x| x.1).unwrap_or(false);
+}
 // parse basic special expressions (dollar, at, ampersand)
 pub fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
-    let (s, r) = peek(take(1 as usize))(i)?;
+    let (s, r) = peek(take(2 as usize))(i)?;
     match r.as_bytes() {
-        b"$" => parse_pathexpr_dollar(s),
-        b"@" => parse_pathexpr_at(s),
-        b"&" => parse_pathexpr_amp(s),
+        b"$(" => parse_pathexpr_dollar(s),
+        b"@(" => parse_pathexpr_at(s),
+        b"&(" => parse_pathexpr_amp(s),
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))), //fixme: what errorkind should we return?
     }
 }
@@ -202,32 +215,28 @@ pub fn parse_ws(i: Span) -> IResult<Span, PathExpr> {
     Ok((s, PathExpr::Sp1))
 }
 // eat up the (dollar or at) that dont parse to (dollar or at) expression
-fn parse_delim<'a, F>(i: Span<'a>, toks: &'static str, f: F) -> nom::IResult<Span<'a>, Span<'a>>
-where
-    F: Fn(Span<'a>) -> IResult<Span<'a>, PathExpr>,
+fn parse_delim(i: Span) -> nom::IResult<Span, Span>
 {
-    let (s, _) = peek(one_of(toks))(i)?;
-    let (s, _) = not(f)(s)?; //TODO : is this really necessary?
-    let (s, r) = take(1 as usize)(s)?;
+    if !test_pathexpr_ref(i) {
+        return Err(Err::Error(error_position!(i, ErrorKind::Escaped)));
+    }
+    let (s, r) = take(1 as usize)(i)?;
     Ok((s, r))
 }
 
 // eats up \\n
 // consume dollar's etc that where left out during previous parsing
 // consume a literal that is not a pathexpr token
-fn parse_misc_bits<'a, 'b, F>(
+fn parse_misc_bits<'a, 'b>(
     input: Span<'a>,
     delim: &'b str,
     pathexpr_toks: &'static str,
-    primary_parser: F,
 ) -> nom::IResult<Span<'a>, Span<'a>>
-where
-    F: Fn(Span<'a>) -> IResult<Span<'a>, PathExpr>,
 {
+    let c_ = input.clone();
     let islit = |ref i| !delim.as_bytes().contains(i) && !pathexpr_toks.as_bytes().contains(i);
     alt((
-        complete(map(preceded(tag("\\"), line_ending), |_| default_inp())),
-        complete(|i| parse_delim(i, pathexpr_toks, &primary_parser)),
+        complete(parse_delim),
         complete(take_while(islit)),
     ))(input)
 }
@@ -243,7 +252,7 @@ fn parse_pathexpr_ws<'a, 'b>(
         complete(parse_escaped),
         complete(parse_pathexprbasic),
         complete(map_res(
-            |i| parse_misc_bits(i, delim, pathexpr_toks, parse_pathexprbasic),
+            |i| parse_misc_bits(i, delim, pathexpr_toks),
             from_str,
         )),
     ))(s)
@@ -257,7 +266,7 @@ fn parse_pathexpr_no_ws<'a, 'b>(
         complete(parse_escaped),
         complete(parse_pathexprbasic),
         complete(map_res(
-            |i| parse_misc_bits(i, delim, pathexpr_toks, parse_pathexprbasic),
+            |i| parse_misc_bits(i, delim, pathexpr_toks),
             from_str,
         )),
     ))(s)
@@ -531,14 +540,14 @@ fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
             complete(parse_pathexpr_bin),
             complete(pe),
         )),
-        tag("|"),
+        preceded(multispace0,tag("|")),
     )(s)
 }
 // parse secondary input in a rule expression
 fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     //context("read secondary inputs",  preceded( tag("|"),
     let (s, _) = opt(sp1)(i)?;
-    let (s, _) = tag("|")(s)?;
+    //let (s, _) = tag("|")(s)?;
     let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
     many_till(
         alt((
@@ -546,7 +555,7 @@ fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
             complete(parse_pathexpr_bin),
             complete(pe),
         )),
-        tag("|"),
+        preceded(multispace0,tag("|")),
     )(s)
 }
 
@@ -619,7 +628,8 @@ pub fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, v1) = opt(parse_pathexpr_group)(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, v2) = opt(parse_pathexpr_bin)(s)?;
-
+    let (s, _) = multispace0(s)?;
+    let _curs = s.clone();
     //let (s, _) = line_ending(s)?;
     Ok((
         s,
@@ -874,6 +884,11 @@ pub fn parse_tupfile(filename: &str) -> Result<Vec<LocatedStatement>, crate::err
 }
 pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
     let mut cwd = cur_tupfile;
+    let pb: PathBuf;
+    if cur_tupfile.is_dir() {
+        pb = cur_tupfile.join("Tupfile");
+        cwd = &pb;
+    }
     while let Some(parent) = cwd.parent() {
         let p = parent.join(file_to_loc);
         if p.is_file() {
