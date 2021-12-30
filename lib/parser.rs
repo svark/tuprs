@@ -233,7 +233,6 @@ fn parse_misc_bits<'a, 'b>(
     pathexpr_toks: &'static str,
 ) -> nom::IResult<Span<'a>, Span<'a>>
 {
-    let c_ = input.clone();
     let islit = |ref i| !delim.as_bytes().contains(i) && !pathexpr_toks.as_bytes().contains(i);
     alt((
         complete(parse_delim),
