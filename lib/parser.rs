@@ -25,8 +25,7 @@ fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
 }
 impl Loc {
-    pub fn from_span(span: &Span) -> Loc
-    {
+    pub fn from_span(span: &Span) -> Loc {
         Loc::new(span.location_line(), span.get_column() as u32)
     }
 }
@@ -170,10 +169,7 @@ fn parse_pathexpr_group(i: Span) -> IResult<Span, PathExpr> {
 
 // parse to a bucket name: {objs}
 fn parse_pathexpr_bin(i: Span) -> IResult<Span, PathExpr> {
-    context(
-        "bin",
-        map(parse_pathexpr_raw_bin, |rv| PathExpr::Bucket(rv)),
-    )(i)
+    context("bin", map(parse_pathexpr_raw_bin, |rv| PathExpr::Bin(rv)))(i)
 }
 
 pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
@@ -316,8 +312,7 @@ fn parse_lvalue(input: Span) -> IResult<Span, Ident> {
     map(map_res(take_while(is_ident), from_utf8), to_lval)(input)
 }
 
-pub fn to_located_statement(stmt: Statement, i: Span) -> LocatedStatement
-{
+pub fn to_located_statement(stmt: Statement, i: Span) -> LocatedStatement {
     LocatedStatement::new(stmt, Loc::from_span(&i))
 }
 // parse include expression
@@ -349,7 +344,10 @@ fn parse_export(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(s)?;
     let (s, _) = line_ending(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
-    Ok((s, to_located_statement(Statement::Export(raw.to_owned()), i)))
+    Ok((
+        s,
+        to_located_statement(Statement::Export(raw.to_owned()), i),
+    ))
 }
 
 // import VARIABLE[=default]
@@ -375,7 +373,10 @@ fn parse_import(i: Span) -> IResult<Span, LocatedStatement> {
 
     // https://stackoverflow.com/questions/52453180/how-do-i-unwrap-an-arbitrary-number-of-nested-option-types
     let default_raw = def.and_then(|x| from_utf8(x).ok());
-    Ok((s, to_located_statement(Statement::Import(raw.to_owned(), default_raw), i)))
+    Ok((
+        s,
+        to_located_statement(Statement::Import(raw.to_owned(), default_raw), i),
+    ))
 }
 
 // parse preload expression
@@ -432,11 +433,14 @@ fn parse_let_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
         s,
-        to_located_statement(Statement::LetExpr {
-            left: l,
-            right: r.0,
-            is_append: (op.as_bytes() == b"+="),
-        }, i)
+        to_located_statement(
+            Statement::LetExpr {
+                left: l,
+                right: r.0,
+                is_append: (op.as_bytes() == b"+="),
+            },
+            i,
+        ),
     ))
 }
 
@@ -450,11 +454,14 @@ fn parse_letref_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
         s,
-        to_located_statement(Statement::LetRefExpr {
-            left: l,
-            right: r.0,
-            is_append: (op.as_bytes() == b"+="),
-        }, i)
+        to_located_statement(
+            Statement::LetRefExpr {
+                left: l,
+                right: r.0,
+                is_append: (op.as_bytes() == b"+="),
+            },
+            i,
+        ),
     ))
 }
 // parse description insude a rule (between ^^)
@@ -616,16 +623,19 @@ pub fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     //let (s, _) = line_ending(s)?;
     Ok((
         s,
-        to_located_statement(Statement::Rule(Link {
-            source: from_input(
-                input.map(|(x, _)| x).unwrap_or(Vec::new()),
-                for_each.is_some(),
-                secondary_input.unwrap_or((Vec::new(), default_inp())).0,
-            ),
-            target: from_output(output, secondary_output, exclude_patterns, v1, v2),
-            rule_formula,
-            pos: (pos.location_line(), pos.get_column()),
-        }), i)
+        to_located_statement(
+            Statement::Rule(Link {
+                source: from_input(
+                    input.map(|(x, _)| x).unwrap_or(Vec::new()),
+                    for_each.is_some(),
+                    secondary_input.unwrap_or((Vec::new(), default_inp())).0,
+                ),
+                target: from_output(output, secondary_output, exclude_patterns, v1, v2),
+                rule_formula,
+                pos: (pos.location_line(), pos.get_column()),
+            }),
+            i,
+        ),
     ))
 }
 
@@ -676,19 +686,22 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> {
 
     Ok((
         s,
-        to_located_statement(Statement::MacroAssignment(
-            from_utf8(macroname).unwrap_or("".to_owned()),
-            Link {
-                source: from_input(
-                    input.map(|(x, _)| x).unwrap_or(Vec::new()),
-                    for_each.is_some(),
-                    secondary_input.unwrap_or((Vec::new(), default_inp())).0,
-                ),
-                target: from_output(output, secondary_output, None, None, None),
-                rule_formula,
-                pos: (pos.location_line(), pos.get_column()),
-            },
-        ),i)
+        to_located_statement(
+            Statement::MacroAssignment(
+                from_utf8(macroname).unwrap_or("".to_owned()),
+                Link {
+                    source: from_input(
+                        input.map(|(x, _)| x).unwrap_or(Vec::new()),
+                        for_each.is_some(),
+                        secondary_input.unwrap_or((Vec::new(), default_inp())).0,
+                    ),
+                    target: from_output(output, secondary_output, None, None, None),
+                    rule_formula,
+                    pos: (pos.location_line(), pos.get_column()),
+                },
+            ),
+            i,
+        ),
     ))
 }
 
@@ -724,17 +737,19 @@ fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>
 
 // parse statements till end of file
 pub fn parse_statements_until_eof(i: Span) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
-    many0(parse_statement)(i)
-        .map(|v| v.1)
-        .map_err(|e|
-            match e {
-                nom::Err::Incomplete(_) => crate::errors::Error::ParseError("Incomplete data found".to_string(), Loc::new(0,0)),
-                nom::Err::Error(e) => crate::errors::Error::ParseError(format!("Parse Error {:?}", e.code),
-                                                                       Loc::from_span(&e.input)),
-                nom::Err::Failure(e) => crate::errors::Error::ParseError(format!("Parse Failure {:?}", e.code),
-                                                                         Loc::from_span(&e.input)),
-            }
-        )
+    many0(parse_statement)(i).map(|v| v.1).map_err(|e| match e {
+        nom::Err::Incomplete(_) => {
+            crate::errors::Error::ParseError("Incomplete data found".to_string(), Loc::new(0, 0))
+        }
+        nom::Err::Error(e) => crate::errors::Error::ParseError(
+            format!("Parse Error {:?}", e.code),
+            Loc::from_span(&e.input),
+        ),
+        nom::Err::Failure(e) => crate::errors::Error::ParseError(
+            format!("Parse Failure {:?}", e.code),
+            Loc::from_span(&e.input),
+        ),
+    })
 }
 
 // parse equality condition (only the condition, not the statements that follow if)
@@ -774,20 +789,26 @@ pub fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, Located
     if let Some(then_s) = then_else_s {
         Ok((
             s,
-            to_located_statement(Statement::IfElseEndIf {
-                eq: eqcond,
-                then_statements: then_s.0,
-                else_statements: then_endif_s.0,
-            }, i)
+            to_located_statement(
+                Statement::IfElseEndIf {
+                    eq: eqcond,
+                    then_statements: then_s.0,
+                    else_statements: then_endif_s.0,
+                },
+                i,
+            ),
         ))
     } else {
         Ok((
             s,
-            to_located_statement(Statement::IfElseEndIf {
-                eq: eqcond,
-                then_statements: then_endif_s.0,
-                else_statements: Vec::new(),
-            }, i)
+            to_located_statement(
+                Statement::IfElseEndIf {
+                    eq: eqcond,
+                    then_statements: then_endif_s.0,
+                    else_statements: Vec::new(),
+                },
+                i,
+            ),
         ))
     }
 }
@@ -807,20 +828,26 @@ pub fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, LocatedStat
     if let Some(then_s) = then_else_s {
         Ok((
             s,
-            to_located_statement(Statement::IfDef {
-                checked_var: cvar,
-                then_statements: then_s.0,
-                else_statements: then_endif_s.0,
-            }, i)
+            to_located_statement(
+                Statement::IfDef {
+                    checked_var: cvar,
+                    then_statements: then_s.0,
+                    else_statements: then_endif_s.0,
+                },
+                i,
+            ),
         ))
     } else {
         Ok((
             s,
-            to_located_statement(Statement::IfDef {
-                checked_var: cvar,
-                then_statements: then_endif_s.0,
-                else_statements: Vec::new(),
-            }, i)
+            to_located_statement(
+                Statement::IfDef {
+                    checked_var: cvar,
+                    then_statements: then_endif_s.0,
+                    else_statements: Vec::new(),
+                },
+                i,
+            ),
         ))
     }
 }
@@ -836,12 +863,13 @@ pub fn parse_ifdef_endif(i: Span) -> IResult<Span, LocatedStatement> {
 
 // parse statements in a tupfile
 pub fn parse_tupfile(filename: &str) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
+    use errors::Error as Err;
     use std::fs::File;
     use std::io::prelude::*;
-    use errors::Error as Err;
     let mut file = File::open(filename).map_err(|e| Err::IoError(e))?;
     let mut contents = String::new();
-    file.read_to_string(&mut contents).map_err(|e| Err::IoError(e))?;
+    file.read_to_string(&mut contents)
+        .map_err(|e| Err::IoError(e))?;
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
 pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
@@ -866,7 +894,9 @@ pub fn parse_config(filename: &str) -> Vec<LocatedStatement> {
     let mut file = File::open(filename).expect("no such file");
     let mut contents = String::new();
     if file.read_to_string(&mut contents).ok().is_some() {
-        parse_statements_until_eof(Span::new(contents.as_bytes())).ok().unwrap_or(Vec::new())
+        parse_statements_until_eof(Span::new(contents.as_bytes()))
+            .ok()
+            .unwrap_or(Vec::new())
     } else {
         Vec::new()
     }

@@ -15,7 +15,8 @@ let sm = parser::SubstMap(expr_map : HashMap::new(),
                           conf_map : HashMap::new(),
                           rule_map : HashMap::new(),
  cur_file = "./Tupfile");
- let substed = tupf.subst(sm);
- substed.decode(Path::new("."), &outputtags )
+ let substed = tupf.subst(sm); // substitute dollar exprs. expand macros, 
+ let taginfo = OutputTagInfo::new();
+ substed.decode(Path::new("."), &outputtags); // decode placeholders and deglob glob patterns, update tags
 ```
 

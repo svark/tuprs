@@ -76,16 +76,16 @@ impl AsRef<Path> for PathEntry {
 #[derive(Debug)]
 pub enum InputGlobType {
     Deglob(PathEntry),
-    Group(String, PathBuf),
-    Bin(String, PathBuf),
+    GroupEntry(String, PathBuf),
+    BinEntry(String, PathBuf),
 }
 
 impl ToString for InputGlobType {
     fn to_string(&self) -> String {
         match self {
             InputGlobType::Deglob(e) => e.path().to_str().unwrap_or_default().to_string(),
-            InputGlobType::Group(_, p) => p.to_str().unwrap_or_default().to_string(),
-            InputGlobType::Bin(_, p) => p.to_str().unwrap_or_default().to_string(),
+            InputGlobType::GroupEntry(_, p) => p.to_str().unwrap_or_default().to_string(),
+            InputGlobType::BinEntry(_, p) => p.to_str().unwrap_or_default().to_string(),
         }
     }
 }
@@ -95,8 +95,8 @@ type OutputType = PathBuf;
 fn as_path(inpg: &InputGlobType) -> &Path {
     match inpg {
         InputGlobType::Deglob(e) => e.path(),
-        InputGlobType::Group(_, p) => p.as_path(),
-        InputGlobType::Bin(_, p) => p.as_path(),
+        InputGlobType::GroupEntry(_, p) => p.as_path(),
+        InputGlobType::BinEntry(_, p) => p.as_path(),
     }
 }
 
@@ -177,14 +177,14 @@ impl DecodeInputPaths for PathExpr {
                 let grp_name = self.cat();
                 if let Some(paths) = taginfo.grouptags.get(grp_name.as_str()) {
                     for p in paths {
-                        vs.push(InputGlobType::Group(grp_name.clone(), p.to_path_buf()))
+                        vs.push(InputGlobType::GroupEntry(grp_name.clone(), p.to_path_buf()))
                     }
                 }
             }
-            PathExpr::Bucket(str) => {
+            PathExpr::Bin(str) => {
                 if let Some(paths) = taginfo.buckettags.get(str.as_str()) {
                     for p in paths {
-                        vs.push(InputGlobType::Bin(str.clone(), p.to_path_buf()))
+                        vs.push(InputGlobType::BinEntry(str.clone(), p.to_path_buf()))
                     }
                 }
             }
@@ -205,7 +205,7 @@ impl DecodeInputPaths for Vec<PathExpr> {
             .collect();
         // ....
         let filteroutexcludes = |(i, ips): (usize, Vec<InputGlobType>)| -> Vec<InputGlobType> {
-            // find exclude patterns after current glob pattern
+            // find the immediately following exclude pattern
             let pp = excludeindices.partition_point(|&j| j <= i);
             if pp < excludeindices.len() {
                 // remove paths that match exclude pattern
@@ -249,9 +249,9 @@ trait DecodeOrderOnlyInputPlaceHolders {
 impl DecodeInputPlaceHolders for PathExpr {
     fn decode_input_place_holders(&self, input: &Vec<&InputGlobType>) -> PathExpr {
         let frep = |inp: &Vec<&InputGlobType>, d: &str| {
-            let isnotgrp = |x: &InputGlobType| !matches!(x, &InputGlobType::Group(_, _));
+            let isnotgrp = |x: &InputGlobType| !matches!(x, &InputGlobType::GroupEntry(_, _));
             let isgrp = |x: &InputGlobType, name: &str| {
-                if let &InputGlobType::Group(ref grpname, _) = x {
+                if let &InputGlobType::GroupEntry(ref grpname, _) = x {
                     name.eq(grpname.as_str())
                 } else {
                     false

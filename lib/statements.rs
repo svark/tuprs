@@ -8,12 +8,12 @@ pub enum PathExpr {
     Literal(String), // a normal string
     Sp1,             // spaces between paths
     ExcludePattern(String),
-    DollarExpr(String),                  // this is dollar expr eg $(EXPR)
+    DollarExpr(String),                  // $(EXPR)
     AtExpr(String),                      // @(EXPR)
     AmpExpr(String),                     //&(Expr)
-    Group(Vec<PathExpr>, Vec<PathExpr>), // reference to an output available globally
-    Bucket(String),                      // {objs} a collector of output
-    MacroRef(String),                    // !cc_name reference to a macro to be expanded
+    Group(Vec<PathExpr>, Vec<PathExpr>), // reference to an output available globally across Tupfiles
+    Bin(String),                         // {objs} a collector of output
+    MacroRef(String),                    // !macro_name reference to a macro to be expanded
 }
 
 // represents the equality condition in if(n)eq (LHS,RHS)
@@ -74,33 +74,32 @@ pub struct Loc {
 }
 impl Display for Loc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f,"line:{}, offset:{}", self.line,self.offset)
+        write!(f, "line:{}, offset:{}", self.line, self.offset)
     }
 }
 impl Loc {
-    pub fn new(line : u32, offset: u32) -> Loc
-    {
-         Loc{line, offset}
+    pub fn new(line: u32, offset: u32) -> Loc {
+        Loc { line, offset }
     }
-    pub fn getline(&self) -> u32
-    {
+    pub fn getline(&self) -> u32 {
         self.line
     }
-    pub fn getoffset(&self) -> u32 { self.offset}
-
-
+    pub fn getoffset(&self) -> u32 {
+        self.offset
+    }
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub struct LocatedStatement
-{
+pub struct LocatedStatement {
     pub statement: Statement,
-    pub loc: Loc
+    pub loc: Loc,
 }
-impl  LocatedStatement {
-    pub fn new(stmt: Statement, l: Loc) -> LocatedStatement
-    {
-         LocatedStatement{statement:stmt, loc:l}
+impl LocatedStatement {
+    pub fn new(stmt: Statement, l: Loc) -> LocatedStatement {
+        LocatedStatement {
+            statement: stmt,
+            loc: l,
+        }
     }
     pub fn getstatement(&self) -> &Statement {
         &self.statement
@@ -109,7 +108,6 @@ impl  LocatedStatement {
     pub fn getloc(&self) -> &Loc {
         &self.loc
     }
-
 }
 // any of the valid statements that can appear in a tupfile
 #[derive(PartialEq, Debug, Clone)]
@@ -242,7 +240,7 @@ impl StripTrailingWs for Vec<Statement> {
     }
 }
 
-impl  StripTrailingWs for Vec<LocatedStatement> {
+impl StripTrailingWs for Vec<LocatedStatement> {
     fn strip_trailing_ws(&mut self) {
         for f in self {
             f.statement.strip_trailing_ws();
@@ -300,5 +298,10 @@ impl Cat for &Statement {
             }
             _ => "".to_owned(),
         }
+    }
+}
+impl Cat for &LocatedStatement {
+    fn cat(self) -> String {
+        self.statement.cat()
     }
 }

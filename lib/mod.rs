@@ -3,9 +3,11 @@ extern crate nom;
 #[macro_use]
 extern crate lazy_static;
 extern crate capturing_glob as glob;
+extern crate daggy;
 extern crate nom_locate;
+extern crate petgraph;
 extern crate regex;
-
+extern crate walkdir;
 //use statements::StripTrailingWs;
 
 pub mod decode;
@@ -15,8 +17,6 @@ mod platform;
 pub mod statements;
 pub mod transform;
 extern crate thiserror;
-
-use statements::LocatedStatement;
 
 #[test]
 fn test_op() {
@@ -53,7 +53,7 @@ fn test_op() {
     }
     {
         let stmts = parser::parse_tupfile("tupdata1.txt").expect("failed to parse tupdata1.txt");
-        use statements::PathExpr::{Bucket, ExcludePattern, Group, Literal};
+        use statements::PathExpr::{Bin, ExcludePattern, Group, Literal};
         use statements::{Link, RuleFormula, Source, Statement, Target};
         use transform::*;
 
@@ -105,7 +105,7 @@ fn test_op() {
                     primary: vec![],
                     exclude_pattern: Some(ExcludePattern("exclude_pattern.*".to_string())),
                     group: None,
-                    bin: Some(Bucket("objs".to_string())),
+                    bin: Some(Bin("objs".to_string())),
                 },
                 rule_formula: RuleFormula {
                     description: "".to_string(),
@@ -187,6 +187,7 @@ fn test_parse() {
     use nom_locate::LocatedSpan;
     use statements::StripTrailingWs;
     //use statements::PathExpr;
+    use statements::LocatedStatement;
     use statements::PathExpr::DollarExpr;
     use statements::PathExpr::Group;
     use statements::PathExpr::Literal;

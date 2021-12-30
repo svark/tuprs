@@ -1,3 +1,4 @@
+use daggy::{petgraph, Dag, NodeIndex};
 use errors::Error as Err;
 use parser::parse_tupfile;
 use parser::{locate_file, locate_tuprules};
@@ -5,6 +6,7 @@ use platform::*;
 use statements::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 pub enum StatementContext {
     Export,
     Preload,
@@ -60,7 +62,8 @@ pub trait Subst {
 pub trait ExpandMacro {
     fn has_ref(&self) -> bool;
     fn expand(&self, m: &mut SubstMap) -> Result<Self, Err>
-    where  Self:Sized;
+    where
+        Self: Sized;
 }
 
 fn is_empty(rval: &PathExpr) -> bool {
@@ -72,7 +75,10 @@ fn is_empty(rval: &PathExpr) -> bool {
 }
 trait Deps {
     fn input_groups(&self) -> Vec<String>;
+    fn input_bins(&self) -> Vec<String>;
+
     fn output_groups(&self) -> Vec<String>;
+    fn output_bins(&self) -> Vec<String>;
 }
 // scan for group tags in a vec of rvalgenerals
 impl Deps for Vec<PathExpr> {
@@ -86,40 +92,128 @@ impl Deps for Vec<PathExpr> {
         }
         inps
     }
+
+    fn input_bins(&self) -> Vec<String> {
+        let mut inps = Vec::new();
+        for rval in self.iter() {
+            if let PathExpr::Bin(_) = rval {
+                let name = rval.cat();
+                inps.push(name)
+            }
+        }
+        inps
+    }
+
     // dont distinguish between input and output at this level
     fn output_groups(&self) -> Vec<String> {
         self.input_groups()
     }
+
+    fn output_bins(&self) -> Vec<String> {
+        self.input_bins()
+    }
 }
-impl Deps for Statement {
+
+impl Deps for LocatedStatement {
     fn input_groups(&self) -> Vec<String> {
-        if let Statement::Rule(Link { source: s, .. }) = self {
-            let mut inp_groups_prim = s.primary.input_groups();
-            let mut inp_groups_sec = s.secondary.input_groups();
-            inp_groups_prim.append(&mut inp_groups_sec);
-            inp_groups_prim
-        } else {
-            Vec::new()
+        let mut allinputgrps = Vec::new();
+        if let &Statement::Rule(Link { source: ref s, .. }) = self.getstatement() {
+            allinputgrps.append(&mut s.primary.input_groups());
+            allinputgrps.append(&mut s.secondary.input_groups());
         }
+        allinputgrps
+    }
+
+    fn input_bins(&self) -> Vec<String> {
+        let mut allinputbins = Vec::new();
+        if let &Statement::Rule(Link { source: ref s, .. }) = self.getstatement() {
+            allinputbins.append(&mut s.primary.input_bins());
+            allinputbins.append(&mut s.secondary.input_bins());
+        }
+        allinputbins
     }
 
     fn output_groups(&self) -> Vec<String> {
-        if let Statement::Rule(Link {
-            source: _s,
-            target: t,
-            ..
-        }) = self
-        {
-            let mut out_groups_prim = t.primary.output_groups();
-            let mut out_groups_sec = t.secondary.output_groups();
-            out_groups_prim.append(&mut out_groups_sec);
-            out_groups_prim
-        } else {
-            Vec::new()
+        let mut alloutputgroups = Vec::new();
+        let stmt = self.getstatement();
+        if let &Statement::Rule(Link { target: ref t, .. }) = stmt {
+            if let Target {
+                group: Some(grp), ..
+            } = t
+            {
+                alloutputgroups.push(grp.cat());
+            }
         }
+        alloutputgroups
+    }
+
+    fn output_bins(&self) -> Vec<String> {
+        let mut alloutputbins = Vec::new();
+        let stmt = self.getstatement();
+        if let &Statement::Rule(Link { target: ref t, .. }) = stmt {
+            if let Target { bin: Some(bin), .. } = t {
+                alloutputbins.push(bin.cat());
+            }
+        }
+        alloutputbins
     }
 }
+impl Deps for Vec<LocatedStatement> {
+    fn input_groups(&self) -> Vec<String> {
+        let mut allinputgrps = Vec::new();
+        for l in self.into_iter() {
+            if let &Statement::Rule(Link { source: ref s, .. }) = l.getstatement() {
+                allinputgrps.append(&mut s.primary.input_groups());
+                allinputgrps.append(&mut s.secondary.input_groups());
+            }
+        }
+        allinputgrps
+    }
+
+    fn input_bins(&self) -> Vec<String> {
+        let mut allinputbins = Vec::new();
+        for l in self.into_iter() {
+            if let &Statement::Rule(Link { source: ref s, .. }) = l.getstatement() {
+                allinputbins.append(&mut s.primary.input_bins());
+                allinputbins.append(&mut s.secondary.input_bins());
+            }
+        }
+        allinputbins
+    }
+
+    fn output_groups(&self) -> Vec<String> {
+        let mut alloutputgroups = Vec::new();
+        for l in self.into_iter() {
+            let stmt = l.getstatement();
+            if let &Statement::Rule(Link { target: ref t, .. }) = stmt {
+                if let Target {
+                    group: Some(grp), ..
+                } = t
+                {
+                    alloutputgroups.push(grp.cat());
+                }
+            }
+        }
+        alloutputgroups
+    }
+
+    fn output_bins(&self) -> Vec<String> {
+        let mut alloutputbins = Vec::new();
+        for l in self.into_iter() {
+            let stmt = l.getstatement();
+            if let &Statement::Rule(Link { target: ref t, .. }) = stmt {
+                if let Target { bin: Some(bin), .. } = t {
+                    alloutputbins.push(bin.cat());
+                }
+            }
+        }
+        alloutputbins
+    }
+}
+
 impl PathExpr {
+    // substitute a single pathexpr into an array of literal pathexpr
+    // SFINAE holds
     fn subst(&self, m: &mut SubstMap) -> Vec<PathExpr> {
         match self {
             &PathExpr::DollarExpr(ref x) => {
@@ -162,6 +256,8 @@ impl PathExpr {
     }
 }
 
+// creates Pathexprs separated by PathExpr::Sp1
+// this is implementation of rust nightly feature intersperse on Iter
 fn intersperse_sp1(val: &Vec<String>) -> Vec<PathExpr> {
     let mut vs = Vec::new();
     for pe in val.iter().map(|x| PathExpr::from(x.clone())) {
@@ -173,7 +269,7 @@ fn intersperse_sp1(val: &Vec<String>) -> Vec<PathExpr> {
 }
 
 impl Subst for Vec<PathExpr> {
-    fn subst(&self, m: &mut SubstMap) -> Result<Self,Err> {
+    fn subst(&self, m: &mut SubstMap) -> Result<Self, Err> {
         let mut newpe: Vec<_> = self
             .iter()
             .map(|x| x.subst(m))
@@ -193,7 +289,9 @@ impl Subst for Source {
         })
     }
 }
+use decode::{OutputTagInfo, PathDecoder};
 use std::ops::AddAssign;
+
 impl AddAssign for Source {
     fn add_assign(&mut self, other: Self) {
         let mut o = other;
@@ -218,7 +316,7 @@ impl AddAssign for Target {
         self.bin = self.bin.clone().or(o.bin);
     }
 }
-fn takefirst(o: &Option<PathExpr>, m: &mut SubstMap) -> Result<Option<PathExpr>,Err> {
+fn takefirst(o: &Option<PathExpr>, m: &mut SubstMap) -> Result<Option<PathExpr>, Err> {
     if let &Some(ref pe) = o {
         Ok(pe.subst(m).first().cloned())
     } else {
@@ -226,7 +324,7 @@ fn takefirst(o: &Option<PathExpr>, m: &mut SubstMap) -> Result<Option<PathExpr>,
     }
 }
 impl Subst for Target {
-    fn subst(&self, m: &mut SubstMap) -> Result<Self,Err> {
+    fn subst(&self, m: &mut SubstMap) -> Result<Self, Err> {
         Ok(Target {
             primary: self.primary.subst(m)?,
             secondary: self.secondary.subst(m)?,
@@ -237,7 +335,7 @@ impl Subst for Target {
     }
 }
 impl Subst for RuleFormula {
-    fn subst(&self, m: &mut SubstMap) -> Result<Self,Err> {
+    fn subst(&self, m: &mut SubstMap) -> Result<Self, Err> {
         Ok(RuleFormula {
             description: self.description.clone(), // todo : convert to rval and subst here as well,
             formula: self.formula.subst(m)?,
@@ -272,7 +370,10 @@ impl ExpandMacro for Link {
                         r.strip_trailing_ws();
                         formulae.append(&mut r);
                     } else {
-                        return Err(Err::UnknownMacroRef(name.clone(), Loc::new(pos.0, pos.1 as u32) ))
+                        return Err(Err::UnknownMacroRef(
+                            name.clone(),
+                            Loc::new(pos.0, pos.1 as u32),
+                        ));
                     }
                 }
                 _ => formulae.push(pathexpr.clone()),
@@ -301,12 +402,14 @@ fn tovecstring(right: &Vec<PathExpr>) -> Vec<String> {
         .collect()
 }
 // load the conf variables in tup.config in the root directory
-pub fn load_conf_vars(filename: &Path) -> Result<HashMap<String, Vec<String>>,crate::errors::Error> {
+pub fn load_conf_vars(
+    filename: &Path,
+) -> Result<HashMap<String, Vec<String>>, crate::errors::Error> {
     let mut conf_vars = HashMap::new();
 
     if let Some(conf_file) = locate_file(filename, "tup.config") {
         if let Some(fstr) = conf_file.to_str() {
-            for LocatedStatement{statement,..} in parse_tupfile(fstr)?.iter() {
+            for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
                 match statement {
                     Statement::LetExpr { left, right, .. } => {
                         if left.name.starts_with("CONFIG_") {
@@ -318,17 +421,16 @@ pub fn load_conf_vars(filename: &Path) -> Result<HashMap<String, Vec<String>>,cr
             }
         }
     }
+    // @(TUP_PLATFORM)
+    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
+    //     @(TUP_ARCH)
+    //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
     if !conf_vars.contains_key("TUP_PLATFORM") {
         conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform()]);
     }
     if !conf_vars.contains_key("TUP_ARCH") {
         conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch()]);
     }
-
-    // @(TUP_PLATFORM)
-    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
-    //     @(TUP_ARCH)
-    //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
 
     Ok(conf_vars)
 }
@@ -372,7 +474,12 @@ impl Subst for Vec<LocatedStatement> {
                     let &app = is_append;
                     let subst_right: Vec<_> = right
                         .split(|x| x == &PathExpr::Sp1)
-                        .map(|x| x.to_vec().subst(m).expect("subst failure in let expr").cat())
+                        .map(|x| {
+                            x.to_vec()
+                                .subst(m)
+                                .expect("subst failure in let expr")
+                                .cat()
+                        })
                         .collect();
 
                     let curright: Vec<String> = if app {
@@ -399,12 +506,19 @@ impl Subst for Vec<LocatedStatement> {
                         PathExpr::DollarExpr("TUP_CWD".to_owned()),
                         PathExpr::Literal("/".to_owned()),
                     ]
-                    .subst(m).expect("no errors expected in subst of TUP_CWD")
+                    .subst(m)
+                    .expect("no errors expected in subst of TUP_CWD")
                     .cat();
                     let subst_right: Vec<String> = right
                         .split(|x| x == &PathExpr::Sp1)
-                        .map(|x| prefix.clone() + x.to_vec().subst(m)
-                            .expect("no errors expected in subst").cat().as_str())
+                        .map(|x| {
+                            prefix.clone()
+                                + x.to_vec()
+                                    .subst(m)
+                                    .expect("no errors expected in subst")
+                                    .cat()
+                                    .as_str()
+                        })
                         .collect();
 
                     //let subst_right = prefix.cat() + (right.subst(m)).cat().as_str();
@@ -512,8 +626,10 @@ impl Subst for Vec<LocatedStatement> {
                     newstats.push(statement.clone());
                 }
                 Statement::Run(r) => {
-                    newstats.push(LocatedStatement::new(Statement::Run(r.subst(m)?),
-                                                        loc.clone()));
+                    newstats.push(LocatedStatement::new(
+                        Statement::Run(r.subst(m)?),
+                        loc.clone(),
+                    ));
                 }
                 Statement::Comment => {
                     // ignore
@@ -522,4 +638,146 @@ impl Subst for Vec<LocatedStatement> {
         }
         Ok(newstats)
     }
+}
+pub struct ParsedStatements {
+    tupfile: PathBuf,
+    statements: Vec<LocatedStatement>,
+}
+
+impl ParsedStatements {
+    pub fn get_tupfile(&self) -> &Path {
+        self.tupfile.as_path()
+    }
+    pub fn get_statements(&self) -> &Vec<LocatedStatement> {
+        &self.statements
+    }
+}
+pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Error> {
+    let mut dag: Dag<u32, u32> = Dag::new();
+    let mut provided_by: HashMap<_, Vec<_>> = HashMap::new();
+    let mut required_by: HashMap<_, Vec<_>> = HashMap::new();
+    let mut tupfiles = Vec::new();
+    for entry in WalkDir::new(root)
+        .follow_links(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let f_name = entry.file_name().to_string_lossy();
+        if f_name.as_ref().eq("Tupfile") {
+            let tupfilepath = entry.path().to_string_lossy().as_ref().to_string();
+            tupfiles.push(tupfilepath);
+        }
+    }
+    let rootfolder =
+        locate_file(Path::new("."), "Tupfile.ini").ok_or(crate::errors::Error::RootNotFound)?;
+    let confvars = load_conf_vars(rootfolder.as_path())?;
+    let mut rules = Vec::new();
+    let mut ids = Vec::new();
+    for tupfilepath in tupfiles.iter() {
+        ids.push(dag.node_count());
+        let stmts = parse_tupfile(tupfilepath.as_str())?;
+        let p = Path::new(tupfilepath);
+        let mut m = SubstMap::new(&confvars, p);
+        let stmts = stmts.subst(&mut m)?;
+        for l in &stmts {
+            let stmt = l.getstatement();
+            if let &Statement::Rule(Link {
+                source: ref s,
+                target: ref t,
+                ..
+            }) = stmt
+            {
+                let n = dag.add_node(1);
+                for group in s.primary.input_groups() {
+                    required_by.entry(group + "?G").or_default().push(n);
+                }
+                for bin in s.primary.input_bins() {
+                    required_by
+                        .entry(bin + tupfilepath + "?B")
+                        .or_default()
+                        .push(n);
+                }
+                for group in s.secondary.input_groups() {
+                    required_by.entry(group + "?G").or_default().push(n);
+                }
+                for bin in s.secondary.input_bins() {
+                    required_by
+                        .entry(bin + tupfilepath + "?B")
+                        .or_default()
+                        .push(n);
+                }
+                if let Some(pe) = &t.group {
+                    provided_by.entry(pe.cat() + "?G").or_default().push(n);
+                }
+                if let Some(pe) = &t.bin {
+                    provided_by
+                        .entry(pe.cat() + tupfilepath + "?B")
+                        .or_default()
+                        .push(n);
+                }
+            }
+        }
+        rules.push(ParsedStatements {
+            statements: stmts,
+            tupfile: p.to_path_buf(),
+        });
+    }
+    //ids.push(dag.node_count());
+    let statement_from_id = |i: NodeIndex| {
+        let x = ids.partition_point(|&j| j >= i.index());
+        (&rules[x].tupfile, &rules[x].statements[i.index() - ids[x]])
+    };
+    for (group, nodeids) in required_by.iter() {
+        if let Some(pnodeids) = provided_by.get(group) {
+            for pnodeid in pnodeids {
+                for nodeid in nodeids {
+                    dag.update_edge(*pnodeid, *nodeid, 1).map_err(|_| {
+                        crate::errors::Error::DependencyCycle(
+                            {
+                                let (tupfile, stmt) = statement_from_id(*pnodeid);
+                                format!(
+                                    "tupfile:{}, and rule:{}",
+                                    tupfile.to_string_lossy(),
+                                    stmt.cat()
+                                )
+                            },
+                            {
+                                let (tupfile, stmt) = statement_from_id(*nodeid);
+                                format!(
+                                    "tupfile:{}, and rule:{}",
+                                    tupfile.to_string_lossy(),
+                                    stmt.cat()
+                                )
+                            },
+                        )
+                    })?;
+                }
+            }
+        }
+    }
+    let nodes: Vec<_> = petgraph::algo::toposort(&dag, None).map_err(|e| {
+        crate::errors::Error::DependencyCycle("".to_string(), {
+            let (tupfile, stmt) = statement_from_id(e.node_id());
+            format!(
+                "tupfile:{}, and rule:{}",
+                tupfile.to_string_lossy(),
+                stmt.cat()
+            )
+        })
+    })?;
+    let mut outputtags = OutputTagInfo::new();
+    let mut lstats = Vec::new();
+    for tupnodeid in nodes {
+        let (tupfile, statement) = statement_from_id(tupnodeid);
+        //let mut sm = SubstMap::new(&HashMap::new(), tupfile);
+        //sm.waitforpercs = false;
+        let (stmts, ref mut newoutputtags) = statement.decode(tupfile, &outputtags)?;
+        outputtags.merge_group_tags(newoutputtags);
+        outputtags.merge_bin_tags(newoutputtags);
+        lstats.push(ParsedStatements {
+            statements: stmts,
+            tupfile: tupfile.clone(),
+        });
+    }
+    Ok(lstats)
 }
