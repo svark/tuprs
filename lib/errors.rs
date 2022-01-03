@@ -18,4 +18,8 @@ pub enum Error {
     DependencyCycle(String, String),
     #[error("Root folder not found. Tupfile.ini is expected in the root.")]
     RootNotFound,
+    #[error("Glob error")]
+    GlobError(String, Loc),
+    #[error("Multiple glob patterns match some paths")]
+    MultipleGlobMatches(String, Loc),
 }

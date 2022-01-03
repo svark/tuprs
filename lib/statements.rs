@@ -143,6 +143,33 @@ pub enum Statement {
     Run(Vec<PathExpr>),
     Comment,
 }
+
+pub fn rule_target(statement: &LocatedStatement) -> Option<&Target> {
+    if let Statement::Rule(Link { target, .. }) = statement.getstatement() {
+        Some(target)
+    } else {
+        None
+    }
+}
+
+pub fn rule_source(statement: &LocatedStatement) -> Option<&Source> {
+    if let Statement::Rule(Link { source, .. }, ..) = statement.getstatement() {
+        Some(source)
+    } else {
+        None
+    }
+}
+
+pub fn is_rule(statement: &LocatedStatement) -> bool {
+    matches!(
+        statement,
+        LocatedStatement {
+            statement: Statement::Rule(_),
+            ..
+        }
+    )
+}
+
 // we could have used `Into' or 'ToString' trait
 // coherence rules are too strict in rust hence the trait below
 pub trait Cat {
@@ -153,50 +180,73 @@ pub trait CatRef {
     fn cat_ref(&self) -> &str;
 }
 
-pub trait StripTrailingWs {
-    fn strip_trailing_ws(&mut self);
+pub trait CleanupPaths {
+    fn cleanup(&mut self);
 }
 
-impl StripTrailingWs for Vec<PathExpr> {
-    fn strip_trailing_ws(&mut self) {
-        if let Some(PathExpr::Sp1) = self.last() {
-            self.pop();
+impl CleanupPaths for Vec<PathExpr> {
+    fn cleanup(&mut self) {
+        let mut newpes: String = String::new();
+        let mut newpesall = Vec::new();
+        let mut was_lit = false;
+        let mut was_sp = false;
+        for pe in self.iter() {
+            if matches!(pe, PathExpr::Literal(_)) {
+                newpes += pe.cat_ref();
+                was_lit = true;
+            } else if was_lit {
+                newpesall.push(PathExpr::Literal(newpes));
+                newpes = "".to_string();
+                was_lit = false;
+            }
+            if matches!(pe, PathExpr::Sp1) {
+                was_sp = true;
+            } else if was_sp {
+                newpesall.push(PathExpr::Sp1);
+            }
+            if !matches!(pe, PathExpr::Sp1 | PathExpr::Literal(_)) {
+                newpesall.push(pe.clone());
+            }
         }
+        if was_lit {
+            newpesall.push(PathExpr::Literal(newpes));
+        }
+        *self = newpesall;
     }
 }
-impl StripTrailingWs for RuleFormula {
-    fn strip_trailing_ws(&mut self) {
-        self.formula.strip_trailing_ws();
-    }
-}
-
-impl StripTrailingWs for Link {
-    fn strip_trailing_ws(&mut self) {
-        self.target.primary.strip_trailing_ws();
-        self.target.secondary.strip_trailing_ws();
-        self.source.primary.strip_trailing_ws();
-        self.source.secondary.strip_trailing_ws();
-        self.rule_formula.formula.strip_trailing_ws();
+impl CleanupPaths for RuleFormula {
+    fn cleanup(&mut self) {
+        self.formula.cleanup();
     }
 }
 
-impl StripTrailingWs for Statement {
-    fn strip_trailing_ws(&mut self) {
+impl CleanupPaths for Link {
+    fn cleanup(&mut self) {
+        self.target.primary.cleanup();
+        self.target.secondary.cleanup();
+        self.source.primary.cleanup();
+        self.source.secondary.cleanup();
+        self.rule_formula.formula.cleanup();
+    }
+}
+
+impl CleanupPaths for Statement {
+    fn cleanup(&mut self) {
         match self {
             Statement::Rule(l) => {
-                l.strip_trailing_ws();
+                l.cleanup();
                 ()
             }
             Statement::LetExpr {
                 left: _left, right, ..
             } => {
-                right.strip_trailing_ws();
+                right.cleanup();
                 ()
             }
             Statement::LetRefExpr {
                 left: _left, right, ..
             } => {
-                right.strip_trailing_ws();
+                right.cleanup();
                 ()
             }
             Statement::IfElseEndIf {
@@ -204,46 +254,46 @@ impl StripTrailingWs for Statement {
                 then_statements,
                 else_statements,
             } => {
-                then_statements.strip_trailing_ws();
-                else_statements.strip_trailing_ws();
+                then_statements.cleanup();
+                else_statements.cleanup();
                 ()
             }
             Statement::Include(r) => {
-                r.strip_trailing_ws();
+                r.cleanup();
                 ()
             }
             Statement::Err(r) => {
-                r.strip_trailing_ws();
+                r.cleanup();
                 ()
             }
             Statement::MacroAssignment(_, link) => {
-                link.strip_trailing_ws();
+                link.cleanup();
                 ()
             }
             Statement::Preload(v) => {
-                v.strip_trailing_ws();
+                v.cleanup();
                 ()
             }
             Statement::Run(v) => {
-                v.strip_trailing_ws();
+                v.cleanup();
                 ()
             }
             _ => (),
         }
     }
 }
-impl StripTrailingWs for Vec<Statement> {
-    fn strip_trailing_ws(&mut self) {
+impl CleanupPaths for Vec<Statement> {
+    fn cleanup(&mut self) {
         for f in self {
-            f.strip_trailing_ws();
+            f.cleanup();
         }
     }
 }
 
-impl StripTrailingWs for Vec<LocatedStatement> {
-    fn strip_trailing_ws(&mut self) {
+impl CleanupPaths for Vec<LocatedStatement> {
+    fn cleanup(&mut self) {
         for f in self {
-            f.statement.strip_trailing_ws();
+            f.statement.cleanup();
         }
     }
 }

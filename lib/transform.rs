@@ -74,142 +74,139 @@ fn is_empty(rval: &PathExpr) -> bool {
     }
 }
 trait Deps {
-    fn input_groups(&self) -> Vec<String>;
-    fn input_bins(&self) -> Vec<String>;
+    fn input_groups(&self, tup_cwd: &Path, groups: &mut Vec<String>);
+    fn input_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>);
 
-    fn output_groups(&self) -> Vec<String>;
-    fn output_bins(&self) -> Vec<String>;
+    // files that are possibly outputs of other rules
+    fn input_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>);
+
+    fn output_groups(&self, tup_cwd: &Path, groups: &mut Vec<String>);
+    fn output_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>);
+    fn output_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>);
+}
+
+fn join_path<P: AsRef<Path>>(tup_cwd: &Path, pathexpr: P) -> String {
+    tup_cwd.join(pathexpr).to_string_lossy().to_string()
+}
+fn input_bin(tup_cwd: &Path, inps: &mut Vec<String>, pathexpr: &PathExpr) {
+    if let PathExpr::Bin(_) = pathexpr {
+        let name = join_path(tup_cwd, pathexpr.cat());
+        inps.push(name);
+    }
+}
+fn input_group(tup_cwd: &Path, inps: &mut Vec<String>, pathexpr: &PathExpr) {
+    if let PathExpr::Group(_, _) = pathexpr {
+        let name = join_path(tup_cwd, pathexpr.cat());
+        inps.push(name);
+    }
 }
 // scan for group tags in a vec of rvalgenerals
+// deps are gathered from non-ws pathexpr
 impl Deps for Vec<PathExpr> {
-    fn input_groups(&self) -> Vec<String> {
-        let mut inps = Vec::new();
-        for rval in self.iter() {
-            if let PathExpr::Group(_, _) = rval {
-                let name = rval.cat();
-                inps.push(name)
+    fn input_groups(&self, tup_cwd: &Path, groups: &mut Vec<String>) {
+        for pathexpr in self.iter() {
+            input_group(tup_cwd, groups, pathexpr);
+        }
+    }
+    fn input_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>) {
+        for pathexpr in self.iter() {
+            input_bin(tup_cwd, bins, pathexpr)
+        }
+    }
+
+    fn input_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>) {
+        for pathexpr in self.iter() {
+            let pestring = pathexpr.cat_ref();
+            if !pestring.is_empty() {
+                gen_files.push(join_path(tup_cwd, pestring))
             }
         }
-        inps
+    }
+    // dont distinguish between input and output at this point
+    fn output_groups(&self, tup_cwd: &Path, groups: &mut Vec<String>) {
+        self.input_groups(tup_cwd, groups)
+    }
+    fn output_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>) {
+        self.input_bins(tup_cwd, bins)
     }
 
-    fn input_bins(&self) -> Vec<String> {
-        let mut inps = Vec::new();
-        for rval in self.iter() {
-            if let PathExpr::Bin(_) = rval {
-                let name = rval.cat();
-                inps.push(name)
-            }
-        }
-        inps
-    }
-
-    // dont distinguish between input and output at this level
-    fn output_groups(&self) -> Vec<String> {
-        self.input_groups()
-    }
-
-    fn output_bins(&self) -> Vec<String> {
-        self.input_bins()
+    fn output_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>) {
+        self.input_gen_files(tup_cwd, gen_files)
     }
 }
 
 impl Deps for LocatedStatement {
-    fn input_groups(&self) -> Vec<String> {
-        let mut allinputgrps = Vec::new();
-        if let &Statement::Rule(Link { source: ref s, .. }) = self.getstatement() {
-            allinputgrps.append(&mut s.primary.input_groups());
-            allinputgrps.append(&mut s.secondary.input_groups());
+    fn input_groups(&self, tup_cwd: &Path, groups: &mut Vec<String>) {
+        if let Some(s) = rule_source(self) {
+            s.primary.input_groups(tup_cwd, groups);
+            s.secondary.input_groups(tup_cwd, groups);
         }
-        allinputgrps
     }
 
-    fn input_bins(&self) -> Vec<String> {
-        let mut allinputbins = Vec::new();
-        if let &Statement::Rule(Link { source: ref s, .. }) = self.getstatement() {
-            allinputbins.append(&mut s.primary.input_bins());
-            allinputbins.append(&mut s.secondary.input_bins());
+    fn input_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>) {
+        if let Some(s) = rule_source(self) {
+            s.primary.input_bins(tup_cwd, bins);
+            s.secondary.input_bins(tup_cwd, bins);
         }
-        allinputbins
     }
 
-    fn output_groups(&self) -> Vec<String> {
-        let mut alloutputgroups = Vec::new();
-        let stmt = self.getstatement();
-        if let &Statement::Rule(Link { target: ref t, .. }) = stmt {
-            if let Target {
-                group: Some(grp), ..
-            } = t
-            {
-                alloutputgroups.push(grp.cat());
-            }
+    fn input_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>) {
+        if let Some(s) = rule_source(self) {
+            s.primary.input_gen_files(tup_cwd, gen_files);
+            s.secondary.input_gen_files(tup_cwd, gen_files);
         }
-        alloutputgroups
     }
 
-    fn output_bins(&self) -> Vec<String> {
-        let mut alloutputbins = Vec::new();
-        let stmt = self.getstatement();
-        if let &Statement::Rule(Link { target: ref t, .. }) = stmt {
-            if let Target { bin: Some(bin), .. } = t {
-                alloutputbins.push(bin.cat());
-            }
+    fn output_groups(&self, tup_cwd: &Path, groups: &mut Vec<String>) {
+        if let Some(Target {
+            group: Some(group), ..
+        }) = rule_target(self)
+        {
+            input_group(tup_cwd, groups, group);
         }
-        alloutputbins
+    }
+
+    fn output_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>) {
+        if let Some(Target { bin: Some(bin), .. }) = rule_target(self) {
+            input_bin(tup_cwd, bins, bin);
+        }
+    }
+
+    fn output_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>) {
+        if let Some(t) = rule_target(self) {
+            t.primary.output_gen_files(tup_cwd, gen_files);
+            t.secondary.output_gen_files(tup_cwd, gen_files);
+        }
     }
 }
+/*
 impl Deps for Vec<LocatedStatement> {
-    fn input_groups(&self) -> Vec<String> {
-        let mut allinputgrps = Vec::new();
-        for l in self.into_iter() {
-            if let &Statement::Rule(Link { source: ref s, .. }) = l.getstatement() {
-                allinputgrps.append(&mut s.primary.input_groups());
-                allinputgrps.append(&mut s.secondary.input_groups());
-            }
-        }
-        allinputgrps
+    fn input_groups(&self, tup_cwd: &Path, groups: &mut Vec<String>) {
+        self.into_iter().map(|x| x.input_groups(tup_cwd, groups));
     }
 
-    fn input_bins(&self) -> Vec<String> {
-        let mut allinputbins = Vec::new();
-        for l in self.into_iter() {
-            if let &Statement::Rule(Link { source: ref s, .. }) = l.getstatement() {
-                allinputbins.append(&mut s.primary.input_bins());
-                allinputbins.append(&mut s.secondary.input_bins());
-            }
-        }
-        allinputbins
+    fn input_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>) {
+        self.into_iter().map(|x| x.input_bins(tup_cwd, bins));
     }
 
-    fn output_groups(&self) -> Vec<String> {
-        let mut alloutputgroups = Vec::new();
-        for l in self.into_iter() {
-            let stmt = l.getstatement();
-            if let &Statement::Rule(Link { target: ref t, .. }) = stmt {
-                if let Target {
-                    group: Some(grp), ..
-                } = t
-                {
-                    alloutputgroups.push(grp.cat());
-                }
-            }
-        }
-        alloutputgroups
+    fn input_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>) {
+        self.into_iter()
+            .map(|x| x.input_gen_files(tup_cwd, gen_files));
     }
 
-    fn output_bins(&self) -> Vec<String> {
-        let mut alloutputbins = Vec::new();
-        for l in self.into_iter() {
-            let stmt = l.getstatement();
-            if let &Statement::Rule(Link { target: ref t, .. }) = stmt {
-                if let Target { bin: Some(bin), .. } = t {
-                    alloutputbins.push(bin.cat());
-                }
-            }
-        }
-        alloutputbins
+    fn output_groups(&self, tup_cwd: &Path, groups: &mut Vec<String>) {
+        self.into_iter().map(|x| x.output_groups(tup_cwd, groups));
     }
-}
+
+    fn output_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>) {
+        self.into_iter().map(|x| x.output_bins(tup_cwd, bins));
+    }
+
+    fn output_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>) {
+        self.into_iter()
+            .map(|x| x.output_gen_files(tup_cwd, gen_files));
+    }
+} */
 
 impl PathExpr {
     // substitute a single pathexpr into an array of literal pathexpr
@@ -276,7 +273,7 @@ impl Subst for Vec<PathExpr> {
             .flatten()
             .filter(|x| !is_empty(x))
             .collect();
-        newpe.strip_trailing_ws();
+        newpe.cleanup();
         Ok(newpe)
     }
 }
@@ -295,9 +292,9 @@ use std::ops::AddAssign;
 impl AddAssign for Source {
     fn add_assign(&mut self, other: Self) {
         let mut o = other;
-        self.primary.strip_trailing_ws();
+        self.primary.cleanup();
         self.primary.append(&mut o.primary);
-        self.secondary.strip_trailing_ws();
+        self.secondary.cleanup();
         self.secondary.append(&mut o.secondary);
         self.for_each |= o.for_each;
     }
@@ -306,10 +303,10 @@ impl AddAssign for Source {
 impl AddAssign for Target {
     fn add_assign(&mut self, other: Self) {
         let mut o = other;
-        self.primary.strip_trailing_ws();
+        self.primary.cleanup();
         self.primary.append(&mut o.primary);
 
-        self.secondary.strip_trailing_ws();
+        self.secondary.cleanup();
         self.secondary.append(&mut o.secondary);
 
         self.group = self.group.clone().or(o.group);
@@ -367,7 +364,7 @@ impl ExpandMacro for Link {
                         desc += explink.rule_formula.description.as_str();
                         //formulae.strip_trailing_ws();
                         let mut r = explink.rule_formula.formula.clone();
-                        r.strip_trailing_ws();
+                        r.cleanup();
                         formulae.append(&mut r);
                     } else {
                         return Err(Err::UnknownMacroRef(
@@ -407,7 +404,7 @@ pub fn load_conf_vars(
 ) -> Result<HashMap<String, Vec<String>>, crate::errors::Error> {
     let mut conf_vars = HashMap::new();
 
-    if let Some(conf_file)  = Path::new(filename).parent().map(|x| x.join( "tup.config")) {
+    if let Some(conf_file) = Path::new(filename).parent().map(|x| x.join("tup.config")) {
         if conf_file.is_file() {
             if let Some(fstr) = conf_file.to_str() {
                 for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
@@ -670,8 +667,7 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Er
             tupfiles.push(tupfilepath);
         }
     }
-    let rootfolder =
-        locate_file(root, "Tupfile.ini").ok_or(crate::errors::Error::RootNotFound)?;
+    let rootfolder = locate_file(root, "Tupfile.ini").ok_or(crate::errors::Error::RootNotFound)?;
     let confvars = load_conf_vars(rootfolder.as_path())?;
     let mut rules = Vec::new();
     let mut ids = Vec::new();
@@ -681,42 +677,42 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Er
         let p = Path::new(tupfilepath);
         let mut m = SubstMap::new(&confvars, p);
         let stmts = stmts.subst(&mut m)?;
+        let mut groups = Vec::new();
+        let mut bins = Vec::new();
         for l in &stmts {
-            let stmt = l.getstatement();
-            if let &Statement::Rule(Link {
-                source: ref s,
-                target: ref t,
-                ..
-            }) = stmt
-            {
+            if is_rule(l) {
                 let n = dag.add_node(1);
-                for group in s.primary.input_groups() {
-                    required_by.entry(group + "?G").or_default().push(n);
-                }
-                for bin in s.primary.input_bins() {
+                l.input_groups(p, &mut groups);
+                groups.iter().for_each(|group| {
                     required_by
-                        .entry(bin + tupfilepath + "?B")
+                        .entry("?G".to_owned() + group.as_str())
                         .or_default()
-                        .push(n);
-                }
-                for group in s.secondary.input_groups() {
-                    required_by.entry(group + "?G").or_default().push(n);
-                }
-                for bin in s.secondary.input_bins() {
+                        .push(n)
+                });
+                groups.clear();
+                l.input_bins(p, &mut bins);
+                bins.iter().for_each(|bin| {
                     required_by
-                        .entry(bin + tupfilepath + "?B")
+                        .entry("?B".to_owned() + bin.as_str())
                         .or_default()
-                        .push(n);
-                }
-                if let Some(pe) = &t.group {
-                    provided_by.entry(pe.cat() + "?G").or_default().push(n);
-                }
-                if let Some(pe) = &t.bin {
+                        .push(n)
+                });
+                bins.clear();
+                l.output_groups(p, &mut groups);
+                groups.iter().for_each(|grp| {
                     provided_by
-                        .entry(pe.cat() + tupfilepath + "?B")
+                        .entry("?G".to_owned() + grp.as_str())
                         .or_default()
-                        .push(n);
-                }
+                        .push(n)
+                });
+                groups.clear();
+                bins.iter().for_each(|bin| {
+                    provided_by
+                        .entry("?B".to_owned() + bin.as_str())
+                        .or_default()
+                        .push(n)
+                });
+                bins.clear();
             }
         }
         rules.push(ParsedStatements {
@@ -728,7 +724,7 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Er
     let statement_from_id = |i: NodeIndex| {
         let mut x = ids.partition_point(|&j| j < i.index());
         if ids[x] > i.index() {
-            x = x - 1;
+            x -= 1;
         }
         (&rules[x].tupfile, &rules[x].statements[i.index() - ids[x]])
     };
@@ -760,6 +756,16 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Er
             }
         }
     }
+    // We dont yet have decoded paths and so cannot correctly specify
+    // dependencies between rules in the same tupfile
+    // To kickstart the decoding process, add dependencies within each tupfile between successive rules.
+    // if this causes cyclic deps we ignore them.
+    for slic in ids.as_slice().windows(2) {
+        for nid in (slic[0] + 1)..slic[1] {
+            let _res = dag.update_edge(NodeIndex::new(nid - 1), NodeIndex::new(nid), 1);
+        }
+        // ignore cylic deps at this point, these are soft constraints..
+    }
     let nodes: Vec<_> = petgraph::algo::toposort(&dag, None).map_err(|e| {
         crate::errors::Error::DependencyCycle("".to_string(), {
             let (tupfile, stmt) = statement_from_id(e.node_id());
@@ -774,8 +780,6 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Er
     let mut lstats = Vec::new();
     for tupnodeid in nodes {
         let (tupfile, statement) = statement_from_id(tupnodeid);
-        //let mut sm = SubstMap::new(&HashMap::new(), tupfile);
-        //sm.waitforpercs = false;
         let (stmts, ref mut newoutputtags) = statement.decode(tupfile, &outputtags)?;
         outputtags.merge_group_tags(newoutputtags);
         outputtags.merge_bin_tags(newoutputtags);

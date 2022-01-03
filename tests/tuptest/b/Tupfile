@@ -1,0 +1,2 @@
+: in1.txt |> cat %f & cp %f %o |> out0.txt ^.*FltMgrMsg ../<output0>
+:  ../<output2> |>  cp %<output2> %o |> out3.txt ^.*FltMgrMsg

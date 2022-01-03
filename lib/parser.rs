@@ -187,7 +187,7 @@ pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
     }
 }
 pub fn test_pathexpr_ref(i: Span) -> bool {
-    let res =  || -> IResult<Span, bool> {
+    let res = || -> IResult<Span, bool> {
         let (_, r) = (peek(take(1 as usize))(i))?;
         let ismatch = match r.as_bytes() {
             b"$" => true,
@@ -215,8 +215,7 @@ pub fn parse_ws(i: Span) -> IResult<Span, PathExpr> {
     Ok((s, PathExpr::Sp1))
 }
 // eat up the (dollar or at) that dont parse to (dollar or at) expression
-fn parse_delim(i: Span) -> nom::IResult<Span, Span>
-{
+fn parse_delim(i: Span) -> nom::IResult<Span, Span> {
     if !test_pathexpr_ref(i) {
         return Err(Err::Error(error_position!(i, ErrorKind::Escaped)));
     }
@@ -231,13 +230,9 @@ fn parse_misc_bits<'a, 'b>(
     input: Span<'a>,
     delim: &'b str,
     pathexpr_toks: &'static str,
-) -> nom::IResult<Span<'a>, Span<'a>>
-{
+) -> nom::IResult<Span<'a>, Span<'a>> {
     let islit = |ref i| !delim.as_bytes().contains(i) && !pathexpr_toks.as_bytes().contains(i);
-    alt((
-        complete(parse_delim),
-        complete(take_while(islit)),
-    ))(input)
+    alt((complete(parse_delim), complete(take_while(islit))))(input)
 }
 // parse either (dollar|at|) expression or a general rvalue delimited by delim
 // pathexpr_toks are the tokens that identify a tup-expression such as $expr, &expr, {bin} or <grp>
@@ -539,7 +534,7 @@ fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
             complete(parse_pathexpr_bin),
             complete(pe),
         )),
-        preceded(multispace0,tag("|")),
+        preceded(multispace0, tag("|")),
     )(s)
 }
 // parse secondary input in a rule expression
@@ -554,7 +549,7 @@ fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
             complete(parse_pathexpr_bin),
             complete(pe),
         )),
-        preceded(multispace0,tag("|")),
+        preceded(multispace0, tag("|")),
     )(s)
 }
 
@@ -871,7 +866,9 @@ pub fn parse_ifdef_endif(i: Span) -> IResult<Span, LocatedStatement> {
 }
 
 // parse statements in a tupfile
-pub fn parse_tupfile(filename: &str) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
+pub fn parse_tupfile<P: AsRef<Path>>(
+    filename: P,
+) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
     use errors::Error as Err;
     use std::fs::File;
     use std::io::prelude::*;

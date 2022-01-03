@@ -1,0 +1,12 @@
+
+:  ../<output0> |> cp %<output0> %o |> out1.txt ^.*FltMgrMsg
+: | ../<output2> |> touch %o |> out7.txt {o7}
+
+!cp = |> cp %f %o |>
+: in0.txt |> !cp |> out2.txt ^.*FltMgrMsg ../<output2> 
+
+: foreach out[12].txt |> !cp |> %B3.txt
+
+: foreach {o7} out2.txt |> cp %f %o |> out%B.txt ^.*FltMgrMsg
+
+

@@ -2,8 +2,8 @@
 extern crate nom;
 #[macro_use]
 extern crate lazy_static;
-extern crate capturing_glob as glob;
 extern crate daggy;
+extern crate globset as glob;
 extern crate nom_locate;
 extern crate petgraph;
 extern crate regex;
@@ -16,13 +16,15 @@ pub mod parser;
 mod platform;
 pub mod statements;
 pub mod transform;
+extern crate path_absolutize;
+extern crate proc_macro;
 extern crate thiserror;
 
 #[test]
 fn test_op() {
+    use statements::CleanupPaths;
     use statements::PathExpr;
     use statements::PathExpr::Sp1;
-    use statements::StripTrailingWs;
     use std::fs::File;
     use std::io::Write;
     {
@@ -75,7 +77,7 @@ fn test_op() {
         );
 
         let mut stmts_ = stmts.subst(&mut map).unwrap();
-        stmts_.strip_trailing_ws();
+        stmts_.cleanup();
         assert_eq!(stmts_.len(), 3);
         let resolvedexpr = [
             Statement::Rule(Link {
@@ -185,7 +187,7 @@ fn test_op() {
 #[test]
 fn test_parse() {
     use nom_locate::LocatedSpan;
-    use statements::StripTrailingWs;
+    use statements::CleanupPaths;
     //use statements::PathExpr;
     use statements::LocatedStatement;
     use statements::PathExpr::DollarExpr;
@@ -250,7 +252,7 @@ fn test_parse() {
         .map(|x| LocatedStatement::new(x, loc))
         .collect();
     use std::path::Path;
-    stmtsloc.strip_trailing_ws();
+    stmtsloc.cleanup();
 
     let mut map = SubstMap::default();
     set_cwd(Path::new("."), &mut map);
@@ -345,7 +347,9 @@ fn test_parse() {
         .unwrap()
         .1
         .statement;
-
+    let mut file = std::fs::File::create("file.txt").expect("cannot open file");
+    use std::io::Write;
+    file.write_all("-".as_bytes()).expect("file write error");
     let decodedrule1 = LocatedStatement::new(rule1, Loc::new(0, 0))
         .decode(Path::new("."), &taginfo)
         .unwrap();
@@ -357,7 +361,7 @@ fn test_parse() {
     }) = decodedrule1.0.first()
     {
         let rf = rule_formula.formula.cat();
-        assert_eq!(rf, "type file.txt".to_string());
+        assert_eq!(rf, "type .\\file.txt".to_string());
     }
 
     // assert_eq!(deglob(&prog[0]).len(), 18);
