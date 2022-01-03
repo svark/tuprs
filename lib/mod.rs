@@ -361,7 +361,11 @@ fn test_parse() {
     }) = decodedrule1.0.first()
     {
         let rf = rule_formula.formula.cat();
-        assert_eq!(rf, "type .\\file.txt".to_string());
+        let mut rule_exp = String::new();
+        rule_exp.push_str("type .");
+        rule_exp.push(std::path::MAIN_SEPARATOR);
+        rule_exp.push_str("file.txt");
+        assert_eq!(rf, rule_exp);
     }
 
     // assert_eq!(deglob(&prog[0]).len(), 18);
