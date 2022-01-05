@@ -19,7 +19,7 @@ pub enum Error {
     #[error("Root folder not found. Tupfile.ini is expected in the root.")]
     RootNotFound,
     #[error("Glob error")]
-    GlobError(String, Loc),
+    GlobError(String),
     #[error("Multiple glob patterns match some paths")]
     MultipleGlobMatches(String, Loc),
 }

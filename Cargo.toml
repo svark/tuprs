@@ -9,7 +9,6 @@ path = "lib/mod.rs"
 
 [dependencies]
 nom = "7.1.0"
-globset = {git = "https://github.com/svark/ripgrep" }
 nom_locate = "4.0.0"
 lazy_static = "1.4.0"
 thiserror = "1.0.30"
@@ -18,3 +17,4 @@ daggy = "0.8.0"
 walkdir = "0.1.8"
 petgraph = "0.6.0"
 path-absolutize  = "3.0.11"
+bstr = "0.2.17"

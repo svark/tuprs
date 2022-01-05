@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::vec;
 
-use glob::{Glob, GlobBuilder, GlobMatcher};
+use glob::{GlobBuilder, GlobMatcher};
 use path_absolutize::Absolutize;
-use regex::{bytes, Captures, Error, Regex};
+use regex::{Captures, Error, Regex};
 use walkdir::WalkDir;
 
 use errors::Error as Err;
+use glob;
 use statements::*;
 
 // maps to paths corresponding to bin names, or group names
@@ -41,9 +42,9 @@ impl OutputTagInfo {
     }
 }
 #[derive(Debug, Default)]
-pub struct PathEntry {
-    path: PathBuf, // path that matched a glob
-    entry: String, // first glob match in the above path
+pub struct MatchingPath {
+    path: PathBuf,               // path that matched a glob
+    first_group: Option<String>, // first glob match in the above path
 }
 const GLOB_PATTERN_CHARACTERS: &str = "*?[";
 fn get_non_pattern_prefix(glob_path: &Path) -> (PathBuf, bool) {
@@ -72,74 +73,47 @@ fn get_non_pattern_prefix(glob_path: &Path) -> (PathBuf, bool) {
 }
 
 #[derive(Debug, Clone)]
-pub struct PathGlob {
+pub struct MyGlob {
     matcher: GlobMatcher,
-    glob_pattern: Glob,
-    // loc : Loc
 }
 
-impl PathGlob {
-    pub fn new(path: &Path, loc: Loc) -> Result<Self, crate::errors::Error> {
-        let to_glob_error =
-            |e: &globset::Error| crate::errors::Error::GlobError(e.kind().to_string(), loc.clone());
-        let pathstr = path.to_string_lossy();
-        let glob_pattern = GlobBuilder::new(pathstr.as_ref())
+impl MyGlob {
+    pub fn new(path_pattern: &str) -> Result<Self, crate::errors::Error> {
+        let to_glob_error = |e: &glob::Error| {
+            crate::errors::Error::GlobError(
+                path_pattern.to_string() + ":" + e.kind().to_string().as_str(),
+            )
+        };
+        let glob_pattern = GlobBuilder::new(path_pattern)
             .literal_separator(true)
             .capture_globs(true)
             .build()
             .map_err(|e| to_glob_error(&e))?;
         let matcher = glob_pattern.compile_matcher();
-        Ok(PathGlob {
-            matcher,
-            glob_pattern,
-        })
+        Ok(MyGlob { matcher })
     }
 
     pub fn is_match<P: AsRef<Path>>(&self, path: P) -> bool {
         self.matcher.is_match(path)
     }
 
-    fn regex(&self) -> &str {
-        self.glob_pattern.regex()
+    // get ith capturing group from matched path
+    pub fn group<P: AsRef<Path>>(&self, path: P, i: usize) -> Option<String> {
+        self.matcher.group(path, i)
     }
-
-    pub fn group<P: AsRef<Path>>(&self, path: P) -> String {
-        let regexp = bytes::Regex::new(self.regex()).unwrap();
-        let lossy_str = path.as_ref().to_string_lossy();
-        if let Some(c) = regexp.captures(lossy_str.as_bytes()) {
-            if let Some(m) = c.get(1) {
-                if let Ok(s) = std::str::from_utf8(m.as_bytes()) {
-                    s.to_string()
-                } else {
-                    lossy_str.to_string()
-                }
-            } else {
-                lossy_str.to_string()
-            }
-        } else {
-            lossy_str.to_string()
-        }
+}
+// matching path with first group
+impl MatchingPath {
+    pub(crate) fn with_captures(path: PathBuf, first_group: Option<String>) -> MatchingPath {
+        MatchingPath { path, first_group }
+    }
+    /// Get path represented by this entry
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
-impl PartialEq for PathGlob {
-    fn eq(&self, other: &Self) -> bool {
-        self.glob_pattern.eq(&other.glob_pattern)
-    }
-}
-
-impl Eq for PathGlob {}
-
-impl std::fmt::Display for PathGlob {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        self.glob_pattern.fmt(f)
-    }
-}
-
-fn discover_inputs_from_glob(
-    glob_path: &Path,
-    loc: &Loc,
-) -> Result<Vec<PathEntry>, crate::errors::Error> {
+fn discover_inputs_from_glob(glob_path: &Path) -> Result<Vec<MatchingPath>, crate::errors::Error> {
     let (mut base_path, recurse) = get_non_pattern_prefix(glob_path);
     let mut to_match = glob_path;
     let pbuf: PathBuf;
@@ -148,7 +122,7 @@ fn discover_inputs_from_glob(
         pbuf = Path::new(".").join(glob_path);
         to_match = &pbuf;
     }
-    let globs = PathGlob::new(to_match, loc.clone())?;
+    let globs = MyGlob::new(to_match.to_string_lossy().as_ref())?;
     let mut walkdir = WalkDir::new(base_path.as_path());
     if !recurse {
         walkdir = walkdir.max_depth(1);
@@ -160,39 +134,19 @@ fn discover_inputs_from_glob(
     let mut pes = Vec::new();
     for matching in filtered_paths {
         let path = matching.path();
-        pes.push(PathEntry::with_captures(
+        pes.push(MatchingPath::with_captures(
             path.to_path_buf(),
-            globs.group(path),
+            globs.group(path, 1),
         ));
     }
     Ok(pes)
 }
 
-impl PathEntry {
-    pub(crate) fn with_captures(path: PathBuf, entry: String) -> PathEntry {
-        PathEntry { path, entry }
-    }
-    /// Get path represented by this entry
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-impl Into<PathBuf> for PathEntry {
-    fn into(self) -> PathBuf {
-        self.path
-    }
-}
-
-impl AsRef<Path> for PathEntry {
-    fn as_ref(&self) -> &Path {
-        self.path.as_ref()
-    }
-}
 // Types of decoded input to rules which includes
 // files in glob, group paths, bin entries
 #[derive(Debug)]
 pub enum InputGlobType {
-    Deglob(PathEntry),
+    Deglob(MatchingPath),
     GroupEntry(String, PathBuf),
     BinEntry(String, PathBuf),
 }
@@ -218,10 +172,10 @@ fn as_path(inpg: &InputGlobType) -> &Path {
 }
 
 // Get matched glob in the input to a rule
-fn as_glob_match(inpg: &InputGlobType) -> String {
+fn as_glob_match(inpg: &InputGlobType) -> Option<String> {
     match inpg {
-        InputGlobType::Deglob(e) => e.entry.clone(),
-        _ => String::new(),
+        InputGlobType::Deglob(e) => (e).first_group.as_ref().map(|s| s.clone()),
+        _ => None,
     }
 }
 
@@ -267,14 +221,14 @@ impl DecodeInputPaths for PathExpr {
     fn decode(
         &self,
         tup_cwd: &Path,
-        loc: &Loc,
+        _: &Loc,
         taginfo: &OutputTagInfo,
     ) -> Result<Vec<InputGlobType>, Err> {
         let mut vs = Vec::new();
         match self {
             PathExpr::Literal(_) => {
                 let path_buf = normalized_path(tup_cwd, self);
-                let pes = discover_inputs_from_glob(path_buf.as_path(), loc)?;
+                let pes = discover_inputs_from_glob(path_buf.as_path())?;
                 for pe in pes {
                     vs.push(InputGlobType::Deglob(pe))
                 }
@@ -432,7 +386,7 @@ impl DecodeInputPlaceHolders for PathExpr {
 
             if let Some(&i) = inp.first() {
                 let path = as_path(i);
-                let glb = as_glob_match(i);
+                let glb = as_glob_match(i).unwrap_or("".to_string());
                 decoded_str = decoded_str
                     .replace("%g", glb.as_str())
                     .replace(

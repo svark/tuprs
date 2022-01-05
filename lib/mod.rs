@@ -3,7 +3,6 @@ extern crate nom;
 #[macro_use]
 extern crate lazy_static;
 extern crate daggy;
-extern crate globset as glob;
 extern crate nom_locate;
 extern crate petgraph;
 extern crate regex;
@@ -12,14 +11,15 @@ extern crate walkdir;
 
 pub mod decode;
 pub mod errors;
+mod glob;
 pub mod parser;
 mod platform;
 pub mod statements;
 pub mod transform;
+extern crate bstr;
 extern crate path_absolutize;
 extern crate proc_macro;
 extern crate thiserror;
-
 #[test]
 fn test_op() {
     use statements::CleanupPaths;
