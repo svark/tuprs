@@ -16,10 +16,14 @@ pub mod parser;
 mod platform;
 pub mod statements;
 pub mod transform;
+extern crate bimap;
 extern crate bstr;
 extern crate path_absolutize;
-extern crate proc_macro;
+extern crate pathdiff;
+//extern crate proc_macro;
+//extern crate same_file;
 extern crate thiserror;
+
 #[test]
 fn test_op() {
     use statements::CleanupPaths;
@@ -110,7 +114,7 @@ fn test_op() {
                     bin: Some(Bin("objs".to_string())),
                 },
                 rule_formula: RuleFormula {
-                    description: "".to_string(),
+                    description: vec![],
                     formula: vec![
                         Literal("cl".to_string()),
                         Sp1,
@@ -139,7 +143,7 @@ fn test_op() {
                     bin: None,
                 },
                 rule_formula: RuleFormula {
-                    description: "".to_string(),
+                    description: vec![],
                     formula: vec![
                         Literal("type".to_string()),
                         Sp1,
@@ -167,7 +171,7 @@ fn test_op() {
                     bin: None,
                 },
                 rule_formula: RuleFormula {
-                    description: "".to_string(),
+                    description: vec![],
                     formula: vec![
                         Literal("type".to_string()),
                         Sp1,
@@ -284,7 +288,7 @@ fn test_parse() {
             bin: None,
         },
         rule_formula: RuleFormula {
-            description: "".to_string(),
+            description: Vec::new(),
             formula: vec![
                 Literal("cl".to_string()),
                 Sp1,
@@ -313,7 +317,7 @@ fn test_parse() {
                 ..Default::default()
             },
             rule_formula: RuleFormula {
-                description: " touch %o".to_string(),
+                description: vec![PathExpr::from(" touch %o".to_string())],
                 formula: vec![
                     Literal("touch".to_string()),
                     Sp1,
@@ -327,21 +331,23 @@ fn test_parse() {
     );
     use decode::*;
     let taginfo = OutputTagInfo::new();
-    use decode::PathDecoder;
+    use decode::ResolvePaths;
     use statements::Loc;
+    let mut bo = BufferObjects::default();
+    let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
     let decodedrule = LocatedStatement::new(rule, Loc::new(0, 0))
-        .decode(Path::new("."), &taginfo)
+        .resolve_paths(Path::new("."), &taginfo, &mut bo, &tup_desc)
         .unwrap();
     use statements::Cat;
-    if let Some(&LocatedStatement {
-        statement: Statement::Rule(Link {
-            ref rule_formula, ..
-        }),
-        ..
-    }) = decodedrule.0.first()
-    {
-        assert_eq!(rule_formula.formula.cat(), "touch out.txt ".to_string());
-        assert_eq!(rule_formula.description, " touch out.txt".to_string());
+    if let Some(deglobbed_link) = decodedrule.0.first() {
+        assert_eq!(
+            deglobbed_link.rule_formula.formula.cat(),
+            "touch out.txt ".to_string()
+        );
+        assert_eq!(
+            deglobbed_link.rule_formula.description.cat(),
+            " touch out.txt".to_string()
+        );
     }
     let rule1 = parser::parse_rule(Span::new(b": file.txt |> type %f|>"))
         .unwrap()
@@ -351,19 +357,12 @@ fn test_parse() {
     use std::io::Write;
     file.write_all("-".as_bytes()).expect("file write error");
     let decodedrule1 = LocatedStatement::new(rule1, Loc::new(0, 0))
-        .decode(Path::new("."), &taginfo)
+        .resolve_paths(Path::new("."), &taginfo, &mut bo, &tup_desc)
         .unwrap();
-    if let Some(&LocatedStatement {
-        statement: Statement::Rule(Link {
-            ref rule_formula, ..
-        }),
-        ..
-    }) = decodedrule1.0.first()
-    {
-        let rf = rule_formula.formula.cat();
+    if let Some(deglobbed_link) = decodedrule1.0.first() {
+        let rf = deglobbed_link.rule_formula.formula.cat();
         let mut rule_exp = String::new();
-        rule_exp.push_str("type .");
-        rule_exp.push(std::path::MAIN_SEPARATOR);
+        rule_exp.push_str("type ");
         rule_exp.push_str("file.txt");
         assert_eq!(rf, rule_exp);
     }

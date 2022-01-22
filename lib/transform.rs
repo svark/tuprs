@@ -21,6 +21,7 @@ pub struct SubstMap {
     pub conf_map: HashMap<String, Vec<String>>,
     pub rule_map: HashMap<String, Link>,
     pub cur_file: PathBuf,
+    pub cur_file_desc: TupPathDescriptor,
     pub sc: StatementContext,
     pub waitforpercs: bool,
 }
@@ -33,6 +34,7 @@ impl Default for SubstMap {
             conf_map: HashMap::new(),
             rule_map: HashMap::new(),
             cur_file: PathBuf::new(),
+            cur_file_desc: TupPathDescriptor::default(),
             sc: StatementContext::Other,
             waitforpercs: true,
         }
@@ -84,19 +86,25 @@ trait Deps {
     fn output_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>);
     fn output_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>);
 }
-
-fn join_path<P: AsRef<Path>>(tup_cwd: &Path, pathexpr: P) -> String {
-    tup_cwd.join(pathexpr).to_string_lossy().to_string()
+fn join_path<P: AsRef<Path>>(tup_cwd: &Path, path: P) -> String {
+    NormalPath::absolute_from(path.as_ref(), tup_cwd)
+        .as_path()
+        .to_string_lossy()
+        .to_string()
 }
+
 fn input_bin(tup_cwd: &Path, inps: &mut Vec<String>, pathexpr: &PathExpr) {
-    if let PathExpr::Bin(_) = pathexpr {
-        let name = join_path(tup_cwd, pathexpr.cat());
+    if let PathExpr::Bin(v1) = pathexpr {
+        let name = join_path(tup_cwd, v1);
         inps.push(name);
     }
 }
 fn input_group(tup_cwd: &Path, inps: &mut Vec<String>, pathexpr: &PathExpr) {
-    if let PathExpr::Group(_, _) = pathexpr {
-        let name = join_path(tup_cwd, pathexpr.cat());
+    if let PathExpr::Group(v1, v2) = pathexpr {
+        let v1str = &v1.cat();
+        let v2str = &v2.cat();
+        let group_path = Path::new(v1str).join(Path::new(v2str));
+        let name = join_path(tup_cwd, group_path.as_path());
         inps.push(name);
     }
 }
@@ -264,7 +272,7 @@ fn intersperse_sp1(val: &Vec<String>) -> Vec<PathExpr> {
     vs.pop();
     vs
 }
-
+// call subst on each path expr and flatten/cleanup the output.
 impl Subst for Vec<PathExpr> {
     fn subst(&self, m: &mut SubstMap) -> Result<Self, Err> {
         let mut newpe: Vec<_> = self
@@ -286,7 +294,10 @@ impl Subst for Source {
         })
     }
 }
-use decode::{OutputTagInfo, PathDecoder};
+use decode::{
+    BufferObjects, NormalPath, OutputTagInfo, ResolvePaths, ResolvedLink, RuleRef,
+    TupPathDescriptor,
+};
 use std::ops::AddAssign;
 
 impl AddAssign for Source {
@@ -361,15 +372,16 @@ impl ExpandMacro for Link {
                     if let Some(explink) = m.rule_map.get(name.as_str()) {
                         source += explink.source.clone();
                         target += explink.target.clone();
-                        desc += explink.rule_formula.description.as_str();
-                        //formulae.strip_trailing_ws();
+                        if desc.is_empty() {
+                            desc = explink.rule_formula.description.clone();
+                        }
                         let mut r = explink.rule_formula.formula.clone();
                         r.cleanup();
                         formulae.append(&mut r);
                     } else {
                         return Err(Err::UnknownMacroRef(
                             name.clone(),
-                            Loc::new(pos.0, pos.1 as u32),
+                            RuleRef::new(&m.cur_file_desc, &Loc::new(pos.0, pos.1 as u32)),
                         ));
                     }
                 }
@@ -642,7 +654,6 @@ pub struct ParsedStatements {
     tupfile: PathBuf,
     statements: Vec<LocatedStatement>,
 }
-
 impl ParsedStatements {
     pub fn get_tupfile(&self) -> &Path {
         self.tupfile.as_path()
@@ -651,7 +662,8 @@ impl ParsedStatements {
         &self.statements
     }
 }
-pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Error> {
+// scan and parse all Tupfile, return deglobbed, decoded links
+pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error> {
     let mut dag: Dag<u32, u32> = Dag::new();
     let mut provided_by: HashMap<_, Vec<_>> = HashMap::new();
     let mut required_by: HashMap<_, Vec<_>> = HashMap::new();
@@ -674,50 +686,48 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Er
     for tupfilepath in tupfiles.iter() {
         ids.push(dag.node_count());
         let stmts = parse_tupfile(tupfilepath.as_str())?;
-        let p = Path::new(tupfilepath);
-        let mut m = SubstMap::new(&confvars, p);
+        let tup_file_path = Path::new(tupfilepath);
+        let mut m = SubstMap::new(&confvars, tup_file_path);
+        let tup_cwd = tup_file_path.parent().unwrap();
         let stmts = stmts.subst(&mut m)?;
         let mut groups = Vec::new();
         let mut bins = Vec::new();
         for l in &stmts {
             if is_rule(l) {
                 let n = dag.add_node(1);
-                l.input_groups(p, &mut groups);
-                groups.iter().for_each(|group| {
+                l.input_groups(tup_cwd, &mut groups);
+                groups.drain(..).for_each(|group| {
                     required_by
                         .entry("?G".to_owned() + group.as_str())
                         .or_default()
                         .push(n)
                 });
-                groups.clear();
-                l.input_bins(p, &mut bins);
-                bins.iter().for_each(|bin| {
+                l.input_bins(tup_cwd, &mut bins);
+                bins.drain(..).for_each(|bin| {
                     required_by
                         .entry("?B".to_owned() + bin.as_str())
                         .or_default()
                         .push(n)
                 });
-                bins.clear();
-                l.output_groups(p, &mut groups);
-                groups.iter().for_each(|grp| {
+                l.output_groups(tup_cwd, &mut groups);
+                groups.drain(..).for_each(|grp| {
                     provided_by
                         .entry("?G".to_owned() + grp.as_str())
                         .or_default()
                         .push(n)
                 });
-                groups.clear();
-                bins.iter().for_each(|bin| {
+                l.output_bins(tup_cwd, &mut bins);
+                bins.drain(..).for_each(|bin| {
                     provided_by
                         .entry("?B".to_owned() + bin.as_str())
                         .or_default()
                         .push(n)
                 });
-                bins.clear();
             }
         }
         rules.push(ParsedStatements {
             statements: stmts,
-            tupfile: p.to_path_buf(),
+            tupfile: tup_file_path.to_path_buf(),
         });
     }
     ids.push(dag.node_count());
@@ -778,15 +788,15 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ParsedStatements>, crate::errors::Er
     })?;
     let mut outputtags = OutputTagInfo::new();
     let mut lstats = Vec::new();
+    let mut bo = BufferObjects::default();
     for tupnodeid in nodes {
         let (tupfile, statement) = statement_from_id(tupnodeid);
-        let (stmts, ref mut newoutputtags) = statement.decode(tupfile, &outputtags)?;
-        outputtags.merge_group_tags(newoutputtags);
-        outputtags.merge_bin_tags(newoutputtags);
-        lstats.push(ParsedStatements {
-            statements: stmts,
-            tupfile: tupfile.clone(),
-        });
+        let (tupdesc, _) = bo.tbo.add(tupfile);
+        let (resolved_links, ref mut newoutputtags) =
+            statement.resolve_paths(tupfile, &outputtags, &mut bo, &tupdesc)?;
+        outputtags.merge_group_tags(newoutputtags)?;
+        outputtags.merge_bin_tags(newoutputtags)?;
+        lstats.extend(resolved_links.into_iter());
     }
     Ok(lstats)
 }

@@ -315,9 +315,12 @@ fn parse_lvalue(input: Span) -> IResult<Span, Ident> {
     map(map_res(take_while(is_ident), from_utf8), to_lval)(input)
 }
 
-pub fn to_located_statement(stmt: Statement, i: Span) -> LocatedStatement {
-    LocatedStatement::new(stmt, Loc::from_span(&i))
+impl From<(Statement, Span<'_>)> for LocatedStatement {
+    fn from((stmt, i): (Statement, Span<'_>)) -> Self {
+        LocatedStatement::new(stmt, Loc::from_span(&i))
+    }
 }
+
 // parse include expression
 fn parse_include(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
@@ -326,7 +329,7 @@ fn parse_include(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, r) = context("include statement", cut(parse_pathexpr_list_until_ws_plus))(s)?;
     let (s, _) = multispace0(s)?;
     //let (s, _) = line_ending(s)?;
-    Ok((s, to_located_statement(Statement::Include(r.0), i)))
+    Ok((s, (Statement::Include(r.0), i).into()))
 }
 // parse error expression
 fn parse_error(i: Span) -> IResult<Span, LocatedStatement> {
@@ -334,7 +337,7 @@ fn parse_error(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = tag("error")(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context("error expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
-    Ok((s, to_located_statement(Statement::Err(r.0), i)))
+    Ok((s, (Statement::Err(r.0), i).into()))
 }
 
 // parse export expression
@@ -347,10 +350,7 @@ fn parse_export(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(s)?;
     let (s, _) = line_ending(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
-    Ok((
-        s,
-        to_located_statement(Statement::Export(raw.to_owned()), i),
-    ))
+    Ok((s, (Statement::Export(raw.to_owned()), i).into()))
 }
 
 // import VARIABLE[=default]
@@ -374,11 +374,10 @@ fn parse_import(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(s)?;
     let (s, _) = line_ending(s)?;
 
-    // https://stackoverflow.com/questions/52453180/how-do-i-unwrap-an-arbitrary-number-of-nested-option-types
     let default_raw = def.and_then(|x| from_utf8(x).ok());
     Ok((
         s,
-        to_located_statement(Statement::Import(raw.to_owned(), default_raw), i),
+        (Statement::Import(raw.to_owned(), default_raw), i).into(),
     ))
 }
 
@@ -393,7 +392,7 @@ fn parse_preload(i: Span) -> IResult<Span, LocatedStatement> {
 
     let (s, _) = multispace0(s)?;
     let (s, _) = line_ending(s)?;
-    Ok((s, to_located_statement(Statement::Preload(r.0), i)))
+    Ok((s, (Statement::Preload(r.0), i).into()))
 }
 
 // parse the run expresssion
@@ -406,7 +405,7 @@ fn parse_run(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = sp1(s)?;
     // run  script paths
     let (s, r) = context("run expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
-    Ok((s, to_located_statement(Statement::Run(r.0), i)))
+    Ok((s, (Statement::Run(r.0), i).into()))
 }
 // parse include_rules expresssion
 fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
@@ -414,7 +413,7 @@ fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = tag("include_rules")(s)?;
     let (s, _) = context("include_rules", multispace0)(s)?;
     let (s, _) = line_ending(s)?;
-    Ok((s, to_located_statement(Statement::IncludeRules, i)))
+    Ok((s, (Statement::IncludeRules, i).into()))
 }
 
 // parse comment expresssion
@@ -423,7 +422,7 @@ fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = tag("#")(s)?;
     let (s, _) = is_not("\n\r")(s)?;
     let (s, _) = line_ending(s)?;
-    Ok((s, to_located_statement(Statement::Comment, i)))
+    Ok((s, (Statement::Comment, i).into()))
 }
 
 // parse an assignment expression
@@ -436,14 +435,15 @@ fn parse_let_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
         s,
-        to_located_statement(
+        (
             Statement::LetExpr {
                 left: l,
                 right: r.0,
                 is_append: (op.as_bytes() == b"+="),
             },
             i,
-        ),
+        )
+            .into(),
     ))
 }
 
@@ -457,14 +457,15 @@ fn parse_letref_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
         s,
-        to_located_statement(
+        (
             Statement::LetRefExpr {
                 left: l,
                 right: r.0,
                 is_append: (op.as_bytes() == b"+="),
             },
             i,
-        ),
+        )
+            .into(),
     ))
 }
 // parse description insude a rule (between ^^)
@@ -488,7 +489,7 @@ fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
     Ok((
         s,
         RuleFormula {
-            description: desc.unwrap_or(String::from("")),
+            description: desc.iter().map(|x| PathExpr::from(x.clone())).collect(),
             //macroref : me,
             formula: me.into_iter().chain(formula.0.into_iter()).collect(),
         },
@@ -523,7 +524,7 @@ fn from_output(
 fn default_inp<'a>() -> Span<'a> {
     Span::new(b"")
 }
-
+// parse rule inputs including groups and bin and exclude patterns
 fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     let (s, _) = opt(sp1)(i)?;
     let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
@@ -554,7 +555,6 @@ fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
 }
 
 fn parse_output_delim(i: Span) -> IResult<Span, Span> {
-    //let inp = i.clone();
     alt((
         complete(line_ending),
         complete(map(peek(one_of(*BRKTAGSNOWS)), |_| i)),
@@ -627,7 +627,7 @@ pub fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     //let (s, _) = line_ending(s)?;
     Ok((
         s,
-        to_located_statement(
+        (
             Statement::Rule(Link {
                 source: from_input(
                     input.map(|(x, _)| x).unwrap_or(Vec::new()),
@@ -639,7 +639,8 @@ pub fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
                 pos: (pos.location_line(), pos.get_column()),
             }),
             i,
-        ),
+        )
+            .into(),
     ))
 }
 
@@ -690,7 +691,7 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> {
 
     Ok((
         s,
-        to_located_statement(
+        (
             Statement::MacroAssignment(
                 from_utf8(macroname).unwrap_or("".to_owned()),
                 Link {
@@ -705,7 +706,7 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> {
                 },
             ),
             i,
-        ),
+        ).into(),
     ))
 }
 
@@ -793,26 +794,26 @@ pub fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, Located
     if let Some(then_s) = then_else_s {
         Ok((
             s,
-            to_located_statement(
+            (
                 Statement::IfElseEndIf {
                     eq: eqcond,
                     then_statements: then_s.0,
                     else_statements: then_endif_s.0,
                 },
                 i,
-            ),
+            ).into(),
         ))
     } else {
         Ok((
             s,
-            to_located_statement(
+            (
                 Statement::IfElseEndIf {
                     eq: eqcond,
                     then_statements: then_endif_s.0,
                     else_statements: Vec::new(),
                 },
                 i,
-            ),
+            ).into(),
         ))
     }
 }
@@ -832,26 +833,26 @@ pub fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, LocatedStat
     if let Some(then_s) = then_else_s {
         Ok((
             s,
-            to_located_statement(
+            (
                 Statement::IfDef {
                     checked_var: cvar,
                     then_statements: then_s.0,
                     else_statements: then_endif_s.0,
                 },
                 i,
-            ),
+            ).into(),
         ))
     } else {
         Ok((
             s,
-            to_located_statement(
+            (
                 Statement::IfDef {
                     checked_var: cvar,
                     then_statements: then_endif_s.0,
                     else_statements: Vec::new(),
                 },
                 i,
-            ),
+            ).into(),
         ))
     }
 }

@@ -55,8 +55,7 @@ pub struct Target {
 // formula for a tup rule
 #[derive(PartialEq, Debug, Clone, Default)]
 pub struct RuleFormula {
-    pub description: String,
-    //   pub macroref: Option<PathExpr>,
+    pub description: Vec<PathExpr>,
     pub formula: Vec<PathExpr>,
 }
 // combined representation of a tup rule consisting of source/target and rule formula
@@ -67,7 +66,7 @@ pub struct Link {
     pub rule_formula: RuleFormula,
     pub pos: (u32, usize),
 }
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy, Eq, Default)]
 pub struct Loc {
     pub line: u32,
     pub offset: u32,
@@ -341,7 +340,7 @@ impl Cat for &Statement {
                 rule_formula: r,
                 pos,
             }) => {
-                let mut desc: String = r.description.clone();
+                let mut desc: String = r.description.cat();
                 let formula: String = r.formula.cat();
                 desc += formula.as_str();
                 desc + ":" + pos.0.to_string().as_str() + "," + pos.1.to_string().as_str()

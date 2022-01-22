@@ -204,12 +204,36 @@ pub struct GlobMatcher {
     /// The pattern, as a compiled regex.
     re: Regex,
 }
+/// A candidate path for matching.
+///
+/// All glob matching in this crate operates on `Candidate` values.
+/// Constructing candidates has a very small cost associated with it, so
+/// callers may find it beneficial to amortize that cost when matching a single
+/// path against multiple globs or sets of globs.
+#[derive(Clone, Debug)]
+pub struct Candidate<'a> {
+    path: Cow<'a, [u8]>,
+}
 
+impl<'a> Candidate<'a> {
+    /// Create a new candidate for matching from the given path.
+    pub fn new<P: AsRef<Path> + ?Sized>(path: &'a P) -> Candidate<'a> {
+        let path = normalize_path(Vec::from_path_lossy(path.as_ref()));
+        Candidate { path }
+    }
+
+    pub fn path(&self) -> &Cow<'a, [u8]> {
+        return &self.path;
+    }
+}
 impl GlobMatcher {
     /// Tests whether the given path matches this pattern or not.
+
+    pub fn is_match_candidate(&self, candidate: &Candidate) -> bool {
+        self.re.is_match(candidate.path().as_ref())
+    }
     pub fn is_match<P: AsRef<Path>>(&self, path: P) -> bool {
-        let path = normalize_path(Vec::from_path_lossy(path.as_ref()));
-        self.re.is_match(path.as_ref())
+        self.is_match_candidate(&Candidate::new(path.as_ref()))
     }
 
     /// get the i-the matching capturing group in path. Each glob pattern has corresponds to a capturing group
