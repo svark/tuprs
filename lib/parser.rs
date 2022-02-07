@@ -40,7 +40,7 @@ lazy_static! {
 
 // convert byte str to PathExpr
 fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
-    from_utf8(res).map(|s| PathExpr::from(s))
+    from_utf8(res).map(|s| s.into())
 }
 // check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
@@ -177,7 +177,7 @@ pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
     match r.as_bytes() {
         b"\\\n" => {
             let (s, _) = take(2 as usize)(i)?;
-            Ok((s, PathExpr::from("".to_string())))
+            Ok((s, ("".to_string()).into()))
         }
         b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\<" | b"\\^" | b"\\|" => {
             let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
@@ -236,7 +236,7 @@ fn parse_misc_bits<'a, 'b>(
 }
 // parse either (dollar|at|) expression or a general rvalue delimited by delim
 // pathexpr_toks are the tokens that identify a tup-expression such as $expr, &expr, {bin} or <grp>
-fn parse_pathexpr_ws<'a, 'b>(
+pub(crate) fn parse_pathexpr_ws<'a, 'b>(
     s: Span<'a>,
     delim: &'b str,
     pathexpr_toks: &'static str,
@@ -479,7 +479,7 @@ fn parse_rule_flags_or_description(i: Span) -> IResult<Span, String> {
 }
 
 // parse the insides of a rule, which includes a description and rule formula
-fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
+pub(crate) fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
     let (s, desc) = opt(context(
         "parsing rule flags/descriptions",
         parse_rule_flags_or_description,
@@ -489,7 +489,7 @@ fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
     Ok((
         s,
         RuleFormula {
-            description: desc.iter().map(|x| PathExpr::from(x.clone())).collect(),
+            description: desc.iter().map(|x| (x.clone()).into()).collect(),
             //macroref : me,
             formula: me.into_iter().chain(formula.0.into_iter()).collect(),
         },
@@ -525,7 +525,7 @@ fn default_inp<'a>() -> Span<'a> {
     Span::new(b"")
 }
 // parse rule inputs including groups and bin and exclude patterns
-fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
+pub(crate) fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     let (s, _) = opt(sp1)(i)?;
     let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
     many_till(
@@ -539,7 +539,7 @@ fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     )(s)
 }
 // parse secondary input in a rule expression
-fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
+pub(crate) fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     //context("read secondary inputs",  preceded( tag("|"),
     let (s, _) = opt(sp1)(i)?;
     //let (s, _) = tag("|")(s)?;
@@ -873,10 +873,10 @@ pub fn parse_tupfile<P: AsRef<Path>>(
     use errors::Error as Err;
     use std::fs::File;
     use std::io::prelude::*;
-    let mut file = File::open(filename).map_err(|e| Err::IoError(e))?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .map_err(|e| Err::IoError(e))?;
+    let mut file = File::open(filename).map_err(|e| Err::IoError(e, Loc::new(0,0)))?;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)
+        .map_err(|e| Err::IoError(e, Loc::new(0,0)))?;
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
 pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {

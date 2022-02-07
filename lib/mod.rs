@@ -7,7 +7,6 @@ extern crate nom_locate;
 extern crate petgraph;
 extern crate regex;
 extern crate walkdir;
-//use statements::StripTrailingWs;
 
 pub mod decode;
 pub mod errors;
@@ -16,13 +15,14 @@ pub mod parser;
 mod platform;
 pub mod statements;
 pub mod transform;
+mod scriptloader;
 extern crate bimap;
 extern crate bstr;
 extern crate path_absolutize;
 extern crate pathdiff;
-//extern crate proc_macro;
-//extern crate same_file;
 extern crate thiserror;
+extern crate rlua;
+extern crate log;
 
 #[test]
 fn test_op() {

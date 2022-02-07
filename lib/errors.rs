@@ -13,7 +13,7 @@ pub enum Error {
     #[error("Path errors")]
     PathError(OsString, RuleRef),
     #[error("Io Error: {0}")]
-    IoError(IoErr),
+    IoError(IoErr, Loc),
     #[error("Unknown macro reference:{0}")]
     UnknownMacroRef(String, RuleRef),
     #[error("Dependency cycle between {0}, {1}")]
@@ -24,7 +24,7 @@ pub enum Error {
     GlobError(String),
     #[error("Multiple glob patterns match some paths")]
     MultipleGlobMatches(String, RuleRef),
-    #[error("Multiple rules writing to same output {0}: currrent: {1}, prev rule: {2}")]
+    #[error("Multiple rules writing to same output {0}: current rule: {1}, previous rule: {2}")]
     MultipleRulesToSameOutput(PathDescriptor, RuleRef, RuleRef),
     #[error("Groups reference {0} could not be resolved at input{0}")]
     StaleGroupRef(String, RuleRef),
@@ -32,4 +32,8 @@ pub enum Error {
     StalePerc(char, RuleRef),
     #[error("Number reference %[num]{0} could not be resolved at input: {1}")]
     StalePercNumberedRef(char, RuleRef),
+    #[error("Script Error: {0}")]
+    ScriptError(String, u32),
+    #[error(transparent)]
+    LuaError(#[from] rlua::Error)
 }

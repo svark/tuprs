@@ -7,6 +7,7 @@ use statements::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
+#[derive(Debug, Clone)]
 pub enum StatementContext {
     Export,
     Preload,
@@ -14,7 +15,7 @@ pub enum StatementContext {
     Link { source: PathBuf, dest: PathBuf },
     Other,
 }
-
+#[derive(Debug, Clone)]
 pub struct SubstMap {
     pub expr_map: HashMap<String, Vec<String>>,
     pub rexpr_map: HashMap<String, Vec<String>>,
@@ -298,6 +299,7 @@ use decode::{
     BufferObjects, NormalPath, OutputTagInfo, ResolvePaths, ResolvedLink, RuleRef,
     TupPathDescriptor,
 };
+use scriptloader::parse_script;
 use std::ops::AddAssign;
 
 impl AddAssign for Source {
@@ -662,6 +664,32 @@ impl ParsedStatements {
         &self.statements
     }
 }
+pub fn parse_tup(
+    confvars: &HashMap<String, Vec<String>>,
+    tupfilepath: &str,
+) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
+    let tup_file_path = Path::new(tupfilepath);
+    let mut m = SubstMap::new(&confvars, tup_file_path);
+    m.cur_file = tup_file_path.to_path_buf();
+    if tupfilepath.ends_with(".lua") {
+        let mut links = parse_script(tup_file_path, m)?;
+        let stmts : Vec<_> = links
+            .drain(..)
+            .map(|l| {
+                let loc = Loc::new(l.pos.0, 0);
+                LocatedStatement {
+                    statement: Statement::Rule(l),
+                    loc,
+                }
+            })
+            .collect();
+        Ok(stmts)
+    } else {
+        let stmts = parse_tupfile(tupfilepath)?;
+        let stmts = stmts.subst(&mut m)?;
+        Ok(stmts)
+    }
+}
 // scan and parse all Tupfile, return deglobbed, decoded links
 pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error> {
     let mut dag: Dag<u32, u32> = Dag::new();
@@ -678,6 +706,10 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error>
             let tupfilepath = entry.path().to_string_lossy().as_ref().to_string();
             tupfiles.push(tupfilepath);
         }
+        if f_name.as_str().eq("Tupfile.lua") {
+            let tupfilepath = entry.path().to_string_lossy().as_ref().to_string();
+            tupfiles.push(tupfilepath);
+        }
     }
     let rootfolder = locate_file(root, "Tupfile.ini").ok_or(crate::errors::Error::RootNotFound)?;
     let confvars = load_conf_vars(rootfolder.as_path())?;
@@ -685,11 +717,9 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error>
     let mut ids = Vec::new();
     for tupfilepath in tupfiles.iter() {
         ids.push(dag.node_count());
-        let stmts = parse_tupfile(tupfilepath.as_str())?;
+        let stmts = parse_tup(&confvars, tupfilepath.as_str())?;
         let tup_file_path = Path::new(tupfilepath);
-        let mut m = SubstMap::new(&confvars, tup_file_path);
-        let tup_cwd = tup_file_path.parent().unwrap();
-        let stmts = stmts.subst(&mut m)?;
+        let tup_cwd = tup_file_path.parent().expect("tup file parent not found");
         let mut groups = Vec::new();
         let mut bins = Vec::new();
         for l in &stmts {

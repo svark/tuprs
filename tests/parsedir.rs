@@ -12,4 +12,13 @@ mod tests {
         //let statements0 = statements[0].get_statements();
         assert_eq!(statements.len(), 11);
     }
+    #[test]
+    fn test_script() {
+        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        d.push("tests/tupscripttest");
+        let statements = parse_dir(d.as_path()).expect("failed to parse!");
+        //let statements0 = statements[0].get_statements();
+        assert_eq!(statements.len(), 2);
+    }
+
 }
