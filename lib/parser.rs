@@ -877,6 +877,7 @@ pub fn parse_tupfile<P: AsRef<Path>>(
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)
         .map_err(|e| Err::IoError(e, Loc::new(0,0)))?;
+    contents.retain( |e| *e != b'\r');
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
 pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
