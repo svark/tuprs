@@ -173,13 +173,23 @@ fn parse_pathexpr_bin(i: Span) -> IResult<Span, PathExpr> {
 }
 
 pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
-    let (s, r) = peek(take(2 as usize))(i)?;
+    let (_, r) = peek(take(2 as usize))(i)?;
     match r.as_bytes() {
+        b"\\\r" => {
+            let (_, r) = peek(take(3 as usize))(i)?;
+            if r.as_bytes() ==  b"\\\r\n" {
+                let (s, _) = take(3 as usize)(i)?;//consumes \n after \r as well
+                Ok((s, ("".to_string()).into()))
+            }else {
+                Err(Err::Error(error_position!(i, ErrorKind::Eof))) //FIXME: what errorkind should we return?
+            }
+        }
         b"\\\n" => {
             let (s, _) = take(2 as usize)(i)?;
             Ok((s, ("".to_string()).into()))
         }
         b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\<" | b"\\^" | b"\\|" => {
+            let (s, _) = take(2 as usize)(i)?;
             let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
             Ok((s, pe))
         }
@@ -877,7 +887,7 @@ pub fn parse_tupfile<P: AsRef<Path>>(
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)
         .map_err(|e| Err::IoError(e, Loc::new(0,0)))?;
-    contents.retain( |e| *e != b'\r');
+    //contents.retain( |e| *e != b'\r');
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
 pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
