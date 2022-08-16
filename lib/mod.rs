@@ -13,16 +13,16 @@ pub mod errors;
 mod glob;
 pub mod parser;
 mod platform;
+mod scriptloader;
 pub mod statements;
 pub mod transform;
-mod scriptloader;
 extern crate bimap;
 extern crate bstr;
+extern crate log;
 extern crate path_absolutize;
 extern crate pathdiff;
-extern crate thiserror;
 extern crate rlua;
-extern crate log;
+extern crate thiserror;
 
 #[test]
 fn test_op() {

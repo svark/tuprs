@@ -177,10 +177,10 @@ pub fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
     match r.as_bytes() {
         b"\\\r" => {
             let (_, r) = peek(take(3 as usize))(i)?;
-            if r.as_bytes() ==  b"\\\r\n" {
-                let (s, _) = take(3 as usize)(i)?;//consumes \n after \r as well
+            if r.as_bytes() == b"\\\r\n" {
+                let (s, _) = take(3 as usize)(i)?; //consumes \n after \r as well
                 Ok((s, ("".to_string()).into()))
-            }else {
+            } else {
                 Err(Err::Error(error_position!(i, ErrorKind::Eof))) //FIXME: what errorkind should we return?
             }
         }
@@ -716,7 +716,8 @@ pub fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> {
                 },
             ),
             i,
-        ).into(),
+        )
+            .into(),
     ))
 }
 
@@ -811,7 +812,8 @@ pub fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, Located
                     else_statements: then_endif_s.0,
                 },
                 i,
-            ).into(),
+            )
+                .into(),
         ))
     } else {
         Ok((
@@ -823,7 +825,8 @@ pub fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, Located
                     else_statements: Vec::new(),
                 },
                 i,
-            ).into(),
+            )
+                .into(),
         ))
     }
 }
@@ -850,7 +853,8 @@ pub fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, LocatedStat
                     else_statements: then_endif_s.0,
                 },
                 i,
-            ).into(),
+            )
+                .into(),
         ))
     } else {
         Ok((
@@ -862,7 +866,8 @@ pub fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, LocatedStat
                     else_statements: Vec::new(),
                 },
                 i,
-            ).into(),
+            )
+                .into(),
         ))
     }
 }
@@ -883,10 +888,10 @@ pub fn parse_tupfile<P: AsRef<Path>>(
     use errors::Error as Err;
     use std::fs::File;
     use std::io::prelude::*;
-    let mut file = File::open(filename).map_err(|e| Err::IoError(e, Loc::new(0,0)))?;
+    let mut file = File::open(filename).map_err(|e| Err::IoError(e, Loc::new(0, 0)))?;
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)
-        .map_err(|e| Err::IoError(e, Loc::new(0,0)))?;
+        .map_err(|e| Err::IoError(e, Loc::new(0, 0)))?;
     //contents.retain( |e| *e != b'\r');
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }

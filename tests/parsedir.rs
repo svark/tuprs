@@ -20,5 +20,4 @@ mod tests {
         //let statements0 = statements[0].get_statements();
         assert_eq!(statements.len(), 2);
     }
-
 }

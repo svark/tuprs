@@ -76,7 +76,7 @@ fn is_empty(rval: &PathExpr) -> bool {
         false
     }
 }
-trait Deps {
+pub trait Deps {
     fn input_groups(&self, tup_cwd: &Path, groups: &mut Vec<String>);
     fn input_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>);
 
@@ -657,6 +657,10 @@ pub struct ParsedStatements {
     statements: Vec<LocatedStatement>,
 }
 impl ParsedStatements {
+    pub fn new(tupfile: PathBuf, statements: Vec<LocatedStatement>) -> ParsedStatements
+    {
+        ParsedStatements{tupfile, statements}
+    }
     pub fn get_tupfile(&self) -> &Path {
         self.tupfile.as_path()
     }
@@ -673,7 +677,7 @@ pub fn parse_tup(
     m.cur_file = tup_file_path.to_path_buf();
     if tupfilepath.ends_with(".lua") {
         let mut links = parse_script(tup_file_path, m)?;
-        let stmts : Vec<_> = links
+        let stmts: Vec<_> = links
             .drain(..)
             .map(|l| {
                 let loc = Loc::new(l.pos.0, 0);
@@ -705,8 +709,7 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error>
         if f_name.as_str().eq("Tupfile") {
             let tupfilepath = entry.path().to_string_lossy().as_ref().to_string();
             tupfiles.push(tupfilepath);
-        }
-        if f_name.as_str().eq("Tupfile.lua") {
+        } else if f_name.as_str().eq("Tupfile.lua") {
             let tupfilepath = entry.path().to_string_lossy().as_ref().to_string();
             tupfiles.push(tupfilepath);
         }

@@ -395,13 +395,36 @@ fn discover_inputs_from_glob(
 pub enum InputResolvedType {
     Deglob(MatchingPath),
     GroupEntry(GroupPathDescriptor, PathDescriptor),
+    UnResolvedGroupEntry(GroupPathDescriptor, PathDescriptor),
     BinEntry(BinDescriptor, PathDescriptor),
 }
-fn as_path<'a, 'b>(input_glob: &'a InputResolvedType, pbo: &'b PathBufferObject) -> &'b Path {
+
+// resolved paths
+pub fn get_resolved_path<'a, 'b>(input_glob: &'a InputResolvedType, pbo: &'b PathBufferObject) -> &'b Path {
     match input_glob {
         InputResolvedType::Deglob(e) => pbo.get(e.path_descriptor()).as_path(),
         InputResolvedType::GroupEntry(_, p) => pbo.get(p).as_path(),
         InputResolvedType::BinEntry(_, p) => pbo.get(p).as_path(),
+        InputResolvedType::UnResolvedGroupEntry(g,p,) => Path::new(""),
+    }
+}
+// directory under which the group/bin or path resolved path appears
+fn get_glob_dir<'a, 'b>(input_glob: &'a InputResolvedType, pbo: &'b PathBufferObject) -> &'b Path {
+    match input_glob {
+        InputResolvedType::Deglob(e) => pbo.get(e.path_descriptor()).as_path().parent().unwrap(),
+        InputResolvedType::GroupEntry(_, p) => pbo.get(p).as_path(),
+        InputResolvedType::BinEntry(_, p) => pbo.get(p).as_path(),
+        InputResolvedType::UnResolvedGroupEntry(g,p,) => pbo.get(p).as_path(),
+    }
+}
+
+// resolved names
+fn get_resolved_name<'a, 'b>(input_glob: &'a InputResolvedType, pbo: &PathBufferObject, gbo: &'b GroupBufferObject, bbo: &'b BinBufferObject) -> String {
+    match input_glob {
+        InputResolvedType::Deglob(e) => pbo.get(e.path_descriptor()).as_path().file_name().unwrap().to_string_lossy().to_string(),
+        InputResolvedType::GroupEntry(g, p) => gbo.get(g).0.to_string_lossy().to_string(),
+        InputResolvedType::BinEntry(b, p) => bbo.get(b).0.to_string_lossy().to_string(),
+        InputResolvedType::UnResolvedGroupEntry(g,p) => gbo.get(g).0.to_string_lossy().to_string()
     }
 }
 
@@ -417,8 +440,6 @@ impl OutputType {
         self.path.as_path()
     }
 }
-
-// get the path that InputGlobType refers to
 
 // Get matched glob in the input to a rule
 fn as_glob_match(inpg: &InputResolvedType) -> Option<String> {
@@ -446,7 +467,7 @@ impl ExcludeInputPaths for PathExpr {
                 let re = Regex::new(patt).ok();
                 if let Some(ref re) = re {
                     let matches = |i: &InputResolvedType| {
-                        let s = as_path(i, pbo).to_str();
+                        let s = get_resolved_path(i, pbo).to_str();
                         if let Some(s) = s {
                             re.captures(s).is_some()
                         } else {
@@ -469,6 +490,7 @@ pub struct BufferObjects {
     pub(crate) bbo: BinBufferObject,
     pub(crate) tbo: TupPathBufferObject,
 }
+
 impl BufferObjects {
     pub fn add_tup(&mut self, p: &Path) -> (TupPathDescriptor, bool) {
         self.tbo.add(p)
@@ -479,10 +501,32 @@ impl BufferObjects {
     pub fn add_group_path(&mut self, p: &PathExpr, tup_cwd: &Path) -> (GroupPathDescriptor, bool) {
         self.gbo.add_relative_group(p, tup_cwd)
     }
+
     pub fn add_bin_path(&mut self, p: &PathExpr, tup_cwd: &Path) -> (BinDescriptor, bool) {
         self.bbo.add_relative_bin(p, tup_cwd)
     }
+
+    pub fn get_path_buffer_object(&self) -> &PathBufferObject {
+        return &self.pbo;
+    }
+
+    pub fn get_bin_buffer_object(&self) -> &BinBufferObject {
+        return &self.bbo;
+    }
+
+    pub fn get_group_buffer_object(&self) -> &GroupBufferObject {
+        return &self.gbo;
+    }
+
+    pub fn get_name(&self, i:  &InputResolvedType ) -> String {
+        get_resolved_name(i, &self.pbo, &self.gbo, &self.bbo)
+    }
+
+    pub fn get_dir(&self, i: &InputResolvedType) -> &Path {
+        get_glob_dir(i, &self.pbo)
+    }
 }
+
 impl Default for BufferObjects {
     fn default() -> Self {
         BufferObjects {
@@ -563,9 +607,9 @@ impl DecodeInputPaths for Vec<PathExpr> {
         // ....
         let decoded: Result<Vec<_>, _> = self
             .iter()
-           // .inspect(|x| eprintln!("before decode {:?}", x))
+            // .inspect(|x| eprintln!("before decode {:?}", x))
             .map(|x| x.decode(tup_cwd, &tag_info, bo))
-           // .inspect(|x| eprintln!("after {:?}", x))
+            // .inspect(|x| eprintln!("after {:?}", x))
             .collect();
         let filter_out_excludes =
             |(i, ips): (usize, Vec<InputResolvedType>)| -> Vec<InputResolvedType> {
@@ -710,7 +754,7 @@ impl InputsAsPaths {
             if let &InputResolvedType::GroupEntry(ref grp_desc, _) = x {
                 Some((
                     bo.gbo.get_group_name(grp_desc),
-                    relpath(as_path(x, &bo.pbo)),
+                    relpath(get_resolved_path(x, &bo.pbo)),
                 ))
             } else {
                 None
@@ -719,7 +763,7 @@ impl InputsAsPaths {
         let allnongroups: Vec<_> = inp
             .iter()
             .filter(|&x| isnotgrp(x))
-            .map(|x| relpath(as_path(x, &bo.pbo)).to_path_buf())
+            .map(|x| relpath(get_resolved_path(x, &bo.pbo)).to_path_buf())
             .collect();
         let mut namedgroupitems: HashMap<_, Vec<String>> = HashMap::new();
         for x in inp.iter().filter_map(|x| try_grp(x)) {
@@ -1017,7 +1061,7 @@ fn paths_from_exprs(tup_cwd: &Path, p: &Vec<PathExpr>) -> Vec<OutputType> {
         .map(|x| {
             if x.is_empty() {
                 OutputType::new(PathBuf::new())
-            }else {
+            } else {
                 let path = PathBuf::new().join(&x.to_vec().cat());
                 let pathbuf = if !tup_cwd.eq(Path::new(".")) {
                     path.as_path()

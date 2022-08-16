@@ -322,6 +322,7 @@ impl TupScriptContext {
             smap,
         }
     }
+
     pub fn for_each_rule(
         &mut self,
         lineno: u32,
@@ -341,6 +342,7 @@ impl TupScriptContext {
         self.links.push(l);
         Ok(())
     }
+
     pub fn rule(
         &mut self,
         lineno: u32,
@@ -360,10 +362,12 @@ impl TupScriptContext {
         self.links.push(l);
         Ok(())
     }
+
     pub fn get_links(&mut self) -> Drain<'_, Link> {
         self.links.drain(..)
     }
-    pub fn config(&self, name: &str) -> std::string::String {
+
+    pub fn config(&self, name: &str) -> String {
         self.smap
             .conf_map
             .get(name)
@@ -386,8 +390,11 @@ impl UserData for TupScriptContext {
             let mut inputs = ScriptInputBuilder::new();
             let mut outputs = ScriptOutputBuilder::new();
             let mut rulcmd = ScriptRuleCommand::new();
-            let command_at_index = if inps1.iter().count() == 3  { Some(1)} else
-            {inps1.iter().position(|v| v.type_name().eq("String"))};
+            let command_at_index = if inps1.iter().count() == 3 {
+                Some(1)
+            } else {
+                inps1.iter().position(|v| v.type_name().eq("String"))
+            };
             let numinps = command_at_index
                 .map(|i| i)
                 .unwrap_or(std::cmp::min(inps1.iter().count(), 1));
@@ -622,7 +629,8 @@ impl UserData for TupScriptContext {
                         let curdir: String = luactx.named_registry_value(CURDIR.as_bytes())?;
                         let incpath = Path::new(&curdir).join(Path::new(path));
 
-                        let mut file = File::open(&incpath).map_err(|e| Err::IoError(e, Loc::new(lineno,0)))?;
+                        let mut file = File::open(&incpath)
+                            .map_err(|e| Err::IoError(e, Loc::new(lineno, 0)))?;
                         luactx.set_named_registry_value(
                             CURDIR.as_bytes(),
                             incpath
@@ -633,7 +641,7 @@ impl UserData for TupScriptContext {
                         )?;
                         let mut contents = Vec::new();
                         file.read_to_end(&mut contents)
-                            .map_err(|e| Err::IoError(e, Loc::new(lineno,0)))?;
+                            .map_err(|e| Err::IoError(e, Loc::new(lineno, 0)))?;
                         luactx
                             .load(contents.as_bytes())
                             .exec()
@@ -656,7 +664,7 @@ pub fn parse_script(script_path: &Path, cfg: SubstMap) -> Result<Vec<Link>, Err>
             ..Default::default()
         },
         |lua_context, debug| {
-             //println!("rlua hook: line {}, {}", debug.curr_line(), std::str::from_utf8(
+            //println!("rlua hook: line {}, {}", debug.curr_line(), std::str::from_utf8(
             //debug.source().short_src.unwrap()).unwrap());
             //current_debug_pos = debug;
             lua_context
@@ -684,10 +692,10 @@ pub fn parse_script(script_path: &Path, cfg: SubstMap) -> Result<Vec<Link>, Err>
                     .to_string_lossy()
                     .to_string(),
             )?;
-            let mut file = File::open(script_path).map_err(|e| Err::IoError(e, Loc::new(0,0)))?;
+            let mut file = File::open(script_path).map_err(|e| Err::IoError(e, Loc::new(0, 0)))?;
             let mut contents = Vec::new();
             file.read_to_end(&mut contents)
-                .map_err(|e| Err::IoError(e, Loc::new(0,0)))?;
+                .map_err(|e| Err::IoError(e, Loc::new(0, 0)))?;
             let chunk = ctx.load(contents.as_bytes());
             chunk.exec()?;
             let tup_shared: AnyUserData = globals.get("tup")?;
