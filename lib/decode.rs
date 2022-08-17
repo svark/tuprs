@@ -405,7 +405,7 @@ pub fn get_resolved_path<'a, 'b>(input_glob: &'a InputResolvedType, pbo: &'b Pat
         InputResolvedType::Deglob(e) => pbo.get(e.path_descriptor()).as_path(),
         InputResolvedType::GroupEntry(_, p) => pbo.get(p).as_path(),
         InputResolvedType::BinEntry(_, p) => pbo.get(p).as_path(),
-        InputResolvedType::UnResolvedGroupEntry(g,p,) => Path::new(""),
+        InputResolvedType::UnResolvedGroupEntry(_,_,) => Path::new(""),
     }
 }
 // directory under which the group/bin or path resolved path appears
@@ -414,7 +414,7 @@ fn get_glob_dir<'a, 'b>(input_glob: &'a InputResolvedType, pbo: &'b PathBufferOb
         InputResolvedType::Deglob(e) => pbo.get(e.path_descriptor()).as_path().parent().unwrap(),
         InputResolvedType::GroupEntry(_, p) => pbo.get(p).as_path(),
         InputResolvedType::BinEntry(_, p) => pbo.get(p).as_path(),
-        InputResolvedType::UnResolvedGroupEntry(g,p,) => pbo.get(p).as_path(),
+        InputResolvedType::UnResolvedGroupEntry(_,p,) => pbo.get(p).as_path(),
     }
 }
 
@@ -422,9 +422,9 @@ fn get_glob_dir<'a, 'b>(input_glob: &'a InputResolvedType, pbo: &'b PathBufferOb
 fn get_resolved_name<'a, 'b>(input_glob: &'a InputResolvedType, pbo: &PathBufferObject, gbo: &'b GroupBufferObject, bbo: &'b BinBufferObject) -> String {
     match input_glob {
         InputResolvedType::Deglob(e) => pbo.get(e.path_descriptor()).as_path().file_name().unwrap().to_string_lossy().to_string(),
-        InputResolvedType::GroupEntry(g, p) => gbo.get(g).0.to_string_lossy().to_string(),
-        InputResolvedType::BinEntry(b, p) => bbo.get(b).0.to_string_lossy().to_string(),
-        InputResolvedType::UnResolvedGroupEntry(g,p) => gbo.get(g).0.to_string_lossy().to_string()
+        InputResolvedType::GroupEntry(g, _) => gbo.get(g).0.to_string_lossy().to_string(),
+        InputResolvedType::BinEntry(b, _) => bbo.get(b).0.to_string_lossy().to_string(),
+        InputResolvedType::UnResolvedGroupEntry(g,_) => gbo.get(g).0.to_string_lossy().to_string()
     }
 }
 

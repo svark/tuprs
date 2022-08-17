@@ -895,7 +895,7 @@ pub fn parse_tupfile<P: AsRef<Path>>(
     //contents.retain( |e| *e != b'\r');
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
-pub(crate) fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
+pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
     let mut cwd = cur_tupfile;
     let pb: PathBuf;
     if cur_tupfile.is_dir() {
