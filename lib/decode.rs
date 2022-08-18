@@ -20,7 +20,7 @@ use statements::*;
 pub struct NormalPath(PathBuf);
 
 impl NormalPath {
-    pub(crate) fn absolute_from(path: &Path, tup_cwd: &Path) -> Self {
+    pub fn absolute_from(path: &Path, tup_cwd: &Path) -> Self {
         let pbuf = path
             .absolutize_from(tup_cwd)
             .expect(format!("could not absolutize path: {:?}/{:?}", tup_cwd, path).as_str())
@@ -36,7 +36,7 @@ impl<'a> Into<&'a Path> for &'a NormalPath {
 }
 
 impl NormalPath {
-    pub(crate) fn as_path(&self) -> &Path {
+    pub fn as_path(&self) -> &Path {
         self.0.as_path()
     }
 }
@@ -252,6 +252,8 @@ impl OutputTagInfo {
     pub fn new() -> OutputTagInfo {
         Default::default()
     }
+
+    pub fn clearbins(&mut self)  { self.bins.clear()}
     // discover outputs matching glob in the same tupfile
     pub fn outputs_matching_glob(
         &self,
