@@ -6,7 +6,7 @@ use platform::*;
 use statements::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use jwalk::WalkDir;
 #[derive(Debug, Clone)]
 pub enum StatementContext {
     Export,

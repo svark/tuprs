@@ -35,5 +35,5 @@ pub enum Error {
     #[error("Script Error: {0}")]
     ScriptError(String, u32),
     #[error(transparent)]
-    LuaError(#[from] rlua::Error),
+    LuaError(#[from] mlua::Error),
 }

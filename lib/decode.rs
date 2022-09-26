@@ -8,7 +8,7 @@ use std::vec;
 use glob::{GlobBuilder, GlobMatcher};
 use path_absolutize::Absolutize;
 use regex::{Captures, Regex};
-use walkdir::WalkDir;
+use jwalk::WalkDir;
 
 use bimap::BiMap;
 use errors::Error as Err;
@@ -123,8 +123,8 @@ where
         let np = NormalPath::absolute_from(pathbuf, tup_cwd);
         self.add_normalpath(np)
     }
-    pub fn add(&mut self, path: &Path) -> (T, bool) {
-        let np = NormalPath(path.into());
+    pub fn add<P:AsRef<Path>>(&mut self, path: P) -> (T, bool) {
+        let np = NormalPath(path.as_ref().into());
         self.add_normalpath(np)
     }
 
@@ -383,7 +383,7 @@ fn discover_inputs_from_glob(
     let mut pes = Vec::new();
     for matching in filtered_paths {
         let path = matching.path();
-        let (path_desc, _) = pbo.add(path);
+        let (path_desc, _) = pbo.add(path.clone());
         pes.push(MatchingPath::with_captures(path_desc, globs.group(path, 1)));
     }
     // discover inputs from previous outputs
@@ -1060,10 +1060,8 @@ fn normalized_path(tup_cwd: &Path, x: &PathExpr) -> PathBuf {
 }
 fn paths_from_exprs(tup_cwd: &Path, p: &Vec<PathExpr>) -> Vec<OutputType> {
     p.split(|x| matches!(x, &PathExpr::Sp1))
+        .filter(|x| !x.is_empty())
         .map(|x| {
-            if x.is_empty() {
-                OutputType::new(PathBuf::new())
-            } else {
                 let path = PathBuf::new().join(&x.to_vec().cat());
                 let pathbuf = if !tup_cwd.eq(Path::new(".")) {
                     path.as_path()
@@ -1074,7 +1072,6 @@ fn paths_from_exprs(tup_cwd: &Path, p: &Vec<PathExpr>) -> Vec<OutputType> {
                     path
                 };
                 OutputType::new(pathbuf)
-            }
         })
         .collect()
 }

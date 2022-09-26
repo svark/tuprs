@@ -6,7 +6,7 @@ extern crate daggy;
 extern crate nom_locate;
 extern crate petgraph;
 extern crate regex;
-extern crate walkdir;
+extern crate jwalk;
 
 pub mod decode;
 pub mod errors;
@@ -21,7 +21,7 @@ extern crate bstr;
 extern crate log;
 extern crate path_absolutize;
 extern crate pathdiff;
-extern crate rlua;
+extern crate mlua;
 extern crate thiserror;
 
 #[test]
