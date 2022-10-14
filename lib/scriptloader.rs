@@ -916,7 +916,6 @@ pub fn parse_script(script_path: &Path, cfg: SubstMap) -> Result<Vec<Link>, Err>
         })?;
         globals.set("tup_append_assignment", tup_append_table)?;
 
-        locate_tupconfig();
         let prelude = r#"
             realtostring = tostring
             tostring = tup_tostring
