@@ -509,9 +509,13 @@ impl UserData for TupScriptContext {
             let mut inputs = ScriptInputBuilder::new();
             let mut outputs = ScriptOutputBuilder::new();
             let mut rulcmd = ScriptRuleCommand::new();
-            for  inp in inps1.iter() {
-                if let Value::String(s) = inp {
-                    println!("vals:{:?}", s.to_string_lossy().to_string());
+            let globals = lua_ctx.globals();
+            let verbose = globals.get::<String,i64>("VERBOSE".to_string());
+            if verbose.is_ok() {
+                for inp in inps1.iter() {
+                    if let Value::String(s) = inp {
+                        println!("vals:{:?}", s.to_string_lossy().to_string());
+                    }
                 }
             }
             let command_at_index = if inps1.iter().count() == 3 {
@@ -638,7 +642,7 @@ impl UserData for TupScriptContext {
                 let i: u32 = lua_ctx
                     .named_registry_value(LINENO.as_bytes())
                     .expect("line number missing lua registry");
-                let globals = lua_ctx.globals();
+              //  let globals = lua_ctx.globals();
                 let tup_shared: AnyUserData = globals.get("tup")?;
                 let mut scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
                 let paths = scriptctx.rule(i, inputs, rulcmd, outputs)?;
@@ -666,9 +670,13 @@ impl UserData for TupScriptContext {
                 let mut inputs = ScriptInputBuilder::new();
                 let mut outputs = ScriptOutputBuilder::new();
                 let mut rulcmd = ScriptRuleCommand::new();
-                for  inp in inps1.iter() {
-                    if let Value::String(s) = inp {
-                        println!("vals:{:?}", s.to_string_lossy().to_string());
+                let globals = luactx.globals();
+                let verbose = globals.get::<String,i64>("VERBOSE".to_string());
+                if verbose.is_ok() {
+                    for inp in inps1.iter() {
+                        if let Value::String(s) = inp {
+                            println!("vals:{:?}", s.to_string_lossy().to_string());
+                        }
                     }
                 }
                 let command_at_index = if inps1.len() == 3  { Some(1) } else {
@@ -776,7 +784,7 @@ impl UserData for TupScriptContext {
                     let i: u32 = luactx
                         .named_registry_value(LINENO.as_bytes())
                         .expect("line number missing lua registry");
-                    let globals = luactx.globals();
+                    //let globals = luactx.globals();
                     let tup_shared: AnyUserData = globals.get("tup")?;
                     let mut scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
                     let paths = scriptctx.for_each_rule(i, inputs, rulcmd, outputs)?;
@@ -825,7 +833,11 @@ impl UserData for TupScriptContext {
                         };
                         let curdir: String = luactx.named_registry_value(CURDIR.as_bytes())?;
                         let incpath = Path::new(&curdir).join(Path::new(path));
-                        println!("include:{}", incpath.to_string_lossy().to_string());
+                        let globals = luactx.globals();
+                        let verbose = globals.get::<String,i64>("VERBOSE".to_string());
+                        if verbose.is_ok() {
+                            println!("include:{}", incpath.to_string_lossy().to_string());
+                        }
 
                         let mut file = File::open(&incpath)?;
                         luactx.set_named_registry_value(
