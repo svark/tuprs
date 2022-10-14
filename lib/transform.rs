@@ -664,6 +664,7 @@ impl ParsedStatements {
     pub fn get_tupfile(&self) -> &Path {
         self.tupfile.as_path()
     }
+    pub fn get_statement(&self, i: usize) -> &LocatedStatement { &self.statements[i]}
     pub fn get_statements(&self) -> &Vec<LocatedStatement> {
         &self.statements
     }
@@ -696,7 +697,6 @@ pub fn parse_tup(
 }
 // scan and parse all Tupfile, return deglobbed, decoded links
 pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error> {
-    let mut dag: Dag<u32, u32> = Dag::new();
     let mut provided_by: HashMap<_, Vec<_>> = HashMap::new();
     let mut required_by: HashMap<_, Vec<_>> = HashMap::new();
     let mut tupfiles = Vec::new();
@@ -718,6 +718,7 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error>
     let confvars = load_conf_vars(rootfolder.as_path())?;
     let mut rules = Vec::new();
     let mut ids = Vec::new();
+    let mut dag: Dag<u32, u32> = Dag::new();
     for tupfilepath in tupfiles.iter() {
         ids.push(dag.node_count());
         let stmts = parse_tup(&confvars, tupfilepath.as_str())?;
@@ -725,43 +726,41 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error>
         let tup_cwd = tup_file_path.parent().expect("tup file parent not found");
         let mut groups = Vec::new();
         let mut bins = Vec::new();
-        for l in &stmts {
-            if is_rule(l) {
-                let n = dag.add_node(1);
-                l.input_groups(tup_cwd, &mut groups);
-                groups.drain(..).for_each(|group| {
-                    required_by
-                        .entry("?G".to_owned() + group.as_str())
-                        .or_default()
-                        .push(n)
-                });
-                l.input_bins(tup_cwd, &mut bins);
-                bins.drain(..).for_each(|bin| {
-                    required_by
-                        .entry("?B".to_owned() + bin.as_str())
-                        .or_default()
-                        .push(n)
-                });
-                l.output_groups(tup_cwd, &mut groups);
-                groups.drain(..).for_each(|grp| {
-                    provided_by
-                        .entry("?G".to_owned() + grp.as_str())
-                        .or_default()
-                        .push(n)
-                });
-                l.output_bins(tup_cwd, &mut bins);
-                bins.drain(..).for_each(|bin| {
-                    provided_by
-                        .entry("?B".to_owned() + bin.as_str())
-                        .or_default()
-                        .push(n)
-                });
-            }
+        for l in stmts.iter().filter(|l| is_rule(l)) {
+            let n = dag.add_node(1);
+            l.input_groups(tup_cwd, &mut groups);
+            groups.drain(..).for_each(|group| {
+                required_by
+                    .entry("?G".to_owned() + group.as_str())
+                    .or_default()
+                    .push(n)
+            });
+            l.input_bins(tup_cwd, &mut bins);
+            bins.drain(..).for_each(|bin| {
+                required_by
+                    .entry("?B".to_owned() + bin.as_str())
+                    .or_default()
+                    .push(n)
+            });
+            l.output_groups(tup_cwd, &mut groups);
+            groups.drain(..).for_each(|grp| {
+                provided_by
+                    .entry("?G".to_owned() + grp.as_str())
+                    .or_default()
+                    .push(n)
+            });
+            l.output_bins(tup_cwd, &mut bins);
+            bins.drain(..).for_each(|bin| {
+                provided_by
+                    .entry("?B".to_owned() + bin.as_str())
+                    .or_default()
+                    .push(n)
+            });
         }
-        rules.push(ParsedStatements {
-            statements: stmts,
-            tupfile: tup_file_path.to_path_buf(),
-        });
+        rules.push(ParsedStatements::new(
+            tup_file_path.to_path_buf(),
+            stmts,
+        ));
     }
     ids.push(dag.node_count());
     let statement_from_id = |i: NodeIndex| {

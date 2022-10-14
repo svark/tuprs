@@ -20,5 +20,5 @@ path-absolutize  = "3.0.11"
 bstr = "0.2.17"
 bimap = "0.6.1"
 log = "0.4.14"
-mlua = {version = "0.8.3", features = ["lua53", "vendored"]}
+mlua = {version = "0.8.3", features = ["lua54", "vendored"]}
 pathdiff = "0.2.1"

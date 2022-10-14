@@ -11,6 +11,7 @@ use regex::{Captures, Regex};
 use jwalk::WalkDir;
 
 use bimap::BiMap;
+use bimap::hash::LeftValues;
 use errors::Error as Err;
 use glob;
 use pathdiff::diff_paths;
@@ -84,6 +85,11 @@ macro_rules! impl_from_usize {
                 Self(i)
             }
         }
+        impl Into<usize> for $t {
+            fn into(self) -> usize {
+                self.0
+            }
+        }
         impl Default for $t {
             fn default() -> Self {
                 Self(usize::MAX)
@@ -128,6 +134,17 @@ where
         self.add_normalpath(np)
     }
 
+    pub fn add_normalpath_with_id(&mut self, np: NormalPath, id: usize) -> (T, bool) {
+        if let Some(prev_index) = self.0.get_by_left(&np) {
+            (prev_index.clone(), false)
+        }else {
+            let _ = self.0.insert(np, id.into());
+            (id.into(), true)
+        }
+    }
+    pub fn get_paths(&self) -> LeftValues<'_, NormalPath, T> {
+       self.0.left_values()
+    }
     fn add_normalpath(&mut self, np: NormalPath) -> (T, bool) {
         let l = self.0.len();
         if let Some(prev_index) = self.0.get_by_left(&np) {
@@ -144,6 +161,10 @@ where
     pub fn try_get(&self, pd: &T) -> Option<&NormalPath> {
         self.0.get_by_right(pd)
     }
+
+    pub fn try_get_id(&self, path: &NormalPath) ->  Option<&T> {
+        self.0.get_by_left(path)
+    }
 }
 pub type TupPathBufferObject = GenPathBufferObject<TupPathDescriptor>;
 pub type PathBufferObject = GenPathBufferObject<PathDescriptor>;
@@ -157,6 +178,13 @@ impl GroupBufferObject {
             .unwrap()
             .to_string_lossy()
             .to_string()
+    }
+    pub fn add_relative_group_by_path(
+        &mut self,
+        grp_path: &Path,
+        tup_cwd: &Path,
+    ) -> (GroupPathDescriptor, bool) {
+        self.add_relative(grp_path, tup_cwd)
     }
     pub fn add_relative_group(
         &mut self,
@@ -188,7 +216,7 @@ impl BinBufferObject {
 }
 // maps to paths corresponding to bin names, or group names
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct OutputTagInfo {
     pub output_files: HashSet<PathDescriptor>,
     pub bins: HashMap<BinDescriptor, HashSet<PathDescriptor>>, // paths accumulated in a bin
@@ -202,7 +230,7 @@ impl OutputTagInfo {
                 .entry(k.clone())
                 .or_insert(HashSet::new())
                 .extend(new_paths.iter().map(|x| x.clone()));
-            self.checked_merge_parent_rules(&mut new_outputs.parent_rule, new_paths)?;
+            self.merge_parent_rules(&mut new_outputs.parent_rule, new_paths)?;
         }
         Ok(())
     }
@@ -212,17 +240,17 @@ impl OutputTagInfo {
                 .entry(k.clone())
                 .or_insert(HashSet::new())
                 .extend(new_paths.iter().map(|x| x.clone()));
-            self.checked_merge_parent_rules(&mut other.parent_rule, new_paths)?;
+            self.merge_parent_rules(&mut other.parent_rule, new_paths)?;
         }
         Ok(())
     }
     pub fn merge_output_files(&mut self, new_outputs: &mut OutputTagInfo) -> Result<(), Err> {
         self.output_files
             .extend(new_outputs.output_files.iter().map(|x| x.clone()));
-        self.checked_merge_parent_rules(&mut new_outputs.parent_rule, &new_outputs.output_files)
+        self.merge_parent_rules(&mut new_outputs.parent_rule, &new_outputs.output_files)
     }
 
-    fn checked_merge_parent_rules(
+    fn merge_parent_rules(
         &mut self,
         new_parent_rule: &mut HashMap<PathDescriptor, RuleRef>,
         new_paths: &HashSet<PathDescriptor>,
@@ -358,7 +386,7 @@ impl MatchingPath {
     }
 }
 
-fn discover_inputs_from_glob(
+pub(crate) fn discover_inputs_from_glob(
     glob_path: &Path,
     outputs: &OutputTagInfo,
     pbo: &mut PathBufferObject,
@@ -518,6 +546,9 @@ impl BufferObjects {
 
     pub fn get_group_buffer_object(&self) -> &GroupBufferObject {
         return &self.gbo;
+    }
+    pub fn get_mut_group_buffer_object(&mut self) -> &mut GroupBufferObject {
+        return &mut self.gbo;
     }
 
     pub fn get_name(&self, i:  &InputResolvedType ) -> String {
@@ -680,13 +711,13 @@ trait DecodeOutputPlaceHolders {
 
 pub struct InputsAsPaths {
     raw_inputs: Vec<PathBuf>,
-    grps_by_name: HashMap<String, String>,
+    groups_by_name: HashMap<String, String>,
     raw_inputs_glob_match: Option<InputResolvedType>,
     rule_ref: RuleRef,
 }
 impl InputsAsPaths {
     pub fn get_group_paths(&self, grp_name: &str) -> Option<&String> {
-        self.grps_by_name.get(grp_name)
+        self.groups_by_name.get(grp_name)
     }
 
     pub fn get_file_names(&self) -> Vec<String> {
@@ -780,7 +811,7 @@ impl InputsAsPaths {
             .collect();
         InputsAsPaths {
             raw_inputs: allnongroups,
-            grps_by_name: namedgroupitems,
+            groups_by_name: namedgroupitems,
             raw_inputs_glob_match: inp.first().map(|x| x.clone()),
             rule_ref,
         }
@@ -1154,7 +1185,7 @@ fn get_deglobbed_rule(
         InputsAsPaths::new(tup_cwd, &secondary_deglobbed_inps, &bo, rule_ref.clone());
     let mut decoded_target =
         t.decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths)?;
-    let pp = paths_from_exprs(tup_cwd, &t.primary);
+    let pp = paths_from_exprs(tup_cwd, &decoded_target.primary);
     let output_as_paths = OutputsAsPaths {
         outputs: pp
             .iter()
@@ -1165,7 +1196,7 @@ fn get_deglobbed_rule(
     decoded_target.secondary = decoded_target
         .secondary
         .decode_output_place_holders(&output_as_paths)?;
-    let sec_pp = paths_from_exprs(tup_cwd, &t.secondary);
+    let sec_pp = paths_from_exprs(tup_cwd, &decoded_target.secondary);
     let resolved_rule: RuleFormula = r
         .decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths)?
         .decode_output_place_holders(&output_as_paths)?;
@@ -1258,7 +1289,7 @@ pub trait ResolvePaths {
     ) -> Result<(Vec<ResolvedLink>, OutputTagInfo), Err>;
 }
 
-/// deglob rule statement into multiple deglobbed rules, gather deglobbed targets to put in the bins/groups
+/// deglob rule statement into multiple deglobbed rules, gather deglobbed targets to put in bins/groups
 impl ResolvePaths for LocatedStatement {
     fn resolve_paths(
         &self,

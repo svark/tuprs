@@ -913,7 +913,9 @@ pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
-    locate_file(cur_tupfile, "Tuprules.tup")
+    locate_file(cur_tupfile, "Tuprules.tup").or(
+        locate_file(cur_tupfile, "Tuprules.lua")
+    )
 }
 
 pub fn parse_config(filename: &str) -> Vec<LocatedStatement> {

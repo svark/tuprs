@@ -23,6 +23,7 @@ extern crate path_absolutize;
 extern crate pathdiff;
 extern crate mlua;
 extern crate thiserror;
+extern crate core;
 
 #[test]
 fn test_op() {

@@ -1,5 +1,5 @@
 use errors::Error as Err;
-use mlua::{AnyUserData, HookTriggers, ToLua, Value, Variadic};
+use mlua::{AnyUserData, HookTriggers, Lua, MultiValue, StdLib, ToLua, Value, Variadic};
 use mlua::{UserData, UserDataMethods};
 use nom::{AsBytes, InputTake};
 use statements::{Link, RuleFormula, Source, Target};
@@ -10,6 +10,9 @@ use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::Arc;
 use std::vec::Drain;
+use mlua::Error::SyntaxError;
+use decode::{BufferObjects, discover_inputs_from_glob, OutputTagInfo, ResolvePaths };
+use parser::locate_tuprules;
 use transform::SubstMap;
 lazy_static! {
     static ref LINENO: &'static str = "lineno";
@@ -103,10 +106,14 @@ Returns the extension in the filename filename (excluding the .) or the empty st
  */
 //use mlua::{Function, Lua, MetaMethod, Result, UserData, UserDataMethods, Variadic};
 use statements::*;
+use statements::Statement::Rule;
+
 #[derive(Clone, Debug)]
 pub struct TupScriptContext {
     smap: SubstMap,
     pub links: Vec<Link>,
+    pub bo: BufferObjects,
+    pub output_tag_info: OutputTagInfo,
 }
 #[derive(Debug, Default, Clone)]
 pub struct ScriptInputBuilder {
@@ -303,9 +310,10 @@ impl TupScriptContext {
         TupScriptContext {
             links: vec![],
             smap,
+            output_tag_info: OutputTagInfo::new(),
+            bo: Default::default()
         }
     }
-
 
     pub fn for_each_rule(
         &mut self,
@@ -313,7 +321,7 @@ impl TupScriptContext {
         inp: ScriptInputBuilder,
         rule_command: ScriptRuleCommand,
         out: ScriptOutputBuilder,
-    ) -> Result<(), mlua::Error> {
+    ) -> Result<Vec<String>, mlua::Error> {
         let source = inp.build_foreach();
         let rule_formula = rule_command.build();
         let target = out.build();
@@ -324,7 +332,15 @@ impl TupScriptContext {
             pos: (lineno, 0),
         };
         self.links.push(l);
-        Ok(())
+        let l = self.links.last().unwrap();
+        let statement = LocatedStatement{statement:Rule(l.clone()),  loc: Loc::new( lineno,  0 ) };
+        let (_, out) = statement.resolve_paths(self.smap.cur_file.as_path(), &self.output_tag_info, &mut self.bo, &self.smap.cur_file_desc).expect("unable to resolve paths");
+        let mut paths = Vec::new();
+        for i in out.output_files {
+            let path = self.bo.pbo.get(&i);
+            paths.push(path.as_path().to_string_lossy().to_string());
+        }
+        Ok(paths)
     }
 
     pub fn rule(
@@ -333,7 +349,7 @@ impl TupScriptContext {
         inp: ScriptInputBuilder,
         rule_command: ScriptRuleCommand,
         out: ScriptOutputBuilder,
-    ) -> Result<(), mlua::Error> {
+    ) -> Result<Vec<String>, mlua::Error> {
         let source = inp.build();
         let rule_formula = rule_command.build();
         let target = out.build();
@@ -344,7 +360,15 @@ impl TupScriptContext {
             pos: (lineno, 0),
         };
         self.links.push(l);
-        Ok(())
+        let l = self.links.last().unwrap();
+        let statement = LocatedStatement{statement:Rule(l.clone()),  loc: Loc::new(lineno, 0)};
+        let (_, out) = statement.resolve_paths(self.smap.cur_file.as_path(), &self.output_tag_info, &mut self.bo, &self.smap.cur_file_desc).expect("unable to resolve paths");
+        let mut paths = Vec::new();
+        for i in out.output_files {
+            let path = self.bo.pbo.get(&i);
+            paths.push(path.as_path().to_string_lossy().to_string());
+        }
+        Ok(paths)
     }
 
     pub fn get_links(&mut self) -> Drain<'_, Link> {
@@ -362,32 +386,32 @@ impl TupScriptContext {
         self.smap
             .cur_file
             .parent()
-            .unwrap()
+            .unwrap_or(Path::new(""))
             .to_string_lossy()
             .to_string()
     }
-    pub fn dir(&self, a: &String) -> String {
+    pub fn dir(a: &String) -> String {
         Path::new(a.as_str())
             .parent()
             .unwrap()
             .to_string_lossy()
             .to_string()
     }
-    pub fn file(&self, a: &String) -> String {
+    pub fn file(a: &String) -> String {
         Path::new(a.as_str())
             .file_name()
             .unwrap()
             .to_string_lossy()
             .to_string()
     }
-    pub fn extension(&self, a: &String) -> String {
+    pub fn extension(a: &String) -> String {
         Path::new(a.as_str())
             .extension()
             .unwrap()
             .to_string_lossy()
             .to_string()
     }
-    pub fn base(&self, a: &String) -> String {
+    pub fn base(a: &String) -> String {
         Path::new(a.as_str())
             .file_stem()
             .unwrap()
@@ -395,7 +419,6 @@ impl TupScriptContext {
             .to_string()
     }
     pub fn convert_to_table<'a>(
-        &'_ self,
         lua: &'a mlua::Lua,
         v: &'a Value,
     ) -> mlua::Result<Value<'a>> {
@@ -410,73 +433,91 @@ impl TupScriptContext {
         t.to_lua(lua)
     }
 }
+trait ConvToString {
+    fn convert_to_string(&self, v: &Value) -> mlua::Result<String>;
+}
 
-// wrapper around tostring method in lua
-fn convert_to_string (lua: &mlua::Lua, v: &Value) -> mlua::Result<String> {
-    let val_str: String = match v {
-        Value::Table(t) => {
-            let chunk = lua.load(
-                "function f(t) {\
+impl ConvToString for Lua {
+    // wrapper around tostring method in lua
+    fn convert_to_string(&self, v: &Value) -> mlua::Result<String> {
+        let val_str: String = match v {
+            Value::Table(t) => {
+                let chunk = self.load(
+                    "function f(t) {\
                       table.concat(t, ' ')
                     }
                     )",
-            );
-            chunk.call(t.clone())?
-        }
-        Value::String(s) => {
-            s.to_string_lossy().to_string()
-        }
-        _ => lua.load("tostring").call(v.clone())?,
-    };
-    Ok(val_str)
+                );
+                chunk.call(t.clone())?
+            }
+            Value::String(s) => s.to_string_lossy().to_string(),
+            _ => self.load("realtostring").call(v.clone())?,
+        };
+        Ok(val_str)
+    }
 }
 
 impl UserData for TupScriptContext {
-
-
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
-        methods.add_method("config", |_, ctx, var: Variadic<String>| {
-            if let Some(varstr) = var.iter().next() {
-                let conf = ctx.config(varstr.as_str());
-                Ok(conf)
-            } else {
-                Ok("".to_string())
-            }
+        methods.add_function("getconfig", |lua, var: (mlua::String,) | {
+            let globals = lua.globals();
+            let tup_shared: AnyUserData = globals.get("tup")?;
+            let  ctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+            let varstr = var.0.to_string_lossy().to_string();
+            let conf = ctx.config(varstr.as_str());
+            Ok(conf)
         });
+        methods.add_function("getcwd", |lua, _: ()|
+            {
+                let globals = lua.globals();
+                let tup_shared: AnyUserData = globals.get("tup")?;
+                let  scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+                Ok(scriptctx.get_cwd())
+            });
 
-        methods.add_method("getcwd", |_, ctx, _: ()| Ok(ctx.get_cwd()));
-
-        methods.add_method("base", |_, ctx, path: (mlua::String,)| {
+        methods.add_function("base", |_,  path: (mlua::String,)| {
             let v = path.0.to_string_lossy().to_string();
-            let bname = ctx.base(&v);
+            let bname = TupScriptContext::base(&v);
             Ok(bname)
         });
 
-        methods.add_method("file", |_, ctx, path: (mlua::String,)| {
+        methods.add_function("file", |_, path: (mlua::String,)| {
             let v = path.0.to_string_lossy().to_string();
-            let fname = ctx.file(&v);
+            let fname = TupScriptContext::file(&v);
             Ok(fname)
         });
-        methods.add_method("getdirectory", |_, ctx, path: (mlua::String,)| {
+        methods.add_function("getdirectory", |_, path: (mlua::String,)| {
             let v = path.0.to_string_lossy().to_string();
-            let d = ctx.dir(&v);
+            let d = TupScriptContext::dir(&v);
             Ok(d)
         });
 
-        methods.add_method("ext", |_, ctx, path: (mlua::String,)| {
+        methods.add_function("ext", |_, path: (mlua::String,)| {
             let v = path.0.to_string_lossy().to_string();
-            let ext = ctx.extension(&v);
+            let ext = TupScriptContext::extension(&v);
             Ok(ext)
         });
 
-        methods.add_method_mut("frule", |lua_ctx, sctx, inps1: Variadic<Value>| {
+        methods.add_function("tup_tostring", |lua, inp: MultiValue| {
+            Ok(inp
+                .iter()
+                .filter_map(|i| lua.convert_to_string(i).ok())
+                .collect::<Vec<_>>())
+        });
+
+        methods.add_function("rule", |lua_ctx,  inps1: Variadic<Value>|  {
             let mut inputs = ScriptInputBuilder::new();
             let mut outputs = ScriptOutputBuilder::new();
             let mut rulcmd = ScriptRuleCommand::new();
+            for  inp in inps1.iter() {
+                if let Value::String(s) = inp {
+                    println!("vals:{:?}", s.to_string_lossy().to_string());
+                }
+            }
             let command_at_index = if inps1.iter().count() == 3 {
                 Some(1)
             } else {
-                inps1.iter().position(|v| v.type_name().eq("String"))
+                inps1.iter().position(|v| v.type_name().eq("string"))
             };
             let numinps = command_at_index
                 .map(|i| i)
@@ -487,12 +528,12 @@ impl UserData for TupScriptContext {
             let inps: Vec<_> = inps1
                 .iter()
                 .take(numinps)
-                .filter_map(|x| sctx.convert_to_table(lua_ctx, x).ok())
+                .filter_map(|x| TupScriptContext::convert_to_table(lua_ctx, x).ok())
                 .collect();
             let outs: Vec<_> = inps1
                 .iter()
                 .skip(outindex)
-                .filter_map(|x| sctx.convert_to_table(lua_ctx, x).ok())
+                .filter_map(|x| TupScriptContext::convert_to_table(lua_ctx, x).ok())
                 .collect();
             if let Some(Value::Table(t)) = inps.first() {
                 t.clone().pairs().for_each(|x| {
@@ -510,8 +551,8 @@ impl UserData for TupScriptContext {
                                         .into_iter()
                                         .filter_map(|x| x.ok())
                                         .for_each(|val: Value| {
-                                            if let Some(s) = convert_to_string(lua_ctx, &val).ok() {
-                                                    inputs.push_extra(s.as_str());
+                                            if let Some(s) = lua_ctx.convert_to_string(&val).ok() {
+                                                inputs.push_extra(s.as_str());
                                             }
                                         });
                                 }
@@ -558,15 +599,15 @@ impl UserData for TupScriptContext {
                                 }
                             }
                             if s.as_bytes().eq("bin".as_bytes()) {
-                                if let Ok(out)= convert_to_string(lua_ctx, v) {
+                                if let Ok(out) = lua_ctx.convert_to_string(v) {
                                     outputs.set_bin(out.as_str());
                                 }
                             }
                         }
 
                         if let Value::Integer(_) = &k {
-                            if let Ok(s) = convert_to_string(lua_ctx, v) {
-                                    outputs.push(s.as_str());
+                            if let Ok(s) = lua_ctx.convert_to_string(v) {
+                                outputs.push(s.as_str());
                             }
                         }
                     }
@@ -595,27 +636,53 @@ impl UserData for TupScriptContext {
                 rulcmd.set_command(cmd);
                 rulcmd.set_display_str(desc);
                 let i: u32 = lua_ctx
-                    .named_registry_value("lineno")
+                    .named_registry_value(LINENO.as_bytes())
                     .expect("line number missing lua registry");
-                sctx.rule(i, inputs, rulcmd, outputs)?;
+                let globals = lua_ctx.globals();
+                let tup_shared: AnyUserData = globals.get("tup")?;
+                let mut scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+                let paths = scriptctx.rule(i, inputs, rulcmd, outputs)?;
+                let t = lua_ctx.create_table()?;
+                let mut cnt: usize = 1;
+                for p in paths {
+                    t.set(cnt, p)?;
+                    cnt = cnt + 1;
+                }
+                Ok(Value::Table(t))
             }
-            Ok(())
+            else {
+                let t = lua_ctx.create_table()?;
+                Ok(Value::Table(t))
+            }
+        }
+        );
+        methods.add_function_mut("frule", |luactx, inps1: Variadic<Value>| -> Result<Value, mlua::Error> {
+            luactx.load("tup.rule").call(inps1)
+            //Ok(())
         });
-        methods.add_method_mut(
-            "for_each_rule",
-            |luactx, sctx, inps1: Variadic<Value>| -> Result<(), mlua::Error> {
+        methods.add_function_mut(
+            "foreach_rule",
+            |luactx, inps1: Variadic<Value>| -> Result<Value, mlua::Error> {
                 let mut inputs = ScriptInputBuilder::new();
                 let mut outputs = ScriptOutputBuilder::new();
                 let mut rulcmd = ScriptRuleCommand::new();
-                let command_at_index = inps1.iter().position(|v| v.type_name().eq("String"));
+                for  inp in inps1.iter() {
+                    if let Value::String(s) = inp {
+                        println!("vals:{:?}", s.to_string_lossy().to_string());
+                    }
+                }
+                let command_at_index = if inps1.len() == 3  { Some(1) } else {
+                   inps1.iter().position(|v| v.type_name().eq("string"))
+                };
                 let numinps = command_at_index
-                    .map(|i| i)
                     .unwrap_or(std::cmp::min(inps1.iter().count(), 1));
                 let outindex = command_at_index
                     .map(|i| (i + 1))
                     .unwrap_or(std::cmp::min(inps1.iter().skip(1).count(), 1));
-                let inps = inps1.iter().take(numinps).collect::<Vec<_>>();
-                let outs = inps1.iter().skip(outindex).collect::<Vec<_>>();
+                let inps : Vec<_> = inps1.iter().take(numinps).filter_map(|x| TupScriptContext::convert_to_table(luactx, x).ok())
+                    .collect();
+                let outs : Vec<_> = inps1.iter().skip(outindex).filter_map(|x| TupScriptContext::convert_to_table(luactx, x).ok())
+                    .collect();
                 if let Some(Value::Table(t)) = inps.first() {
                     t.clone().pairs().for_each(|x| {
                         if let Ok((k, ref v)) = x {
@@ -652,6 +719,7 @@ impl UserData for TupScriptContext {
                         ()
                     });
                 }
+
                 if let Some(Value::Table(t)) = outs.first() {
                     t.clone().pairs().for_each(|x| {
                         if let Ok((k, ref v)) = x {
@@ -682,6 +750,7 @@ impl UserData for TupScriptContext {
                         }
                     });
                 }
+
                 if let Some(rule) = command_at_index.and_then(|i| inps1.get(i)) {
                     let mut desc: String = String::new();
                     let mut cmd: String = String::new();
@@ -705,16 +774,48 @@ impl UserData for TupScriptContext {
                     rulcmd.set_command(cmd);
                     rulcmd.set_display_str(desc);
                     let i: u32 = luactx
-                        .named_registry_value("lineno")
+                        .named_registry_value(LINENO.as_bytes())
                         .expect("line number missing lua registry");
-                    sctx.for_each_rule(i, inputs, rulcmd, outputs)?;
+                    let globals = luactx.globals();
+                    let tup_shared: AnyUserData = globals.get("tup")?;
+                    let mut scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+                    let paths = scriptctx.for_each_rule(i, inputs, rulcmd, outputs)?;
+                    let t = luactx.create_table()?;
+                    let mut cnt : usize = 1;
+                    for p in paths {
+                        t.set(cnt, p)?;
+                        cnt = cnt + 1;
+                    }
+                    Ok(Value::Table(t))
+                }else {
+                    let t = luactx.create_table()?;
+                    Ok(Value::Table(t))
                 }
-                Ok(())
             },
         );
-        methods.add_method_mut(
+        methods.add_function("glob", |luactx, pattern: Value| {
+             let path = if let Value::String(ref s) = pattern {
+                            s.to_str().unwrap()
+                        } else {
+                 ""
+             };
+            //let globals = luactx.globals();
+            //let tup_shared: AnyUserData = globals.get("tup")?;
+            //let scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+            let outputs   = OutputTagInfo::new();
+            let mut bo = BufferObjects::default();
+            let matching_paths = discover_inputs_from_glob(Path::new(path), &outputs, &mut bo.pbo).expect("Glob expansion failed");
+            let glob_out = luactx.create_table()?;
+            let mut cnt = 1;
+            for m in matching_paths {
+                glob_out.set(cnt as mlua::Integer, m.as_path(&bo.pbo).to_string_lossy().to_string())?;
+                cnt = cnt + 1;
+            }
+            Ok(glob_out)
+        });
+        methods.add_function_mut(
             "include",
-            |luactx, _, path: Value| -> Result<(), mlua::Error> {
+            |luactx,  path: Value| -> Result<(), mlua::Error> {
                 luactx
                     .scope(|_scope| -> Result<(), mlua::Error> {
                         let path = if let Value::String(ref s) = path {
@@ -724,6 +825,7 @@ impl UserData for TupScriptContext {
                         };
                         let curdir: String = luactx.named_registry_value(CURDIR.as_bytes())?;
                         let incpath = Path::new(&curdir).join(Path::new(path));
+                        println!("include:{}", incpath.to_string_lossy().to_string());
 
                         let mut file = File::open(&incpath)?;
                         luactx.set_named_registry_value(
@@ -737,6 +839,10 @@ impl UserData for TupScriptContext {
                         let mut contents = Vec::new();
                         file.read_to_end(&mut contents)?;
                         luactx.load(contents.as_bytes()).exec()?;
+                         luactx.set_named_registry_value(
+                            CURDIR.as_bytes(),
+                             curdir
+                        )?;
                         Ok(())
                     })
                     .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
@@ -747,11 +853,12 @@ impl UserData for TupScriptContext {
 }
 
 pub fn parse_script(script_path: &Path, cfg: SubstMap) -> Result<Vec<Link>, Err> {
-    let lua = mlua::Lua::new();
+    let lua = unsafe {mlua::Lua::unsafe_new()};
 
     let r = lua.scope(|scope| {
         let tupscriptctx = TupScriptContext::new(cfg);
         let tup_shared = scope.create_userdata(tupscriptctx)?;
+        lua.load_from_std_lib(StdLib::DEBUG|StdLib::STRING|StdLib::UTF8|StdLib::IO|StdLib::OS)?;
 
         let globals = lua.globals();
         globals.set("tup", tup_shared)?;
@@ -765,9 +872,6 @@ pub fn parse_script(script_path: &Path, cfg: SubstMap) -> Result<Vec<Link>, Err>
                 ..Default::default()
             },
             |lua_context, debug| {
-                //println!("rlua hook: line {}, {}", debug.curr_line(), std::str::from_utf8(
-                //debug.source().short_src.unwrap()).unwrap());
-                //current_debug_pos = debug;
                 lua_context
                     .set_named_registry_value(LINENO.as_bytes(), debug.curr_line())
                     .expect("could not set registry value");
@@ -782,11 +886,52 @@ pub fn parse_script(script_path: &Path, cfg: SubstMap) -> Result<Vec<Link>, Err>
                 .to_string_lossy()
                 .to_string(),
         )?;
+        let tup_append_table = lua.create_function( |luactx, (a,b):(Value, Value)| {
+            let mut t = luactx.create_table()?;
+            if let Value::String(s) = a {
+                t.set(1 as mlua::Integer, s)?;
+            } else if let Value::Table(t0) = a {
+                t = t0;
+            }else if let Value::Nil = a {
+                // keep it empty
+            }else {
+                return Err(SyntaxError{message: "+= operator only works when the source is a table or string".to_string(), incomplete_input: true});
+            }
+            if let Value::String(s) = b {
+                t.set(t.len()? + 1 as i64, s)?;
+            }else if let Value::Table(t0) = b {
+                let n1 = t.len()?;
+                let mut n2 = 1;
+                for pair in t0.pairs::<Value, Value>() {
+                    let (_,val) = pair?;
+                    t.set(n2 + n1, val)?;
+                    n2 = n2 + 1;
+                }
+            }else if let Value::Nil = b {
+                // no additions
+            }else {
+                return Err(SyntaxError {message: "+= operator only works when the value is a table or string".to_string(), incomplete_input: true});
+            }
+            return Ok(Value::Table(t));
+        })?;
+        globals.set("tup_append_assignment", tup_append_table)?;
+
+        locate_tupconfig();
+        let prelude = r#"
+            realtostring = tostring
+            tostring = tup_tostring
+        "#;
+        lua.load(prelude).exec()?;
         let mut file = File::open(script_path)?;
         let mut contents = Vec::new();
+        if let  Some(tup_rules) = locate_tuprules(script_path) {
+            let mut tup_rules_file = File::open(tup_rules)?;
+            tup_rules_file.read_to_end(&mut contents)?;
+            lua.load(contents.as_bytes()).exec()?;
+            contents.clear();
+        }
         file.read_to_end(&mut contents)?;
-        let chunk = lua.load(contents.as_bytes());
-        chunk.exec()?;
+        lua.load(contents.as_bytes()).exec()?;
         let tup_shared: AnyUserData = globals.get("tup")?;
         let mut scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
         Ok(scriptctx.deref_mut().get_links().collect())
