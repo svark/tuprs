@@ -16,17 +16,25 @@ use errors::Error as Err;
 use glob;
 use pathdiff::diff_paths;
 use statements::*;
+use transform::{SubstEnv, SubstMap};
 
 #[derive(Debug, Default, Eq, PartialEq, Clone, Hash)]
 pub struct NormalPath(PathBuf);
 
 impl NormalPath {
+    pub fn new(p: PathBuf ) -> NormalPath
+    {
+        NormalPath(p)
+    }
     pub fn absolute_from(path: &Path, tup_cwd: &Path) -> Self {
         let pbuf = path
             .absolutize_from(tup_cwd)
             .expect(format!("could not absolutize path: {:?}/{:?}", tup_cwd, path).as_str())
             .into();
         NormalPath(pbuf)
+    }
+    pub fn as_path(&self) -> &Path {
+        self.0.as_path()
     }
 }
 
@@ -36,11 +44,6 @@ impl<'a> Into<&'a Path> for &'a NormalPath {
     }
 }
 
-impl NormalPath {
-    pub fn as_path(&self) -> &Path {
-        self.0.as_path()
-    }
-}
 
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub struct RuleRef {
@@ -77,6 +80,7 @@ pub struct BinDescriptor(usize);
 /// ```TupPathDescriptor``` is an unique id given to a tupfile
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct TupPathDescriptor(usize);
+
 
 macro_rules! impl_from_usize {
     ($t:ty) => {
@@ -117,6 +121,53 @@ impl_from_usize!(TupPathDescriptor);
 //path
 #[derive(Debug, Default, Clone)]
 pub struct GenPathBufferObject<T: PartialEq + Eq + Hash + Clone>(BiMap<NormalPath, T>);
+
+#[derive(Debug, Default, Clone)]
+pub struct GenEnvBufferObject<T: PartialEq + Eq + Hash + Clone>(BiMap<Env, T>, usize);
+impl<T> GenEnvBufferObject<T>
+    where
+        T: Eq + Clone + Hash + From<usize> + std::fmt::Display,
+{
+    pub fn new(start: usize) -> Self {
+        GenEnvBufferObject(BiMap::new(), start)
+    }
+    pub fn add_env(&mut self, env: Env) -> (T, bool) {
+        let l = self.1;
+        if let Some(prev_index) = self.0.get_by_left(&env) {
+            (prev_index.clone(), false)
+        } else {
+            let _ = self.0.insert(env, l.into());
+            self.1 = self.1 + 1;
+            (l.into(), true)
+        }
+    }
+    pub fn has_env(&mut self, var: &String) -> bool {
+        let start = self.1;
+        if let Some(rvalue) = self.0.get_by_right(&(start - 1).into())
+        {
+            rvalue.contains(var)
+        }else {
+            false
+        }
+    }
+
+    pub fn get_env(&self) -> LeftValues<'_, Env, T> {
+        self.0.left_values()
+    }
+
+    pub fn get(&self, pd: &T) -> &Env {
+        self.try_get(pd)
+            .expect(format!("env for id:{} not in buffer", pd).as_str())
+    }
+
+    pub fn try_get(&self, pd: &T) -> Option<&Env> {
+        self.0.get_by_right(pd)
+    }
+
+    pub fn try_get_id(&self, env: &Env) ->  Option<&T> {
+        self.0.get_by_left(env)
+    }
+}
 
 impl<T> GenPathBufferObject<T>
 where
@@ -168,6 +219,7 @@ where
 }
 pub type TupPathBufferObject = GenPathBufferObject<TupPathDescriptor>;
 pub type PathBufferObject = GenPathBufferObject<PathDescriptor>;
+pub type EnvBufferObject = GenEnvBufferObject<EnvDescriptor>;
 pub type GroupBufferObject = GenPathBufferObject<GroupPathDescriptor>;
 pub type BinBufferObject = GenPathBufferObject<BinDescriptor>;
 impl GroupBufferObject {
@@ -199,6 +251,7 @@ impl GroupBufferObject {
         }
     }
 }
+
 impl BinBufferObject {
     // add /insert an binId-path pair in binbuffer
     pub fn add_relative_bin(
@@ -519,6 +572,7 @@ pub struct BufferObjects {
     pub(crate) gbo: GroupBufferObject,
     pub(crate) bbo: BinBufferObject,
     pub(crate) tbo: TupPathBufferObject,
+    pub(crate) ebo: EnvBufferObject,
 }
 
 impl BufferObjects {
@@ -539,6 +593,16 @@ impl BufferObjects {
     pub fn get_path_buffer_object(&self) -> &PathBufferObject {
         return &self.pbo;
     }
+    pub fn get_mut_path_buffer_object(&mut self) -> &mut PathBufferObject {
+        return &mut self.pbo;
+    }
+    pub fn get_mut_env_buffer_object(&mut self) -> &mut EnvBufferObject {
+        return &mut self.ebo;
+    }
+
+    pub fn get_env_buffer_object(&self) -> &EnvBufferObject {
+        return &self.ebo;
+    }
 
     pub fn get_bin_buffer_object(&self) -> &BinBufferObject {
         return &self.bbo;
@@ -558,6 +622,19 @@ impl BufferObjects {
     pub fn get_dir(&self, i: &InputResolvedType) -> &Path {
         get_glob_dir(i, &self.pbo)
     }
+
+    pub fn import_env_buffers(&mut self, e: EnvBufferObject, stmts: &mut Vec<LocatedStatement>)
+    {
+       for (k,oldid) in e.0.iter()
+       {
+           if self.ebo.try_get_id(k).is_none()
+           {
+               let  env = k.clone();
+               let (newid, _) = self.ebo.add_env(env);
+               stmts.subst_env(oldid, &newid);
+           }
+       }
+    }
 }
 
 impl Default for BufferObjects {
@@ -567,6 +644,7 @@ impl Default for BufferObjects {
             gbo: Default::default(),
             bbo: Default::default(),
             tbo: Default::default(),
+            ebo: Default::default(),
         }
     }
 }
@@ -1178,6 +1256,7 @@ fn get_deglobbed_rule(
     primary_deglobbed_inps: Vec<InputResolvedType>,
     secondary_deglobbed_inps: Vec<InputResolvedType>,
     bo: &mut BufferObjects,
+    env: &EnvDescriptor,
 ) -> Result<ResolvedLink, Err> {
     let input_as_paths =
         InputsAsPaths::new(tup_cwd, &primary_deglobbed_inps, &bo, rule_ref.clone());
@@ -1224,6 +1303,7 @@ fn get_deglobbed_rule(
         bin: bin_desc,
         group: group_desc,
         rule_ref: rule_ref.clone(),
+        env: env.clone()
     };
     Ok(l)
 }
@@ -1237,6 +1317,7 @@ pub struct ResolvedLink {
     pub group: Option<GroupPathDescriptor>,
     pub bin: Option<BinDescriptor>,
     pub rule_ref: RuleRef,
+    pub env: EnvDescriptor,
 }
 
 // update the groups/bins with the path to primary target and also add secondary targets
@@ -1289,6 +1370,11 @@ pub trait ResolvePaths {
     ) -> Result<(Vec<ResolvedLink>, OutputTagInfo), Err>;
 }
 
+pub trait ExpandRun {
+    fn expand_run(&self, m: &mut SubstMap, pbo: &mut PathBufferObject) -> Vec<Self> where Self:Sized;
+}
+
+
 /// deglob rule statement into multiple deglobbed rules, gather deglobbed targets to put in bins/groups
 impl ResolvePaths for LocatedStatement {
     fn resolve_paths(
@@ -1312,7 +1398,7 @@ impl ResolvePaths for LocatedStatement {
                     target: t,
                     rule_formula,
                     pos: _pos,
-                }),
+                }, env),
             loc,
         } = self
         {
@@ -1331,6 +1417,7 @@ impl ResolvePaths for LocatedStatement {
                         vis,
                         secondinpdec.clone(),
                         bo,
+                        env,
                     )?;
                     deglobbed.push(delink);
                     {
@@ -1347,6 +1434,7 @@ impl ResolvePaths for LocatedStatement {
                     vis,
                     secondinpdec.clone(),
                     bo,
+                    env
                 )?;
                 deglobbed.push(delink);
                 {

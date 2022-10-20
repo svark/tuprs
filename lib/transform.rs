@@ -1,15 +1,16 @@
 use daggy::{petgraph, Dag, NodeIndex};
 use errors::Error as Err;
-use parser::parse_tupfile;
+use jwalk::WalkDir;
 use parser::{locate_file, locate_tuprules};
+use parser::{parse_statements_until_eof, parse_tupfile, Span};
 use platform::*;
 use statements::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use jwalk::WalkDir;
 #[derive(Debug, Clone)]
 pub enum StatementContext {
     Export,
+    Import,
     Preload,
     Error,
     Link { source: PathBuf, dest: PathBuf },
@@ -20,11 +21,16 @@ pub struct SubstMap {
     pub expr_map: HashMap<String, Vec<String>>,
     pub rexpr_map: HashMap<String, Vec<String>>,
     pub conf_map: HashMap<String, Vec<String>>,
-    pub rule_map: HashMap<String, Link>,
+    pub rule_map: HashMap<String, Link>, // Macro assignments waiting for subst
     pub cur_file: PathBuf,
     pub cur_file_desc: TupPathDescriptor,
     pub sc: StatementContext,
     pub waitforpercs: bool,
+    pub imported_env_map: HashMap<String, String>,
+    pub exported_env_map: HashMap<String, String>,
+    pub load_dirs: Vec<PathDescriptor>,
+    pub cur_env_desc : EnvDescriptor,
+    pub ebo: EnvBufferObject,
 }
 
 impl Default for SubstMap {
@@ -38,6 +44,11 @@ impl Default for SubstMap {
             cur_file_desc: TupPathDescriptor::default(),
             sc: StatementContext::Other,
             waitforpercs: true,
+            imported_env_map: HashMap::new(),
+            exported_env_map: HashMap::new(),
+            load_dirs: vec![],
+            cur_env_desc: EnvDescriptor::default(),
+            ebo: EnvBufferObject::new(0)
         }
     }
 }
@@ -48,11 +59,174 @@ impl SubstMap {
         if let Some(p) = get_parent(cur_file).to_str() {
             def_vars.insert("TUP_CWD".to_owned(), vec![p.to_owned()]);
         }
-        SubstMap {
+        let mut def_exported = HashMap::new();
+        #[cfg(target_os = "windows")]
+        let keys: Vec<&str> = vec![
+            /* NOTE: Please increment PARSER_VERSION if these are modified */
+            "PATH",
+            "HOME",
+            /* Basic Windows variables */
+            "COMSPEC",
+            "PATHEXT",
+            "SYSTEMROOT",
+            "USERNAME",
+            "WINDIR",
+            /* Visual Studio variables */
+            "DevEnvDir",
+            "INCLUDE",
+            "LIB",
+            "LIBPATH",
+            "TEMP",
+            "TMP",
+            "VCINSTALLDIR",
+            "=VS[0-9]+COMNTOOLS",
+            "OS",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+            "PROCESSOR_IDENTIFIER",
+            "PROCESSOR_LEVEL",
+            "PROCESSOR_REVISION",
+            "PYTHONPATH",
+            "VSINSTALLDIR",
+            "VCTOOLSINSTALLDIR",
+            "VCTOOLSREDISTDIR",
+            "VCTOOLSVERSION",
+            /* NOTE: Please increment PARSER_VERSION if these are modified */
+        ];
+        #[cfg(not(target_os = "windows"))]
+        let mut keys = vec!["PATH", "HOME"];
+
+        for k in keys.iter() {
+            if k.starts_with('=') {
+                let k = k.trim_start_matches('=');
+                let mut inserted = false;
+                if let Ok(rb) = regex::RegexBuilder::new(k).build() {
+                    if let Some(needle) = std::env::vars().find(|v| rb.is_match(v.0.as_str())) {
+                        def_exported.insert(needle.0, needle.1);
+                        inserted = true;
+                    }
+                }
+                if !inserted {
+                    def_exported.insert(k.to_string(), std::env::var(k).unwrap_or("".to_string()));
+                }
+            } else {
+                def_exported.insert(k.to_string(), std::env::var(k).unwrap_or("".to_string()));
+            }
+        }
+
+        let mut smap = SubstMap {
             conf_map: conf_map.clone(),
             expr_map: def_vars,
+            imported_env_map: def_exported.clone(),
             ..SubstMap::default()
+        };
+        let env = Env::new(def_exported);
+        smap.cur_env_desc = smap.ebo.add_env(env).0;
+        smap
+    }
+    pub fn get_mut_env_buffer_object(&mut self) -> &mut EnvBufferObject {
+        return &mut self.ebo;
+    }
+
+    pub fn add_var(&mut self, var: String)
+    {
+        if !self.ebo.has_env(&var) {
+            let mut env = self.ebo.get(&self.cur_env_desc).clone();
+            env.add(var);
+            let (id, _) = self.ebo.add_env(env);
+            self.cur_env_desc = id;
         }
+    }
+
+    pub fn get_env_buffer_object(&self) -> &EnvBufferObject {
+        return &self.ebo;
+    }
+
+    fn get_tup_dir(&self) -> &Path {
+        self.cur_file
+            .parent()
+            .expect("could not find current tup dir")
+    }
+}
+impl ExpandRun for Statement {
+    fn expand_run(&self, m: &mut SubstMap, pbo: &mut PathBufferObject) -> Vec<Self> {
+        let mut vs: Vec<Statement> = Vec::new();
+        match self {
+            Statement::Preload(v) => {
+                let dir = v.cat();
+                let p = Path::new(dir.as_str());
+
+                let (dirid, _) = pbo.add_relative(p, m.get_tup_dir());
+                {
+                    m.load_dirs.push(dirid);
+                }
+            }
+            Statement::Run(scriptargs) => {
+                if let Some(script) = scriptargs.first() {
+                    let mut cmd = std::process::Command::new(script.cat().as_str());
+                    for arg_expr in scriptargs.iter().skip(1) {
+                        let arg = arg_expr.cat();
+                        let arg = arg.trim();
+                        if arg.contains('*') {
+                            let arg_path = join_path_raw(m.get_tup_dir(), Path::new(arg));
+                            let outs = OutputTagInfo::new();
+                            {
+                                let matches =
+                                    discover_inputs_from_glob(arg_path.as_path(), &outs, pbo)
+                                        .expect(&*format!("error matching glob pattern {}", arg));
+                                for ofile in matches {
+                                    let p = ofile.as_path(pbo);
+                                    cmd.arg(p.to_string_lossy().to_string().as_str().replace('\\', "/"));
+                                }
+                            }
+                        } else if !arg.is_empty() {
+                            cmd.arg(arg);
+                        }
+                    }
+                    cmd.envs(m.exported_env_map.iter())
+                        .current_dir(m.get_tup_dir());
+                    //println!("running {:?}", cmd);
+                    let output = cmd.stdout(Stdio::piped()).output().expect(&*format!(
+                        "Failed to execute tup run {} in Tupfile : {}",
+                        scriptargs.cat().as_str(),
+                        m.get_tup_dir().to_string_lossy().to_string().as_str()
+                    ));
+                    //println!("status:{}", output.status);
+                    let contents = output.stdout;
+                    //println!("{}", String::from_utf8(contents.clone()).unwrap_or("".to_string()));
+                    let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
+                        .expect("failed to parse output of tup run");
+                    let lstmts = lstmts
+                        .subst(m)
+                        .expect("subst failure in generated tup rules");
+                    for located_stmt in lstmts {
+                        vs.push(located_stmt.statement);
+                    }
+                }
+            }
+            _ => vs.push(self.clone()),
+        }
+        vs
+    }
+}
+
+impl ExpandRun for Vec<LocatedStatement> {
+    fn expand_run(&self, m: &mut SubstMap, pbo: &mut PathBufferObject) -> Vec<Self>
+    where
+        Self: Sized,
+    {
+        self.iter()
+            .map(|l| {
+                l.statement
+                    .expand_run(m, pbo)
+                    .iter()
+                    .map(|s| LocatedStatement {
+                        statement: s.clone(),
+                        loc: l.loc,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<Self>>()
     }
 }
 
@@ -60,6 +234,11 @@ pub trait Subst {
     fn subst(&self, m: &mut SubstMap) -> Result<Self, Err>
     where
         Self: Sized;
+}
+pub trait SubstEnv {
+    fn subst_env(&mut self, old_id: &EnvDescriptor, new_id: &EnvDescriptor)
+        where
+            Self: Sized;
 }
 
 pub trait ExpandMacro {
@@ -87,8 +266,11 @@ pub trait Deps {
     fn output_bins(&self, tup_cwd: &Path, bins: &mut Vec<String>);
     fn output_gen_files(&self, tup_cwd: &Path, gen_files: &mut Vec<String>);
 }
-fn join_path<P: AsRef<Path>>(tup_cwd: &Path, path: P) -> String {
+fn join_path_raw<P: AsRef<Path>>(tup_cwd: &Path, path: P) -> NormalPath {
     NormalPath::absolute_from(path.as_ref(), tup_cwd)
+}
+fn join_path<P: AsRef<Path>>(tup_cwd: &Path, path: P) -> String {
+    join_path_raw(tup_cwd, path)
         .as_path()
         .to_string_lossy()
         .to_string()
@@ -218,6 +400,18 @@ impl Deps for Vec<LocatedStatement> {
 } */
 
 impl PathExpr {
+    /*fn uses_env(&self, m: &mut SubstMap) -> Option<&String> {
+        match self {
+            &PathExpr::DollarExpr(ref x) => {
+                if m.imported_env_map.get(x.as_str()).is_some() {
+                    Some(x)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }*/
     // substitute a single pathexpr into an array of literal pathexpr
     // SFINAE holds
     fn subst(&self, m: &mut SubstMap) -> Vec<PathExpr> {
@@ -225,6 +419,8 @@ impl PathExpr {
             &PathExpr::DollarExpr(ref x) => {
                 if let Some(val) = m.expr_map.get(x.as_str()) {
                     intersperse_sp1(val)
+                } else if let Some(val) = m.imported_env_map.get(x.as_str()) {
+                    vec![PathExpr::from(val.clone())]
                 } else if !x.contains("%") {
                     vec![PathExpr::from("".to_owned())] // postpone subst until placeholders are fixed
                 } else {
@@ -295,12 +491,11 @@ impl Subst for Source {
         })
     }
 }
-use decode::{
-    BufferObjects, NormalPath, OutputTagInfo, ResolvePaths, ResolvedLink, RuleRef,
-    TupPathDescriptor,
-};
+use decode::{discover_inputs_from_glob, BufferObjects, ExpandRun, NormalPath, OutputTagInfo, PathBufferObject, PathDescriptor, ResolvePaths, ResolvedLink, RuleRef, TupPathDescriptor, EnvBufferObject};
+use nom::AsBytes;
 use scriptloader::parse_script;
 use std::ops::AddAssign;
+use std::process::Stdio;
 
 impl AddAssign for Source {
     fn add_assign(&mut self, other: Self) {
@@ -470,12 +665,32 @@ impl Subst for Link {
         })
     }
 }
+
+impl SubstEnv for Statement {
+    fn subst_env(&mut self, old_id: &EnvDescriptor, new_id: &EnvDescriptor) {
+         match self{
+            Statement::Rule(_, e) => {
+                if e == old_id {
+                    e.setid(new_id)
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl SubstEnv for Vec<LocatedStatement> {
+    fn subst_env(&mut self, old_id: &EnvDescriptor, new_id: &EnvDescriptor)  {
+       for  s in self.iter_mut() {
+           s.statement.subst_env(old_id, new_id);
+       }
+    }
+}
 // substitute variables in a sequence of statements from previous assignments
 // update variable assignments into substmap as you go.
 impl Subst for Vec<LocatedStatement> {
     fn subst(&self, m: &mut SubstMap) -> Result<Vec<LocatedStatement>, Err> {
         let mut newstats = Vec::new();
-        //let sp1 = PathExpr::Sp1;
         for statement in self.iter() {
             let ref loc = statement.loc;
             match &statement.statement {
@@ -605,13 +820,14 @@ impl Subst for Vec<LocatedStatement> {
                         set_cwd(cf.as_path(), m);
                     }
                 }
-                Statement::Rule(link) => {
+                Statement::Rule(link, _) => {
                     let mut l = link.clone();
                     while l.has_ref() {
                         l = l.expand(m)?; // expand all nested macro refs
                     }
+                    let env_desc = m.cur_env_desc.clone();
                     newstats.push(LocatedStatement::new(
-                        Statement::Rule(l.subst(m)?),
+                        Statement::Rule(l.subst(m)?, env_desc),
                         loc.clone(),
                     ));
                 }
@@ -632,8 +848,9 @@ impl Subst for Vec<LocatedStatement> {
                         loc.clone(),
                     ));
                 }
-                Statement::Export(_) => {
-                    newstats.push(statement.clone());
+                Statement::Export(var) => {
+                    m.add_var(var.clone());
+                    //newstats.push(statement.clone());
                 }
                 Statement::Import(_, _) => {
                     newstats.push(statement.clone());
@@ -657,14 +874,18 @@ pub struct ParsedStatements {
     statements: Vec<LocatedStatement>,
 }
 impl ParsedStatements {
-    pub fn new(tupfile: PathBuf, statements: Vec<LocatedStatement>) -> ParsedStatements
-    {
-        ParsedStatements{tupfile, statements}
+    pub fn new(tupfile: PathBuf, statements: Vec<LocatedStatement>) -> ParsedStatements {
+        ParsedStatements {
+            tupfile,
+            statements,
+        }
     }
     pub fn get_tupfile(&self) -> &Path {
         self.tupfile.as_path()
     }
-    pub fn get_statement(&self, i: usize) -> &LocatedStatement { &self.statements[i]}
+    pub fn get_statement(&self, i: usize) -> &LocatedStatement {
+        &self.statements[i]
+    }
     pub fn get_statements(&self) -> &Vec<LocatedStatement> {
         &self.statements
     }
@@ -672,26 +893,34 @@ impl ParsedStatements {
 pub fn parse_tup(
     confvars: &HashMap<String, Vec<String>>,
     tupfilepath: &str,
+    bo: &mut BufferObjects
 ) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
     let tup_file_path = Path::new(tupfilepath);
     let mut m = SubstMap::new(&confvars, tup_file_path);
     m.cur_file = tup_file_path.to_path_buf();
     if tupfilepath.ends_with(".lua") {
-        let mut links = parse_script(tup_file_path, m)?;
-        let stmts: Vec<_> = links
+        let mut links = parse_script(tup_file_path, m, bo)?;
+        let mut stmts: Vec<_> = links.0
             .drain(..)
             .map(|l| {
-                let loc = Loc::new(l.pos.0, 0);
+                let loc = Loc::new(l.0.pos.0, 0);
                 LocatedStatement {
-                    statement: Statement::Rule(l),
+                    statement: Statement::Rule(l.0, l.1),
                     loc,
                 }
             })
             .collect();
+        bo.import_env_buffers(links.1, &mut stmts);
         Ok(stmts)
     } else {
         let stmts = parse_tupfile(tupfilepath)?;
         let stmts = stmts.subst(&mut m)?;
+        let mut stmts = stmts
+            .expand_run(&mut m, bo.get_mut_path_buffer_object())
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        bo.import_env_buffers(m.ebo, &mut stmts);
         Ok(stmts)
     }
 }
@@ -719,9 +948,10 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error>
     let mut rules = Vec::new();
     let mut ids = Vec::new();
     let mut dag: Dag<u32, u32> = Dag::new();
+    let mut bo = BufferObjects::default();
     for tupfilepath in tupfiles.iter() {
         ids.push(dag.node_count());
-        let stmts = parse_tup(&confvars, tupfilepath.as_str())?;
+        let stmts = parse_tup(&confvars, tupfilepath.as_str(), &mut bo)?;
         let tup_file_path = Path::new(tupfilepath);
         let tup_cwd = tup_file_path.parent().expect("tup file parent not found");
         let mut groups = Vec::new();
@@ -757,10 +987,7 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error>
                     .push(n)
             });
         }
-        rules.push(ParsedStatements::new(
-            tup_file_path.to_path_buf(),
-            stmts,
-        ));
+        rules.push(ParsedStatements::new(tup_file_path.to_path_buf(), stmts));
     }
     ids.push(dag.node_count());
     let statement_from_id = |i: NodeIndex| {
@@ -820,7 +1047,6 @@ pub fn parse_dir(root: &Path) -> Result<Vec<ResolvedLink>, crate::errors::Error>
     })?;
     let mut outputtags = OutputTagInfo::new();
     let mut lstats = Vec::new();
-    let mut bo = BufferObjects::default();
     for tupnodeid in nodes {
         let (tupfile, statement) = statement_from_id(tupnodeid);
         let (tupdesc, _) = bo.tbo.add(tupfile);

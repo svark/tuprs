@@ -1,3 +1,4 @@
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 
 //use std::path::Path;
@@ -108,6 +109,63 @@ impl LocatedStatement {
         &self.loc
     }
 }
+#[derive(PartialEq, Eq, Debug, Clone, Default, Hash)]
+pub struct Env {
+    set: BTreeSet<String>
+}
+
+ impl Env {
+    pub fn new(map: HashMap<String, String>) -> Self
+    {
+        let mut bt = BTreeSet::new();
+        map.into_iter().for_each(|v| {
+            bt.insert(v.0);
+        });
+       Env{ set:bt}
+    }
+     pub fn add(&mut self, k: String) ->bool
+     {
+         self.set.insert(k)
+     }
+     pub fn contains(&self, k: &String) -> bool
+     {
+         self.set.contains(k)
+     }
+}
+/// ```EnvDescriptor``` is a unique id to current environment for a rule
+#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+pub struct EnvDescriptor(usize);
+ impl From<usize> for EnvDescriptor {
+            fn from(i: usize) -> Self {
+                Self(i)
+            }
+        }
+impl Into<usize> for EnvDescriptor {
+    fn into(self) -> usize {
+        self.0
+    }
+}
+impl Default for EnvDescriptor {
+    fn default() -> Self {
+        Self(usize::MAX)
+    }
+}
+
+impl EnvDescriptor {
+    pub fn new(i: usize) -> Self {
+        Self(i)
+    }
+    pub fn setid(&mut self, o: &EnvDescriptor)
+    {
+        self.0 = o.0;
+    }
+}
+impl Display for EnvDescriptor {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{0}({1})", stringify!($t), self.0)
+    }
+}
+
 // any of the valid statements that can appear in a tupfile
 #[derive(PartialEq, Debug, Clone)]
 pub enum Statement {
@@ -133,7 +191,7 @@ pub enum Statement {
     },
     IncludeRules,
     Include(Vec<PathExpr>),
-    Rule(Link),
+    Rule(Link, EnvDescriptor),
     Err(Vec<PathExpr>),
     MacroAssignment(String, Link), /* !macro = [inputs] | [order-only inputs] |> command |> [outputs] */
     Export(String),
@@ -143,8 +201,9 @@ pub enum Statement {
     Comment,
 }
 
+
 pub fn rule_target(statement: &LocatedStatement) -> Option<&Target> {
-    if let Statement::Rule(Link { target, .. }) = statement.getstatement() {
+    if let Statement::Rule(Link { target, .. }, _) = statement.getstatement() {
         Some(target)
     } else {
         None
@@ -152,7 +211,7 @@ pub fn rule_target(statement: &LocatedStatement) -> Option<&Target> {
 }
 
 pub fn rule_source(statement: &LocatedStatement) -> Option<&Source> {
-    if let Statement::Rule(Link { source, .. }, ..) = statement.getstatement() {
+    if let Statement::Rule(Link { source, .. }, _) = statement.getstatement() {
         Some(source)
     } else {
         None
@@ -163,7 +222,7 @@ pub fn is_rule(statement: &LocatedStatement) -> bool {
     matches!(
         statement,
         LocatedStatement {
-            statement: Statement::Rule(_),
+            statement: Statement::Rule(_,_),
             ..
         }
     )
@@ -232,7 +291,7 @@ impl CleanupPaths for Link {
 impl CleanupPaths for Statement {
     fn cleanup(&mut self) {
         match self {
-            Statement::Rule(l) => {
+            Statement::Rule(l, _) => {
                 l.cleanup();
                 ()
             }
@@ -339,7 +398,7 @@ impl Cat for &Statement {
                 target: _,
                 rule_formula: r,
                 pos,
-            }) => {
+            }, _) => {
                 let mut desc: String = r.description.cat();
                 let formula: String = r.formula.cat();
                 desc += formula.as_str();

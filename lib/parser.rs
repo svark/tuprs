@@ -17,7 +17,7 @@ use nom_locate::{position, LocatedSpan};
 use statements::*;
 use std::path::{Path, PathBuf};
 
-type Span<'a> = LocatedSpan<&'a [u8]>;
+pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
 fn to_lval(name: String) -> Ident {
     Ident { name }
 }
@@ -371,6 +371,8 @@ fn parse_export(i: Span) -> IResult<Span, LocatedStatement> {
 //
 // import CC=gcc
 // : foreach *.c |> $(CC) -c %f -o %o |> %B.o
+// Unlike 'export', the import command does not pass the variables to the sub-process's environment.
+// In the previous example, the CC environment variable is therefore not set in the subprocess, unless 'export CC' was also in the Tupfile.
 fn parse_import(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("import")(s)?;
@@ -647,7 +649,7 @@ pub fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
                 target: from_output(output, secondary_output, exclude_patterns, v1, v2),
                 rule_formula,
                 pos: (pos.location_line(), pos.get_column()),
-            }),
+            }, EnvDescriptor::default()),
             i,
         )
             .into(),
@@ -754,14 +756,14 @@ fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>
 // parse statements till end of file
 pub fn parse_statements_until_eof(i: Span) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
     many0(parse_statement)(i).map(|v| v.1).map_err(|e| match e {
-        nom::Err::Incomplete(_) => {
+        Err::Incomplete(_) => {
             crate::errors::Error::ParseError("Incomplete data found".to_string(), Loc::new(0, 0))
         }
-        nom::Err::Error(e) => crate::errors::Error::ParseError(
+        Err::Error(e) => crate::errors::Error::ParseError(
             format!("Parse Error {:?}", e.code),
             Loc::from_span(&e.input),
         ),
-        nom::Err::Failure(e) => crate::errors::Error::ParseError(
+        Err::Failure(e) => crate::errors::Error::ParseError(
             format!("Parse Failure {:?}", e.code),
             Loc::from_span(&e.input),
         ),
@@ -830,6 +832,7 @@ pub fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, Located
         ))
     }
 }
+
 // parse if else endif block along with condition
 pub fn parse_if_else_endif(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, eqcond) = parse_eq(i)?;
@@ -839,6 +842,7 @@ pub fn parse_if_else_endif(i: Span) -> IResult<Span, LocatedStatement> {
         cut(move |s| parse_ifelseendif_inner(s, eqcond.clone())),
     )(s)
 }
+
 // parse inside a ifdef block
 pub fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, LocatedStatement> {
     let (s, then_else_s) = opt(parse_statements_until_else)(i)?;
@@ -895,6 +899,7 @@ pub fn parse_tupfile<P: AsRef<Path>>(
     //contents.retain( |e| *e != b'\r');
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
+
 pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
     let mut cwd = cur_tupfile;
     let pb: PathBuf;
@@ -913,9 +918,7 @@ pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
-    locate_file(cur_tupfile, "Tuprules.tup").or(
-        locate_file(cur_tupfile, "Tuprules.lua")
-    )
+    locate_file(cur_tupfile, "Tuprules.tup").or(locate_file(cur_tupfile, "Tuprules.lua"))
 }
 
 pub fn parse_config(filename: &str) -> Vec<LocatedStatement> {
@@ -931,88 +934,3 @@ pub fn parse_config(filename: &str) -> Vec<LocatedStatement> {
         Vec::new()
     }
 }
-/*
-struct Tok<'a>
-{
-    pos : Span<'a>,
-    pe: PathExpr
-}
-
-#[derive(PartialEq, Debug, Clone)]
-pub enum ExprCtx {
-    Def,
-    EqCond,
-    RuleInput,
-    RuleCommand,
-    RuleOutput,
-    MacroRuleInput,
-    MacroRuleCommand,
-    MacroRuleOutput,
-    Preload,
-    Export,
-    Import,
-    Run,
-    Comment
-}
-use thiserror::Error;
-struct SpanLoc {
-    line : u32,
-    col : usize,
-    program : PathBuf
-}
-#[derive(Error, Debug)]
-pub enum CtxError {
-    #[error("Error: {.0}:{.1}:{.2}: A bin is unexpected here. A bin appears only at the end of a rule.")]
-    BinError(String, u32, usize),
-    #[warn("Warn: {.0}:{.1}:{.2}: Ignoring group here. A group appears only in rule inputs and outputs.")]
-    GroupWarn(String, u32, usize),
-    #[warn("Warn: {.0}:{.1}:{.2}: Ignoring macro ref here. A macro reference appears only in rule commands.")]
-    MacroRefWarn(String, u32, usize),
-    #[error("Error: {.0}:{.1}:{.2} Unexpected white space.")]
-    WhiteSpaceErr(String, u32, usize),
-}
-pub fn validPathExp(tok:&Tok, e: &ExprCtx, tupfile: &Path) -> std::Result<(),CtxError> {
-    let ref pe = tok.pe;
-    let  span = tok.pos;
-    let mut tupfilepath = tupfile.to_str().unwrap().to_owned();
-    match pe
-    {
-        PathExpr::Bucket(_) => {
-            match e {
-                ExprCtx::RuleInput => Ok(()),
-                ExprCtx::RuleOutput => OK(()),
-                _ =>  CtxError::BinError(tupfilepath, span.line, span.get_column())
-            }
-        }
-        PathExpr::Group(_,_) => {
-            match e {
-                ExprCtx::RuleInput => Ok(()),
-                ExprCtx::RuleOutput => Ok(()),
-                _ => CtxError::GroupWarn(tupfilepath, span.line, span.get_column())
-            }
-        }
-        PathExpr::MacroRef(_) => {
-            match e {
-                ExprCtx::RuleCommand=> Ok(()),
-                _ => CtxError::MacroRefWarn(tupfilepath, span.line, span.get_column())
-            }
-        }
-        PathExpr::Literal(s) => {
-            let has_space = s.contains(' ');
-            if has_space {
-                match e {
-                    ExprCtx::Preload |
-                    ExprCtx::Export |
-                    ExprCtx::Run |
-                    ExprCtx::Def =>
-                        CtxError::WhiteSpaceErr(tupfilepath, span.line, span.get_column()),
-                    _ => Ok(()),
-                }
-            }
-        }
-       _ => {
-           Ok(())
-       }
-    }
-}
-*/

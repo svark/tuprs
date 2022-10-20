@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::vec::Drain;
 use mlua::Error::SyntaxError;
-use decode::{BufferObjects, discover_inputs_from_glob, OutputTagInfo, ResolvePaths };
+use decode::{BufferObjects, discover_inputs_from_glob, EnvBufferObject, OutputTagInfo, ResolvePaths};
 use parser::locate_tuprules;
 use transform::SubstMap;
 lazy_static! {
@@ -111,7 +111,7 @@ use statements::Statement::Rule;
 #[derive(Clone, Debug)]
 pub struct TupScriptContext {
     smap: SubstMap,
-    pub links: Vec<Link>,
+    pub links: Vec<(Link, EnvDescriptor)>,
     pub bo: BufferObjects,
     pub output_tag_info: OutputTagInfo,
 }
@@ -306,13 +306,18 @@ impl ScriptRuleCommand {
 }
 
 impl TupScriptContext {
-    pub fn new(smap: SubstMap) -> TupScriptContext {
+    pub fn new(smap: SubstMap, bo: BufferObjects) -> TupScriptContext {
         TupScriptContext {
             links: vec![],
             smap,
             output_tag_info: OutputTagInfo::new(),
-            bo: Default::default()
+            bo: bo
         }
+    }
+
+    pub fn export(&mut self, var: String)
+    {
+        self.smap.add_var(var);
     }
 
     pub fn for_each_rule(
@@ -331,10 +336,13 @@ impl TupScriptContext {
             rule_formula,
             pos: (lineno, 0),
         };
-        self.links.push(l);
+        let  env = self.smap.cur_env_desc.clone();
+        self.links.push((l, env));
         let l = self.links.last().unwrap();
-        let statement = LocatedStatement{statement:Rule(l.clone()),  loc: Loc::new( lineno,  0 ) };
-        let (_, out) = statement.resolve_paths(self.smap.cur_file.as_path(), &self.output_tag_info, &mut self.bo, &self.smap.cur_file_desc).expect("unable to resolve paths");
+        let statement = LocatedStatement{statement:Rule(l.0.clone(), l.1.clone()),
+            loc: Loc::new( lineno,  0 ) };
+        let (_, out) = statement.resolve_paths(self.smap.cur_file.as_path(), &self.output_tag_info, &mut self.bo,
+                                               &self.smap.cur_file_desc).expect("unable to resolve paths");
         let mut paths = Vec::new();
         for i in out.output_files {
             let path = self.bo.pbo.get(&i);
@@ -359,10 +367,12 @@ impl TupScriptContext {
             rule_formula,
             pos: (lineno, 0),
         };
-        self.links.push(l);
+        let env = self.smap.cur_env_desc.clone();
+        self.links.push((l,env));
         let l = self.links.last().unwrap();
-        let statement = LocatedStatement{statement:Rule(l.clone()),  loc: Loc::new(lineno, 0)};
-        let (_, out) = statement.resolve_paths(self.smap.cur_file.as_path(), &self.output_tag_info, &mut self.bo, &self.smap.cur_file_desc).expect("unable to resolve paths");
+        let statement = LocatedStatement{statement:Rule(l.0.clone(), l.1.clone()),  loc: Loc::new(lineno, 0)};
+        let (_, out) = statement.resolve_paths(self.smap.cur_file.as_path(), &self.output_tag_info, &mut self.bo,
+                                               &self.smap.cur_file_desc).expect("unable to resolve paths");
         let mut paths = Vec::new();
         for i in out.output_files {
             let path = self.bo.pbo.get(&i);
@@ -371,7 +381,7 @@ impl TupScriptContext {
         Ok(paths)
     }
 
-    pub fn get_links(&mut self) -> Drain<'_, Link> {
+    pub fn get_links(&mut self) -> Drain<'_, (Link, EnvDescriptor)> {
         self.links.drain(..)
     }
 
@@ -443,10 +453,9 @@ impl ConvToString for Lua {
         let val_str: String = match v {
             Value::Table(t) => {
                 let chunk = self.load(
-                    "function f(t) {\
-                      table.concat(t, ' ')
-                    }
-                    )",
+                    "function(t)
+                       table.concat(t, ' ')
+                    end",
                 );
                 chunk.call(t.clone())?
             }
@@ -505,12 +514,21 @@ impl UserData for TupScriptContext {
                 .collect::<Vec<_>>())
         });
 
+        methods.add_function("export", |lua, var: (mlua::String,)| {
+              let globals = lua.globals();
+            let tup_shared: AnyUserData = globals.get("tup")?;
+            let mut ctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+            let varstr = var.0.to_string_lossy().to_string();
+            ctx.export(varstr);
+            Ok(())
+        });
+
         methods.add_function("rule", |lua_ctx,  inps1: Variadic<Value>|  {
             let mut inputs = ScriptInputBuilder::new();
             let mut outputs = ScriptOutputBuilder::new();
             let mut rulcmd = ScriptRuleCommand::new();
             let globals = lua_ctx.globals();
-            let verbose = globals.get::<String,i64>("VERBOSE".to_string());
+            let verbose = globals.get::<String,i64>("TUP_VERBOSE".to_string());
             if verbose.is_ok() {
                 for inp in inps1.iter() {
                     if let Value::String(s) = inp {
@@ -671,7 +689,7 @@ impl UserData for TupScriptContext {
                 let mut outputs = ScriptOutputBuilder::new();
                 let mut rulcmd = ScriptRuleCommand::new();
                 let globals = luactx.globals();
-                let verbose = globals.get::<String,i64>("VERBOSE".to_string());
+                let verbose = globals.get::<String,i64>("TUP_VERBOSE".to_string());
                 if verbose.is_ok() {
                     for inp in inps1.iter() {
                         if let Value::String(s) = inp {
@@ -834,7 +852,7 @@ impl UserData for TupScriptContext {
                         let curdir: String = luactx.named_registry_value(CURDIR.as_bytes())?;
                         let incpath = Path::new(&curdir).join(Path::new(path));
                         let globals = luactx.globals();
-                        let verbose = globals.get::<String,i64>("VERBOSE".to_string());
+                        let verbose = globals.get::<String,i64>("TUP_VERBOSE".to_string());
                         if verbose.is_ok() {
                             println!("include:{}", incpath.to_string_lossy().to_string());
                         }
@@ -864,14 +882,13 @@ impl UserData for TupScriptContext {
     }
 }
 
-pub fn parse_script(script_path: &Path, cfg: SubstMap) -> Result<Vec<Link>, Err> {
+pub fn parse_script(script_path: &Path, cfg: SubstMap, bo: &mut BufferObjects) -> Result<(Vec<(Link, EnvDescriptor)>, EnvBufferObject), Err> {
     let lua = unsafe {mlua::Lua::unsafe_new()};
 
     let r = lua.scope(|scope| {
-        let tupscriptctx = TupScriptContext::new(cfg);
+        let tupscriptctx = TupScriptContext::new(cfg, bo.clone());
         let tup_shared = scope.create_userdata(tupscriptctx)?;
         lua.load_from_std_lib(StdLib::DEBUG|StdLib::STRING|StdLib::UTF8|StdLib::IO|StdLib::OS)?;
-
         let globals = lua.globals();
         globals.set("tup", tup_shared)?;
         globals.set(
@@ -945,7 +962,9 @@ pub fn parse_script(script_path: &Path, cfg: SubstMap) -> Result<Vec<Link>, Err>
         lua.load(contents.as_bytes()).exec()?;
         let tup_shared: AnyUserData = globals.get("tup")?;
         let mut scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
-        Ok(scriptctx.deref_mut().get_links().collect())
+        let smut = scriptctx.deref_mut();
+        let  links  : Vec<_>= smut.get_links().collect();
+        Ok((links, scriptctx.smap.ebo.clone()))
     })?;
     Ok(r)
 }

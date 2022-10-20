@@ -80,7 +80,7 @@ fn test_op() {
             map.conf_map.get("CVAR").and_then(|x| x.first()),
             Some(&"1".to_owned())
         );
-
+        use statements::EnvDescriptor;
         let mut stmts_ = stmts.subst(&mut map).unwrap();
         stmts_.cleanup();
         assert_eq!(stmts_.len(), 3);
@@ -129,7 +129,7 @@ fn test_op() {
                     ],
                 },
                 pos: (3, 3),
-            }),
+            }, EnvDescriptor::default()),
             Statement::Rule(Link {
                 source: Source {
                     primary: vec![Literal("./src/main.rs".to_string())],
@@ -157,7 +157,7 @@ fn test_op() {
                     //formula: vec![Literal("type %f > file.txt ".to_string())],
                 },
                 pos: (6, 2),
-            }),
+            }, EnvDescriptor::default()),
             Statement::Rule(Link {
                 source: Source {
                     primary: vec![],
@@ -180,7 +180,7 @@ fn test_op() {
                     ],
                 },
                 pos: (8, 2),
-            }),
+            }, EnvDescriptor::default()),
         ];
 
         assert_eq!(stmts_[0].statement, resolvedexpr[0]);
@@ -202,7 +202,7 @@ fn test_parse() {
     use statements::{EqCond, Link, RuleFormula, Source, Statement, Target};
     use transform::*;
     type Span<'a> = LocatedSpan<&'a [u8]>;
-
+    use statements::EnvDescriptor;
     {
         let sp0 = Span::new(b" ifeq($(DEBUG), 20)\n");
         let res1 = parser::parse_eq(sp0);
@@ -301,7 +301,7 @@ fn test_parse() {
             ],
         },
         pos: (2, 2),
-    })];
+    }, EnvDescriptor::default())];
 
     assert_eq!(stmts_[0], prog[0], "\r\nfound first but expected second");
     let rule = parser::parse_rule(Span::new(b":|> ^ touch %o^ touch %o |> out.txt\n"))
@@ -328,7 +328,8 @@ fn test_parse() {
             },
             pos: (1, 2),
             ..Default::default()
-        })
+        }, EnvDescriptor::default()
+        )
     );
     use decode::*;
     let taginfo = OutputTagInfo::new();

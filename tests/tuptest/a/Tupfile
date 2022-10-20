@@ -9,4 +9,6 @@
 
 : foreach {o7} out2.txt |> cp %f %o |> out%B.txt ^.*FltMgrMsg
 
+run sh  ./comp.sh patches*.txt
+
 
