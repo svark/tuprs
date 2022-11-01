@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter};
 //use std::path::Path;
 // rvalue typically appears on the right side of assignment statement
 // in general they can be constituents of any tup expression that is not on lhs of assignment
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Hash, Eq)]
 pub enum PathExpr {
     Literal(String), // a normal string
     Sp1,             // spaces between paths
@@ -54,7 +54,7 @@ pub struct Target {
     pub bin: Option<PathExpr>,   // this is  Some(Bucket(_)) is not null
 }
 // formula for a tup rule
-#[derive(PartialEq, Debug, Clone, Default)]
+#[derive(PartialEq, Debug, Clone, Default, Hash, Eq)]
 pub struct RuleFormula {
     pub description: Vec<PathExpr>,
     pub formula: Vec<PathExpr>,
@@ -67,7 +67,7 @@ pub struct Link {
     pub rule_formula: RuleFormula,
     pub pos: (u32, usize),
 }
-#[derive(PartialEq, Debug, Clone, Copy, Eq, Default)]
+#[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash)]
 pub struct Loc {
     pub line: u32,
     pub offset: u32,
@@ -81,10 +81,10 @@ impl Loc {
     pub fn new(line: u32, offset: u32) -> Loc {
         Loc { line, offset }
     }
-    pub fn getline(&self) -> u32 {
+    pub fn get_line(&self) -> u32 {
         self.line
     }
-    pub fn getoffset(&self) -> u32 {
+    pub fn get_offset(&self) -> u32 {
         self.offset
     }
 }
@@ -101,45 +101,51 @@ impl LocatedStatement {
             loc: l,
         }
     }
-    pub fn getstatement(&self) -> &Statement {
+    pub fn get_statement(&self) -> &Statement {
         &self.statement
     }
-
     pub fn getloc(&self) -> &Loc {
         &self.loc
     }
 }
 #[derive(PartialEq, Eq, Debug, Clone, Default, Hash)]
 pub struct Env {
-    set: BTreeSet<String>
+    set: BTreeSet<String>,
 }
 
- impl Env {
-    pub fn new(map: HashMap<String, String>) -> Self
-    {
+impl Env {
+    pub fn new(map: HashMap<String, String>) -> Self {
         let mut bt = BTreeSet::new();
         map.into_iter().for_each(|v| {
             bt.insert(v.0);
         });
-       Env{ set:bt}
+        Env { set: bt }
     }
-     pub fn add(&mut self, k: String) ->bool
-     {
-         self.set.insert(k)
-     }
-     pub fn contains(&self, k: &String) -> bool
-     {
-         self.set.contains(k)
-     }
+    pub fn add(&mut self, k: String) -> bool {
+        self.set.insert(k)
+    }
+    pub fn contains(&self, k: &String) -> bool {
+        self.set.contains(k)
+    }
+    pub fn getenv(&self) -> HashMap<String, String> {
+        let mut hmap = HashMap::new();
+        for var in self.set.iter() {
+            hmap.insert(
+                var.to_string(),
+                std::env::var(var).unwrap_or("".to_string()),
+            );
+        }
+        hmap
+    }
 }
 /// ```EnvDescriptor``` is a unique id to current environment for a rule
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 pub struct EnvDescriptor(usize);
- impl From<usize> for EnvDescriptor {
-            fn from(i: usize) -> Self {
-                Self(i)
-            }
-        }
+impl From<usize> for EnvDescriptor {
+    fn from(i: usize) -> Self {
+        Self(i)
+    }
+}
 impl Into<usize> for EnvDescriptor {
     fn into(self) -> usize {
         self.0
@@ -155,8 +161,7 @@ impl EnvDescriptor {
     pub fn new(i: usize) -> Self {
         Self(i)
     }
-    pub fn setid(&mut self, o: &EnvDescriptor)
-    {
+    pub fn setid(&mut self, o: &EnvDescriptor) {
         self.0 = o.0;
     }
 }
@@ -201,9 +206,8 @@ pub enum Statement {
     Comment,
 }
 
-
 pub fn rule_target(statement: &LocatedStatement) -> Option<&Target> {
-    if let Statement::Rule(Link { target, .. }, _) = statement.getstatement() {
+    if let Statement::Rule(Link { target, .. }, _) = statement.get_statement() {
         Some(target)
     } else {
         None
@@ -211,7 +215,7 @@ pub fn rule_target(statement: &LocatedStatement) -> Option<&Target> {
 }
 
 pub fn rule_source(statement: &LocatedStatement) -> Option<&Source> {
-    if let Statement::Rule(Link { source, .. }, _) = statement.getstatement() {
+    if let Statement::Rule(Link { source, .. }, _) = statement.get_statement() {
         Some(source)
     } else {
         None
@@ -222,7 +226,7 @@ pub fn is_rule(statement: &LocatedStatement) -> bool {
     matches!(
         statement,
         LocatedStatement {
-            statement: Statement::Rule(_,_),
+            statement: Statement::Rule(_, _),
             ..
         }
     )
@@ -375,6 +379,7 @@ impl Cat for &PathExpr {
         match self {
             PathExpr::Literal(x) => x.clone(),
             PathExpr::Sp1 => " ".to_string(),
+            PathExpr::Group(p, g) => format!("{}<{}>", p.cat(), g.cat()),
             _ => "".to_owned(),
         }
     }
@@ -389,16 +394,50 @@ impl CatRef for PathExpr {
         }
     }
 }
-
+impl Cat for &RuleFormula {
+    fn cat(self) -> String {
+        if self.description.is_empty() {
+            format!("{}", self.formula.cat())
+        } else {
+            format!("^{}^ {}", self.description.cat(), self.formula.cat())
+        }
+    }
+}
+impl RuleFormula {
+    pub fn new(description: String, formula: String) -> RuleFormula {
+        RuleFormula {
+            description: vec![PathExpr::from(description)],
+            formula: vec![PathExpr::from(formula)],
+        }
+    }
+    pub fn new_from_raw(combined_formula: &str) -> RuleFormula {
+        let mut sz = 0;
+        let desc = if combined_formula.starts_with("^") {
+            if let Some(an) = combined_formula[1..].find("^") {
+                sz = an;
+                combined_formula[1..an].to_owned()
+            } else {
+                "".to_owned()
+            }
+        } else {
+            "".to_owned()
+        };
+        let formula = combined_formula[sz..].to_owned();
+        RuleFormula::new(desc, formula)
+    }
+}
 impl Cat for &Statement {
     fn cat(self) -> String {
         match self {
-            Statement::Rule(Link {
-                source: _,
-                target: _,
-                rule_formula: r,
-                pos,
-            }, _) => {
+            Statement::Rule(
+                Link {
+                    source: _,
+                    target: _,
+                    rule_formula: r,
+                    pos,
+                },
+                _,
+            ) => {
                 let mut desc: String = r.description.cat();
                 let formula: String = r.formula.cat();
                 desc += formula.as_str();

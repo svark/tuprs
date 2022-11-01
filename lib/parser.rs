@@ -640,16 +640,19 @@ pub fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     Ok((
         s,
         (
-            Statement::Rule(Link {
-                source: from_input(
-                    input.map(|(x, _)| x).unwrap_or(Vec::new()),
-                    for_each.is_some(),
-                    secondary_input.unwrap_or((Vec::new(), default_inp())).0,
-                ),
-                target: from_output(output, secondary_output, exclude_patterns, v1, v2),
-                rule_formula,
-                pos: (pos.location_line(), pos.get_column()),
-            }, EnvDescriptor::default()),
+            Statement::Rule(
+                Link {
+                    source: from_input(
+                        input.map(|(x, _)| x).unwrap_or(Vec::new()),
+                        for_each.is_some(),
+                        secondary_input.unwrap_or((Vec::new(), default_inp())).0,
+                    ),
+                    target: from_output(output, secondary_output, exclude_patterns, v1, v2),
+                    rule_formula,
+                    pos: (pos.location_line(), pos.get_column()),
+                },
+                EnvDescriptor::default(),
+            ),
             i,
         )
             .into(),

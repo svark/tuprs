@@ -28,6 +28,8 @@ pub enum Error {
     MultipleRulesToSameOutput(PathDescriptor, RuleRef, RuleRef),
     #[error("Groups reference {0} could not be resolved at input{0}")]
     StaleGroupRef(String, RuleRef),
+    #[error("Bin reference {0} could not be resolved at input{0}")]
+    StaleBinRef(String, RuleRef),
     #[error("%{0} could not be resolved for rule at: {1}")]
     StalePerc(char, RuleRef),
     #[error("Number reference %[num]{0} could not be resolved at input: {1}")]
