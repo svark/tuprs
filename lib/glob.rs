@@ -16,6 +16,7 @@ use std::str;
 //use aho_corasick::AhoCorasick;
 use bstr::ByteVec;
 use regex::bytes::{Regex, RegexBuilder};
+
 //use bstr::{ByteSlice, ByteVec};
 /// Represents an error that can occur when parsing a glob pattern.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -236,6 +237,9 @@ impl GlobMatcher {
         self.is_match_candidate(&Candidate::new(path.as_ref()))
     }
 
+    pub(crate) fn re(&self) -> &Regex {
+        return &self.re;
+    }
     /// get the i-the matching capturing group in path. Each glob pattern has corresponds to a capturing group
     pub fn group<P: AsRef<Path>>(&self, path: P, i: usize) -> Option<String> {
         let lossy_str = path.as_ref().to_string_lossy();

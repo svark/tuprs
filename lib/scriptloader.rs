@@ -229,14 +229,14 @@ impl ScriptInputBuilder {
         self.secondary_inputs.push(PathExpr::Bin(bin.to_owned()));
         self
     }
-    pub fn build(self) -> Source {
+    pub(crate) fn build(self) -> Source {
         Source {
             primary: self.primary_inputs,
             for_each: false,
             secondary: self.secondary_inputs,
         }
     }
-    pub fn build_foreach(self) -> Source {
+    pub(crate) fn build_foreach(self) -> Source {
         Source {
             primary: self.primary_inputs,
             for_each: true,
@@ -276,7 +276,7 @@ impl ScriptOutputBuilder {
         self.secondary_outputs.push(s.to_string().into());
         self
     }
-    pub fn build(self) -> Target {
+    pub(crate) fn build(self) -> Target {
         Target {
             primary: self.primary_outputs,
             secondary: self.secondary_outputs,
@@ -299,7 +299,7 @@ impl ScriptRuleCommand {
         self.display_fn = display_fn;
         self
     }
-    pub fn build(self) -> RuleFormula {
+    pub(crate) fn build(self) -> RuleFormula {
         RuleFormula {
             description: vec![self.display_fn.into()],
             formula: vec![self.command.into()],
@@ -308,7 +308,7 @@ impl ScriptRuleCommand {
 }
 
 impl TupScriptContext {
-    pub fn new(smap: SubstMap, bo: BufferObjects, out: OutputTagInfo) -> TupScriptContext {
+    pub(crate) fn new(smap: SubstMap, bo: BufferObjects, out: OutputTagInfo) -> TupScriptContext {
         TupScriptContext {
             resolved_links: vec![],
             smap: smap,
@@ -344,18 +344,18 @@ impl TupScriptContext {
         };
         let (rlinks, out) = statement
             .resolve_paths(
-                self.smap.cur_file.as_path(),
+                self.smap.get_cur_file(),
                 &self.output_tag_info,
                 &mut self.bo,
-                &self.smap.cur_file_desc,
+                &self.smap.get_cur_file_desc(),
             )
             .expect("unable to resolve paths");
         //self.resolved_links = rlinks.drain(..).map(|l| (l, env.clone())).collect();
         self.resolved_links = rlinks;
 
         let mut paths = Vec::new();
-        for i in out.output_files {
-            let path = self.bo.pbo.get(&i);
+        for i in out.get_output_files() {
+            let path = self.bo.get_path(i);
             paths.push(path.as_path().to_string_lossy().to_string());
         }
         Ok(paths)
@@ -385,15 +385,15 @@ impl TupScriptContext {
         };
         let (rlinks, out) = statement
             .resolve_paths(
-                self.smap.cur_file.as_path(),
+                self.smap.get_cur_file(),
                 &self.output_tag_info,
                 &mut self.bo,
-                &self.smap.cur_file_desc,
+                &self.smap.get_cur_file_desc(),
             )
             .expect("unable to resolve paths");
         self.resolved_links = rlinks;
         let mut paths = Vec::new();
-        for i in out.output_files {
+        for i in out.get_output_files() {
             let path = self.bo.pbo.get(&i);
             paths.push(path.as_path().to_string_lossy().to_string());
         }
@@ -846,19 +846,23 @@ impl UserData for TupScriptContext {
             } else {
                 ""
             };
-            //let globals = luactx.globals();
-            //let tup_shared: AnyUserData = globals.get("tup")?;
-            //let scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+            let globals = luactx.globals();
+            let tup_shared: AnyUserData = globals.get("tup")?;
+            let mut scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
             let outputs = OutputTagInfo::new();
-            let mut bo = BufferObjects::default();
-            let matching_paths = discover_inputs_from_glob(Path::new(path), &outputs, &mut bo.pbo)
-                .expect("Glob expansion failed");
+            let matching_paths = discover_inputs_from_glob(
+                Path::new(scriptctx.get_cwd().as_str()),
+                Path::new(path),
+                &outputs,
+                &mut scriptctx.bo,
+            )
+            .expect("Glob expansion failed");
             let glob_out = luactx.create_table()?;
             let mut cnt = 1;
             for m in matching_paths {
                 glob_out.set(
                     cnt as mlua::Integer,
-                    m.as_path(&bo.pbo).to_string_lossy().to_string(),
+                    m.as_path(&scriptctx.bo).to_string_lossy().to_string(),
                 )?;
                 cnt = cnt + 1;
             }
@@ -899,7 +903,8 @@ impl UserData for TupScriptContext {
     }
 }
 
-pub fn parse_script<'a>(
+/// main entry point for parsing Tupfile.lua
+pub(crate) fn parse_script<'a>(
     script_path: &Path,
     cfg: SubstMap,
     bo: BufferObjects,

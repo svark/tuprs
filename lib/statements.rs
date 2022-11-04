@@ -1,3 +1,4 @@
+//! This module has datastructures that capture parsed tupfile expressions
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 
@@ -5,115 +6,148 @@ use std::fmt::{Display, Formatter};
 // rvalue typically appears on the right side of assignment statement
 // in general they can be constituents of any tup expression that is not on lhs of assignment
 #[derive(PartialEq, Debug, Clone, Hash, Eq)]
-pub enum PathExpr {
-    Literal(String), // a normal string
-    Sp1,             // spaces between paths
+pub(crate) enum PathExpr {
+    /// a normal string
+    Literal(String),
+    /// spaces between paths
+    Sp1,
+    /// Exclude patterns at the end of rules to avoid tracking some outputs
     ExcludePattern(String),
-    DollarExpr(String),                  // $(EXPR)
-    AtExpr(String),                      // @(EXPR)
-    AmpExpr(String),                     //&(Expr)
-    Group(Vec<PathExpr>, Vec<PathExpr>), // reference to an output available globally across Tupfiles
-    Bin(String),                         // {objs} a collector of output
-    MacroRef(String),                    // !macro_name reference to a macro to be expanded
+    /// $(EXPR)
+    DollarExpr(String),
+    ///  @(EXPR)
+    AtExpr(String),
+    /// &(Expr)
+    AmpExpr(String),
+    /// reference to an output available globally across Tupfiles
+    Group(Vec<PathExpr>, Vec<PathExpr>),
+    ///  {objs} a collector of output
+    Bin(String),
+    /// !macro_name reference to a macro to be expanded
+    MacroRef(String),
 }
 
-// represents the equality condition in if(n)eq (LHS,RHS)
+/// represents the equality condition in if(n)eq (LHS,RHS)
 #[derive(PartialEq, Debug, Clone)]
-pub struct EqCond {
+pub(crate) struct EqCond {
     pub lhs: Vec<PathExpr>,
     pub rhs: Vec<PathExpr>,
     pub not_cond: bool,
 }
 
-// name of a variable in let expressions such as X=1 or
-// &X = 1
+/// name of a variable in let expressions such as X=1 or
+/// &X = 1
 #[derive(PartialEq, Debug, Clone)]
-pub struct Ident {
+pub(crate) struct Ident {
     pub name: String,
 }
 
-// variable being checked for defined
+/// variable being checked for defined
 #[derive(PartialEq, Debug, Clone)]
-pub struct CheckedVar(pub Ident, pub bool);
+pub(crate) struct CheckedVar(pub Ident, pub bool);
 
-// represents source of a link (tup rule)
+/// represents source of a link (tup rule)
 #[derive(PartialEq, Debug, Clone, Default)]
-pub struct Source {
+pub(crate) struct Source {
+    /// Primary inputs to rule that are available for %f substitution in rules and are read during rule execution
     pub primary: Vec<PathExpr>,
+    /// inputs to be processed one by one as rule inputs
     pub for_each: bool,
+    /// Secondary inputs that appear after pipe that are also read during rule execution
     pub secondary: Vec<PathExpr>,
 }
 
-// represents target of a link (tup rule)
+/// represents target of a link (tup rule)
 #[derive(PartialEq, Debug, Clone, Default)]
-pub struct Target {
+pub(crate) struct Target {
+    /// Primary outputs of rule available for %o substition, and are written by the command that rule refers to
     pub primary: Vec<PathExpr>,
+    /// Extra outputs of rule not available for %o substition, and are written by the command that rule refers to
     pub secondary: Vec<PathExpr>,
+    /// Regex Patterns to avoid tracking some outputs written by this rule
     pub exclude_pattern: Option<PathExpr>,
+    ///  group that accumulates outputs of rule globbaly available for use in different tupfiles
     pub group: Option<PathExpr>, // this is Some(Group(_,_)) if not null
-    pub bin: Option<PathExpr>,   // this is  Some(Bucket(_)) is not null
+    //  bin that accumulates outputs of a rule locally in a tupfile
+    pub bin: Option<PathExpr>, // this is  Some(Bucket(_)) is not null
 }
-// formula for a tup rule
+/// formula for a tup rule
 #[derive(PartialEq, Debug, Clone, Default, Hash, Eq)]
-pub struct RuleFormula {
+pub(crate) struct RuleFormula {
+    /// Description of a rule
     pub description: Vec<PathExpr>,
+    /// Rule Formula  holds the command to be executed. It appears here in raw or subst-ed form but without % symbols decoded
     pub formula: Vec<PathExpr>,
 }
-// combined representation of a tup rule consisting of source/target and rule formula
+/// combined representation of a tup rule consisting of source/target and rule formula
 #[derive(PartialEq, Debug, Clone, Default)]
-pub struct Link {
+pub(crate) struct Link {
     pub source: Source,
     pub target: Target,
     pub rule_formula: RuleFormula,
     pub pos: (u32, usize),
 }
+
+/// Variable tracking location of Statement (usually a rule) in a Tupfile
+/// see also `RuleRef' that keeps track of file in which the location is referred
 #[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash)]
 pub struct Loc {
+    /// Line where rule was found
     pub line: u32,
+    /// column where rule/pathexpr was found
     pub offset: u32,
 }
+/// Implement Display for a location useful for displaying error  s
 impl Display for Loc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "line:{}, offset:{}", self.line, self.offset)
     }
 }
 impl Loc {
+    /// A new loc from line and offset
     pub fn new(line: u32, offset: u32) -> Loc {
         Loc { line, offset }
     }
+    /// line in Tupfile where a statement is found occurs
     pub fn get_line(&self) -> u32 {
         self.line
     }
+    /// column of Tupfile where statement portion is found
     pub fn get_offset(&self) -> u32 {
         self.offset
     }
 }
 
 #[derive(PartialEq, Debug, Clone)]
-pub struct LocatedStatement {
-    pub statement: Statement,
-    pub loc: Loc,
+pub(crate) struct LocatedStatement {
+    pub(crate) statement: Statement,
+    pub(crate) loc: Loc,
 }
 impl LocatedStatement {
-    pub fn new(stmt: Statement, l: Loc) -> LocatedStatement {
+    pub(crate) fn new(stmt: Statement, l: Loc) -> LocatedStatement {
         LocatedStatement {
             statement: stmt,
             loc: l,
         }
     }
-    pub fn get_statement(&self) -> &Statement {
+    pub(crate) fn get_statement(&self) -> &Statement {
         &self.statement
+    }
+    pub(crate) fn move_statement(self) -> Statement {
+        self.statement
     }
     pub fn getloc(&self) -> &Loc {
         &self.loc
     }
 }
+/// List of env vars that are to be passed for rule execution
 #[derive(PartialEq, Eq, Debug, Clone, Default, Hash)]
 pub struct Env {
     set: BTreeSet<String>,
 }
 
 impl Env {
+    /// create list of env vars from a map
     pub fn new(map: HashMap<String, String>) -> Self {
         let mut bt = BTreeSet::new();
         map.into_iter().for_each(|v| {
@@ -121,12 +155,15 @@ impl Env {
         });
         Env { set: bt }
     }
+    /// add a env var
     pub fn add(&mut self, k: String) -> bool {
         self.set.insert(k)
     }
+    /// check if key is present in the set of env vars
     pub fn contains(&self, k: &String) -> bool {
         self.set.contains(k)
     }
+    /// returns a map of env name and value pairs
     pub fn getenv(&self) -> HashMap<String, String> {
         let mut hmap = HashMap::new();
         for var in self.set.iter() {
@@ -158,9 +195,11 @@ impl Default for EnvDescriptor {
 }
 
 impl EnvDescriptor {
+    /// create EnvDescriptor from usize
     pub fn new(i: usize) -> Self {
         Self(i)
     }
+    /// copy id from other
     pub fn setid(&mut self, o: &EnvDescriptor) {
         self.0 = o.0;
     }
@@ -171,9 +210,9 @@ impl Display for EnvDescriptor {
     }
 }
 
-// any of the valid statements that can appear in a tupfile
+/// any of the valid statements that can appear in a tupfile
 #[derive(PartialEq, Debug, Clone)]
-pub enum Statement {
+pub(crate) enum Statement {
     LetExpr {
         left: Ident,
         right: Vec<PathExpr>,
@@ -206,43 +245,17 @@ pub enum Statement {
     Comment,
 }
 
-pub fn rule_target(statement: &LocatedStatement) -> Option<&Target> {
-    if let Statement::Rule(Link { target, .. }, _) = statement.get_statement() {
-        Some(target)
-    } else {
-        None
-    }
-}
-
-pub fn rule_source(statement: &LocatedStatement) -> Option<&Source> {
-    if let Statement::Rule(Link { source, .. }, _) = statement.get_statement() {
-        Some(source)
-    } else {
-        None
-    }
-}
-
-pub fn is_rule(statement: &LocatedStatement) -> bool {
-    matches!(
-        statement,
-        LocatedStatement {
-            statement: Statement::Rule(_, _),
-            ..
-        }
-    )
-}
-
 // we could have used `Into' or 'ToString' trait
 // coherence rules are too strict in rust hence the trait below
-pub trait Cat {
+pub(crate) trait Cat {
     fn cat(self) -> String;
 }
 
-pub trait CatRef {
+pub(crate) trait CatRef {
     fn cat_ref(&self) -> &str;
 }
 
-pub trait CleanupPaths {
+pub(crate) trait CleanupPaths {
     fn cleanup(&mut self);
 }
 
@@ -404,13 +417,15 @@ impl Cat for &RuleFormula {
     }
 }
 impl RuleFormula {
-    pub fn new(description: String, formula: String) -> RuleFormula {
+    pub(crate) fn new(description: String, formula: String) -> RuleFormula {
         RuleFormula {
             description: vec![PathExpr::from(description)],
             formula: vec![PathExpr::from(formula)],
         }
     }
-    pub fn new_from_raw(combined_formula: &str) -> RuleFormula {
+    /// Create a RuleFormula from combined string representing both description and command
+    /// in the form ^ desc^ command
+    pub(crate) fn new_from_raw(combined_formula: &str) -> RuleFormula {
         let mut sz = 0;
         let desc = if combined_formula.starts_with("^") {
             if let Some(an) = combined_formula[1..].find("^") {

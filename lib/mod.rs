@@ -1,3 +1,5 @@
+//! Crate for parsing a tupfile and thereafter de-globbing and decoding variables in a Tupfile
+#![warn(missing_docs)]
 #[macro_use]
 extern crate nom;
 #[macro_use]
@@ -20,10 +22,10 @@ extern crate bstr;
 extern crate core;
 extern crate log;
 extern crate mlua;
-extern crate path_absolutize;
+//extern crate path_absolutize;
+extern crate path_dedot;
 extern crate pathdiff;
 extern crate thiserror;
-
 #[test]
 fn test_op() {
     use statements::CleanupPaths;
@@ -69,7 +71,6 @@ fn test_op() {
             conf_map: load_conf_vars(tuppath).expect("conf var open error from tupdata1.txt"),
             ..SubstMap::default()
         };
-        set_cwd(tuppath, &mut map);
 
         assert_eq!(
             map.conf_map.get("PLATFORM").and_then(|x| x.first()),
@@ -82,7 +83,8 @@ fn test_op() {
         use decode::BufferObjects;
         use statements::EnvDescriptor;
 
-        let mut bo = BufferObjects::default();
+        let mut bo = BufferObjects::new(Path::new("."));
+        set_cwd(tuppath, &mut map, &mut bo);
         let mut stmts_ = stmts.subst(&mut map, &mut bo).unwrap();
         stmts_.cleanup();
         assert_eq!(stmts_.len(), 3);
@@ -271,8 +273,8 @@ fn test_parse() {
     stmtsloc.cleanup();
 
     let mut map = SubstMap::default();
-    set_cwd(Path::new("."), &mut map);
-    let mut bo = BufferObjects::default();
+    let mut bo = BufferObjects::new(".");
+    set_cwd(Path::new("."), &mut map, &mut bo);
     let stmts_ = stmtsloc
         .subst(&mut map, &mut bo)
         .expect("subst failure")
@@ -304,14 +306,17 @@ fn test_parse() {
             rule_formula: RuleFormula {
                 description: Vec::new(),
                 formula: vec![
-                Literal("cl".to_string()),
-                Sp1,
-                Literal("%f".to_string()),
-                Sp1, Literal("/Fout:a.o".to_string()), Sp1, Literal("%<grp>".to_string()), Sp1,
-                Literal("%<grp2>".to_string())
-                //Group(vec![Literal("%grp".to_string())]),
-                //Group(vec![Literal("%grp2".to_string())]),
-            ],
+                    Literal("cl".to_string()),
+                    Sp1,
+                    Literal("%f".to_string()),
+                    Sp1,
+                    Literal("/Fout:a.o".to_string()),
+                    Sp1,
+                    Literal("%<grp>".to_string()),
+                    Sp1,
+                    Literal("%<grp2>".to_string()), //Group(vec![Literal("%grp".to_string())]),
+                                                    //Group(vec![Literal("%grp2".to_string())]),
+                ],
             },
             pos: (2, 2),
         },
@@ -352,7 +357,7 @@ fn test_parse() {
     let taginfo = OutputTagInfo::new();
     use decode::ResolvePaths;
     use statements::Loc;
-    let mut bo = BufferObjects::default();
+    let mut bo = BufferObjects::new(Path::new("."));
     let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
     let decodedrule = LocatedStatement::new(rule, Loc::new(0, 0))
         .resolve_paths(Path::new("."), &taginfo, &mut bo, &tup_desc)
@@ -378,8 +383,7 @@ fn test_parse() {
     if let Some(deglobbed_link) = decodedrule1.0.first() {
         let rf = bo.get_rule(&deglobbed_link.get_rule_desc());
         let mut rule_exp = String::new();
-        rule_exp.push_str("type ");
-        rule_exp.push_str("file.txt");
+        rule_exp.push_str("type file.txt");
         assert_eq!(rf.get_formula().cat(), rule_exp);
     }
 

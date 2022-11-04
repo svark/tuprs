@@ -3,7 +3,7 @@ extern crate tupparser;
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use tupparser::transform::parse_dir;
+    use tupparser::decode::parse_dir;
     #[test]
     pub fn test_parsedir() {
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
