@@ -1,22 +1,21 @@
 # tuprs  
 ![Build Status](https://github.com/svark/tuprs/actions/workflows/rust.yml/badge.svg)
-Library for parsing a tup file. 
-Reads and converts data in Tupfile into parsed rust expressions.
+Library for parsing a tup file into resolved rules, its inputs and outputs.
+For convenience there are two versions of the api.
+First version works directly with tupfile or the lua but may not resolve groups.
+Parsing a single 
 ```rust
-let tupf = parser::parse_tupfile("Tupfile")
+use tupparser::parse_tup;
+let tupf = parse_tup("Tupfile");
 ```
-To substitute configuration ('@-') or  other variables ('$' variables) and expand 
-macros  ('!'- refs),  do the following to set up maps and then call subst on the parsed content
-to simplify parsed content with only rule, error, export and run statements.
-`include` and `include_rules` statements will be processed as well at this stage recursively loading files as many times as is necessary.
-
+or a lua file
 ```rust
-let sm = parser::SubstMap(expr_map : HashMap::new(),
-                          conf_map : HashMap::new(),
-                          rule_map : HashMap::new(),
- cur_file = "./Tupfile");
- let substed = tupf.subst(sm); // substitute dollar exprs. expand macros, 
- let taginfo = OutputTagInfo::new();
- substed.decode(Path::new("."), &outputtags); // decode placeholders and deglob glob patterns, update tags
+let tupf = parse_tup("Tupfile.lua");
 ```
 
+Second version of the api scans directory tree and runs the parser over all Tupfiles it finds.
+This version assumes that group references will be completely resolved and errors if there are no group providers for a group reference.
+```rust
+use tupparser::parse_dir;
+let tupf = parse_dir("/tuproot");
+```

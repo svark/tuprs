@@ -148,7 +148,7 @@ impl ExpandRun for Statement {
                 let dir = v.cat();
                 let p = Path::new(dir.as_str());
 
-                let (dirid, _) = bo.add_path(p, m.get_tup_dir());
+                let (dirid, _) = bo.add_path_from(p, m.get_tup_dir());
                 {
                     m.load_dirs.push(dirid);
                 }

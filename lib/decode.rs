@@ -6,7 +6,7 @@ use std::fmt::Formatter;
 use std::hash::Hash;
 use std::path::{Component, Path, PathBuf};
 
-use glob::{GlobBuilder, GlobMatcher};
+use glob::{Candidate, GlobBuilder, GlobMatcher};
 use jwalk::WalkDir;
 use path_dedot::ParseDot;
 //use path_absolutize::Absolutize;
@@ -14,6 +14,7 @@ use regex::{Captures, Regex};
 
 use bimap::hash::{LeftValues, RightValues};
 use bimap::BiMap;
+use bstr::ByteSlice;
 use daggy::Dag;
 use errors::Error as Err;
 use log::Level::Debug;
@@ -27,18 +28,18 @@ use {glob, transform};
 
 /// Normal Path packages a PathBuf, giving relative paths wrt current tup directory
 #[derive(Debug, Default, Eq, PartialEq, Clone, Hash)]
-pub struct NormalPath(PathBuf);
+pub struct NormalPath{inner:PathBuf}
 
 /// Constructor and accessor for a NormalPath
 impl NormalPath {
     /// Construct consuming the given pathbuf
     pub fn new(p: PathBuf) -> NormalPath {
-        NormalPath(p)
+        NormalPath{inner:p}
     }
     /// Construct a `NormalPath' from joining tup_cwd with path
     pub fn absolute_from(path: &Path, tup_cwd: &Path) -> Self {
         let p1 = Self::cleanup(path, tup_cwd);
-        NormalPath(p1)
+        NormalPath::new(p1)
     }
 
     fn cleanup(path: &Path, tup_cwd: &Path) -> PathBuf {
@@ -60,19 +61,25 @@ impl NormalPath {
 
     /// Inner path reference
     pub fn as_path(&self) -> &Path {
-        self.0.as_path()
+        self.inner.as_path()
     }
 
-    /// Inner path as a &str
-    pub fn get_str(&self) -> String {
-        self.as_path().to_string_lossy().to_string()
+    /// Inner path buffer
+    pub fn to_path_buf(self) -> PathBuf {
+        self.inner
+    }
+
+    /// Inner path in form that can be compared or stored as a bytes
+    pub fn to_string(&self) -> String {
+        // following converts backslashes to forward slashes
+        Candidate::new(self.as_path()).path().to_str_lossy().as_ref().to_string()
     }
 }
 
 /// Expose the inner path via the `into' call
 impl<'a> Into<&'a Path> for &'a NormalPath {
     fn into(self) -> &'a Path {
-        self.0.as_path()
+        self.as_path()
     }
 }
 
@@ -245,7 +252,7 @@ where
             path.as_ref(),
             self.get_root_dir()
         ));
-        let np = NormalPath(pbuf);
+        let np = NormalPath::new(pbuf);
         self.add_normal_path(np)
     }
 
@@ -451,7 +458,8 @@ impl OutputTagInfo {
         &mut self.groups
     }
 
-    pub fn add_group_entry(&mut self, g : GroupPathDescriptor, pd: PathDescriptor )
+    /// Add an entry to the collector that holds paths of a group
+    pub fn add_group_entry(&mut self, group_desc : &GroupPathDescriptor, pd: PathDescriptor )
     {
         self.get_mut_groups()
         .entry(*group_desc)
@@ -696,7 +704,7 @@ pub(crate) fn discover_inputs_from_glob(
     let mut pes = Vec::new();
     for matching in filtered_paths {
         let path = matching.path();
-        let (path_desc, _) = bo.add_path(path.as_path(), tup_cwd);
+        let (path_desc, _) = bo.add_path_from(path.as_path(), tup_cwd);
         pes.push(MatchingPath::with_captures(path_desc, globs.group(path, 1)));
     }
     // discover inputs from previous outputs
@@ -754,14 +762,10 @@ fn get_resolved_name<'a, 'b>(
     match input_glob {
         InputResolvedType::Deglob(e) => pbo
             .get(e.path_descriptor())
-            .as_path()
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
             .to_string(),
-        InputResolvedType::GroupEntry(g, _) => gbo.get(g).get_str(),
-        InputResolvedType::BinEntry(b, _) => bbo.get(b).get_str(),
-        InputResolvedType::UnResolvedGroupEntry(g) => gbo.get(g).get_str(),
+        InputResolvedType::GroupEntry(g, _) => gbo.get(g).to_string(),
+        InputResolvedType::BinEntry(b, _) => bbo.get(b).to_string(),
+        InputResolvedType::UnResolvedGroupEntry(g) => gbo.get(g).to_string(),
     }
 }
 
@@ -846,17 +850,30 @@ impl BufferObjects {
     pub(crate) fn add_tup(&mut self, p: &Path) -> (TupPathDescriptor, bool) {
         self.tbo.add(p)
     }
-    pub(crate) fn add_path(&mut self, p: &Path, tup_cwd: &Path) -> (PathDescriptor, bool) {
+
+    /// Add a path to buffer and return its unique id in the buffer
+    pub fn add_path_from(&mut self, p: &Path, tup_cwd: &Path) -> (PathDescriptor, bool) {
         self.pbo.add_relative(p, tup_cwd)
     }
-    pub(crate) fn add_group_path(
+
+    /// Add a path to buffer and return its unique id in the buffer
+    /// It is assumed that no de-dotting is necessary for the input path
+    pub fn add_path_from_root(&mut self, p: &Path) -> (PathDescriptor, bool) {
+        debug_assert!(!p.components().any(|ref c| Component::ParentDir.eq(c) || Component::CurDir.eq(c)));
+        self.pbo.add_normal_path(NormalPath::new(p.to_path_buf()))
+    }
+
+    /// Add a path to a group in this buffer
+    fn add_group_pathexpr(
         &mut self,
         p: &PathExpr,
         tup_cwd: &Path,
     ) -> (GroupPathDescriptor, bool) {
         self.gbo.add_relative_group(p, tup_cwd)
     }
-    pub(crate) fn add_bin_path(&mut self, p: &PathExpr, tup_cwd: &Path) -> (BinDescriptor, bool) {
+
+    /// Add path of bin. Folder is the one where  Tupfile declaring the bin. name is bin name
+    pub(crate) fn add_bin_pathexpr(&mut self, p: &PathExpr, tup_cwd: &Path) -> (BinDescriptor, bool) {
         self.bbo.add_relative_bin(p, tup_cwd)
     }
 
@@ -864,8 +881,8 @@ impl BufferObjects {
         self.rbo.add_rule(r)
     }
 
-    /// Get Name
-    pub fn get_name(&self, i: &InputResolvedType) -> String {
+    /// Get file name of the input path
+    pub fn get_path_string(&self, i: &InputResolvedType) -> String {
         get_resolved_name(i, &self.pbo, &self.gbo, &self.bbo)
     }
 
@@ -974,7 +991,7 @@ impl DecodeInputPaths for PathExpr {
                 }
             }
             PathExpr::Group(_, _) => {
-                let grp_desc = bo.add_group_path(&self, tup_cwd).0;
+                let grp_desc = bo.add_group_pathexpr(&self, tup_cwd).0;
                 if tag_info.resolve_groups {
                     if let Some(paths) = tag_info.groups.get(&grp_desc) {
                         for p in paths {
@@ -989,7 +1006,7 @@ impl DecodeInputPaths for PathExpr {
                 }
             }
             PathExpr::Bin(b) => {
-                let bin_desc = bo.add_bin_path(&self, tup_cwd).0;
+                let bin_desc = bo.add_bin_pathexpr(&self, tup_cwd).0;
                 if let Some(paths) = tag_info.bins.get(&bin_desc) {
                     for p in paths {
                         vs.push(InputResolvedType::BinEntry(bin_desc.clone(), p.clone()))
@@ -1490,7 +1507,7 @@ impl DecodeOutputPlaceHolders for PathExpr {
 
 fn normalized_path(tup_cwd: &Path, x: &PathExpr) -> PathBuf {
     let pbuf = PathBuf::new().join(x.cat_ref().replace('\\', "/").as_str());
-    NormalPath::absolute_from(pbuf.as_path(), tup_cwd).0
+    NormalPath::absolute_from(pbuf.as_path(), tup_cwd).to_path_buf()
 }
 
 fn paths_from_exprs(tup_cwd: &Path, p: &Vec<PathExpr>, bo: &mut BufferObjects) -> Vec<OutputType> {
@@ -1498,7 +1515,7 @@ fn paths_from_exprs(tup_cwd: &Path, p: &Vec<PathExpr>, bo: &mut BufferObjects) -
         .filter(|x| !x.is_empty())
         .map(|x| {
             let path = PathBuf::new().join(&x.to_vec().cat());
-            let (pid, _) = bo.add_path(path.as_path(), tup_cwd);
+            let (pid, _) = bo.add_path_from(path.as_path(), tup_cwd);
             let pathbuf = bo.get_path(&pid);
             OutputType::new(pathbuf.as_path().into())
         })
@@ -1611,8 +1628,8 @@ fn get_deglobbed_rule(
         .decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths)?
         .decode_output_place_holders(&output_as_paths)?;
 
-    let bin_desc = t.bin.as_ref().map(|x| bo.add_bin_path(x, tup_cwd).0);
-    let group_desc = t.group.as_ref().map(|x| bo.add_group_path(x, tup_cwd).0);
+    let bin_desc = t.bin.as_ref().map(|x| bo.add_bin_pathexpr(x, tup_cwd).0);
+    let group_desc = t.group.as_ref().map(|x| bo.add_group_pathexpr(x, tup_cwd).0);
 
     let rule_formula_desc = bo
         .add_rule(RuleFormulaUsage::new(resolved_rule, rule_ref.clone()))
@@ -1623,11 +1640,11 @@ fn get_deglobbed_rule(
         rule_formula_desc,
         primary_targets: pp
             .into_iter()
-            .map(|x| bo.add_path(x.as_path(), tup_cwd).0)
+            .map(|x| bo.add_path_from(x.as_path(), tup_cwd).0)
             .collect(),
         secondary_targets: sec_pp
             .into_iter()
-            .map(|x| bo.add_path(x.as_path(), tup_cwd).0)
+            .map(|x| bo.add_path_from(x.as_path(), tup_cwd).0)
             .collect(),
         bin: bin_desc,
         group: group_desc,
@@ -1827,7 +1844,7 @@ impl ResolvePaths for ResolvedLink {
                         }
                     } else {
                         return Err(crate::errors::Error::StaleGroupRef(
-                            bo.get_name(i),
+                            bo.get_path_string(i),
                             rlink.get_rule_ref().clone(),
                         ));
                     }
@@ -1847,7 +1864,7 @@ impl ResolvePaths for ResolvedLink {
                         }
                     } else {
                         return Err(crate::errors::Error::StaleGroupRef(
-                            bo.get_name(i),
+                            bo.get_path_string(i),
                             rlink.get_rule_ref().clone(),
                         ));
                     }
