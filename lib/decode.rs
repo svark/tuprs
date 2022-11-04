@@ -7,7 +7,6 @@ use std::hash::Hash;
 use std::iter::Chain;
 use std::path::{Component, Path, PathBuf};
 use std::slice::Iter;
-use std::vec::IntoIter;
 
 use glob::{Candidate, GlobBuilder, GlobMatcher};
 use jwalk::WalkDir;
