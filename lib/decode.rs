@@ -4,7 +4,10 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Formatter;
 use std::hash::Hash;
+use std::iter::Chain;
 use std::path::{Component, Path, PathBuf};
+use std::slice::Iter;
+use std::vec::IntoIter;
 
 use glob::{Candidate, GlobBuilder, GlobMatcher};
 use jwalk::WalkDir;
@@ -1660,26 +1663,26 @@ fn get_deglobbed_rule(
 #[derive(Clone, Debug, Default)]
 pub struct ResolvedLink {
     /// Inputs that are read by a rule that can be used for %f substitution
-    pub primary_sources: Vec<InputResolvedType>,
+    primary_sources: Vec<InputResolvedType>,
     /// Other inputs read by a rule not available for %f substitution
-    pub secondary_sources: Vec<InputResolvedType>,
+    secondary_sources: Vec<InputResolvedType>,
     /// Rule formula refered to by its descriptor
-    pub rule_formula_desc: RuleDescriptor,
+    rule_formula_desc: RuleDescriptor,
     /// Outputs that are written to by a rule that can be used for %o substitution
-    pub primary_targets: Vec<PathDescriptor>,
+    primary_targets: Vec<PathDescriptor>,
     /// Other outputs written to by a rule
-    pub secondary_targets: Vec<PathDescriptor>,
+    secondary_targets: Vec<PathDescriptor>,
     /// Optional Group that outputs go into.
     /// Groups are collectors of ouptuts that are accessible as inputs to other rules which may not be from
     /// the same tupfile as the rule that provides this group
-    pub group: Option<GroupPathDescriptor>,
+    group: Option<GroupPathDescriptor>,
     /// Optional bin that outputs go into. Bins are available as inputs to other rules in the
     /// same Tupfile that produced them
-    pub bin: Option<BinDescriptor>,
+    bin: Option<BinDescriptor>,
     /// Tupfile and location where the rule was found
-    pub rule_ref: RuleRef,
+    rule_ref: RuleRef,
     /// Env's needed by this rule
-    pub env: EnvDescriptor,
+    env: EnvDescriptor,
 }
 
 impl ResolvedLink {
@@ -1698,6 +1701,14 @@ impl ResolvedLink {
         }
     }
 
+    /// iterator over all the sources (primary and secondary) in this link
+    pub fn get_sources(&self) -> Chain<Iter<'_, InputResolvedType>, Iter<'_, InputResolvedType>> {
+        self.primary_sources.iter().chain(self.secondary_sources.iter())
+    }
+    ///  iterator over all the targets  (primary and secondary) in this link
+    pub fn get_targets(&self) -> Chain<Iter<'_, PathDescriptor>, Iter<'_, PathDescriptor>> {
+        self.primary_targets.iter().chain(self.secondary_targets.iter())
+    }
     /// Returns descriptor for the Env vars to be assigned before execution of this rule
     pub fn get_env_desc(&self) -> &EnvDescriptor {
         &self.env
