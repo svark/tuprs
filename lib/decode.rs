@@ -1681,7 +1681,7 @@ pub struct ResolvedLink {
     bin: Option<BinDescriptor>,
     /// Tupfile and location where the rule was found
     rule_ref: RuleRef,
-    /// Env's needed by this rule
+    /// Env(environment) needed by this rule
     env: EnvDescriptor,
 }
 

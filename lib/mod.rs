@@ -364,7 +364,7 @@ fn test_parse() {
         .unwrap();
     use statements::Cat;
     if let Some(deglobbed_link) = decodedrule.0.first() {
-        let rule_formula = bo.get_rule(&deglobbed_link.rule_formula_desc);
+        let rule_formula = bo.get_rule(&deglobbed_link.get_rule_desc());
         assert_eq!(
             rule_formula.get_formula().cat(),
             "^ touch out.txt^ touch out.txt ".to_string()
