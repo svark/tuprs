@@ -108,7 +108,7 @@ fn parse_pathexpr_hat(i: Span) -> IResult<Span, String> {
 }
 
 // read '<' and the list of rvals inside it until '>'
-fn parse_pathexpr_angle(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)> {
+fn parse_pathexpr_angle(i: Span) -> IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)> {
     //let input = i.clone();
     let (s, v0) = many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n<{", *BRKTOKS), tag("<"))(i)?;
     //let (s, _) = tag("<")(s)?;
@@ -123,18 +123,17 @@ fn parse_pathexpr_angle(i: Span) -> nom::IResult<Span, (Vec<PathExpr>, Vec<PathE
 fn parse_pathexpr_at(i: Span) -> IResult<Span, PathExpr> {
     context(
         "config(@) expression",
-        cut(map(parse_pathexpr_ref_raw, |rv| {
-            PathExpr::AtExpr(rv.to_owned())
-        })),
+        cut(map(parse_pathexpr_ref_raw, PathExpr::AtExpr
+        )),
     )(i)
 }
 // parse rvalue dollar expression eg $(H)
 fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
     context(
         "dollar expression",
-        cut(map(parse_pathexpr_ref_raw, |s| {
-            PathExpr::DollarExpr(s.to_owned())
-        })),
+        cut(map(parse_pathexpr_ref_raw,
+            PathExpr::DollarExpr
+        )),
     )(i)
 }
 
@@ -142,24 +141,22 @@ fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_amp(i: Span) -> IResult<Span, PathExpr> {
     context(
         "ampersand expression",
-        cut(map(parse_pathexpr_ref_raw, |rv| {
-            PathExpr::AmpExpr(rv.to_owned())
-        })),
+        cut(map(parse_pathexpr_ref_raw,
+            PathExpr::AmpExpr
+        )),
     )(i)
 }
 
 fn parse_pathexpr_macroref(i: Span) -> IResult<Span, PathExpr> {
     context(
         "reference to macro",
-        map(parse_pathexpr_raw_macroref, |rv| {
-            PathExpr::MacroRef(rv.to_owned())
-        }),
+        map(parse_pathexpr_raw_macroref, PathExpr::MacroRef),
     )(i)
 }
 fn parse_pathexpr_exclude_pattern(i: Span) -> IResult<Span, PathExpr> {
     context(
         "exclude pattern",
-        map(parse_pathexpr_hat, |rv| PathExpr::ExcludePattern(rv)),
+        map(parse_pathexpr_hat,  PathExpr::ExcludePattern),
     )(i)
 }
 
@@ -172,27 +169,27 @@ fn parse_pathexpr_group(i: Span) -> IResult<Span, PathExpr> {
 
 // parse to a bucket name: {objs}
 fn parse_pathexpr_bin(i: Span) -> IResult<Span, PathExpr> {
-    context("bin", map(parse_pathexpr_raw_bin, |rv| PathExpr::Bin(rv)))(i)
+    context("bin", map(parse_pathexpr_raw_bin, PathExpr::Bin))(i)
 }
 
 fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
-    let (_, r) = peek(take(2 as usize))(i)?;
+    let (_, r) = peek(take(2_usize))(i)?;
     match r.as_bytes() {
         b"\\\r" => {
-            let (_, r) = peek(take(3 as usize))(i)?;
+            let (_, r) = peek(take(3_usize))(i)?;
             if r.as_bytes() == b"\\\r\n" {
-                let (s, _) = take(3 as usize)(i)?; //consumes \n after \r as well
+                let (s, _) = take(3_usize)(i)?; //consumes \n after \r as well
                 Ok((s, ("".to_string()).into()))
             } else {
                 Err(Err::Error(error_position!(i, ErrorKind::Eof))) //FIXME: what errorkind should we return?
             }
         }
         b"\\\n" => {
-            let (s, _) = take(2 as usize)(i)?;
+            let (s, _) = take(2_usize)(i)?;
             Ok((s, ("".to_string()).into()))
         }
         b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\<" | b"\\^" | b"\\|" => {
-            let (s, _) = take(2 as usize)(i)?;
+            let (s, _) = take(2_usize)(i)?;
             let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
             Ok((s, pe))
         }
@@ -201,21 +198,16 @@ fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
 }
 fn test_pathexpr_ref(i: Span) -> bool {
     let res = || -> IResult<Span, bool> {
-        let (_, r) = (peek(take(1 as usize))(i))?;
-        let ismatch = match r.as_bytes() {
-            b"$" => true,
-            b"@" => true,
-            b"&" => true,
-            _ => false,
-        };
+        let (_, r) = (peek(take(1_usize))(i))?;
+        let ismatch = matches!(r.as_bytes(),b"$" | b"@" | b"&");
         Ok((i, ismatch))
     };
-    return res().map(|x| x.1).unwrap_or(false);
+    res().map(|x| x.1).unwrap_or(false)
 }
 
 /// parse basic special expressions (dollar, at, ampersand)
 fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
-    let (s, r) = peek(take(2 as usize))(i)?;
+    let (s, r) = peek(take(2_usize))(i)?;
     match r.as_bytes() {
         b"$(" => parse_pathexpr_dollar(s),
         b"@(" => parse_pathexpr_at(s),
@@ -231,11 +223,11 @@ fn parse_ws(i: Span) -> IResult<Span, PathExpr> {
 }
 
 /// eat up the (dollar or at) that dont parse to (dollar or at) expression
-fn parse_delim(i: Span) -> nom::IResult<Span, Span> {
+fn parse_delim(i: Span) -> IResult<Span, Span> {
     if !test_pathexpr_ref(i) {
         return Err(Err::Error(error_position!(i, ErrorKind::Escaped)));
     }
-    let (s, r) = take(1 as usize)(i)?;
+    let (s, r) = take(1_usize)(i)?;
     Ok((s, r))
 }
 
@@ -246,7 +238,7 @@ fn parse_misc_bits<'a, 'b>(
     input: Span<'a>,
     delim: &'b str,
     pathexpr_toks: &'static str,
-) -> nom::IResult<Span<'a>, Span<'a>> {
+) -> IResult<Span<'a>, Span<'a>> {
     let islit = |ref i| !delim.as_bytes().contains(i) && !pathexpr_toks.as_bytes().contains(i);
     alt((complete(parse_delim), complete(take_while(islit))))(input)
 }
@@ -256,7 +248,7 @@ pub(crate) fn parse_pathexpr_ws<'a, 'b>(
     s: Span<'a>,
     delim: &'b str,
     pathexpr_toks: &'static str,
-) -> nom::IResult<Span<'a>, PathExpr> {
+) -> IResult<Span<'a>, PathExpr> {
     alt((
         complete(parse_ws),
         complete(parse_escaped),
@@ -271,7 +263,7 @@ fn parse_pathexpr_no_ws<'a, 'b>(
     s: Span<'a>,
     delim: &'b str,
     pathexpr_toks: &'static str,
-) -> nom::IResult<Span<'a>, PathExpr> {
+) -> IResult<Span<'a>, PathExpr> {
     alt((
         complete(parse_escaped),
         complete(parse_pathexprbasic),
@@ -287,7 +279,7 @@ fn parse_pelist_till_delim_with_ws<'a, 'b>(
     input: Span<'a>,
     delim: &'b str,
     pathexpr_delims: &'static str,
-) -> nom::IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
+) -> IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
     many_till(
         |i| parse_pathexpr_ws(i, delim, pathexpr_delims),
         is_a(delim),
@@ -298,7 +290,7 @@ fn parse_pelist_till_delim_no_ws<'a, 'b>(
     input: Span<'a>,
     delim: &'b str,
     pathexpr_delims: &'static str,
-) -> nom::IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
+) -> IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
     many_till(
         |i| parse_pathexpr_no_ws(i, delim, pathexpr_delims),
         is_a(delim),
@@ -317,7 +309,7 @@ fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExp
 }
 
 // read all pathexpr separated by whitespaces, pausing at BRKTOKS
-fn parse_pathexpr_list_until_ws_plus(input: Span) -> nom::IResult<Span, (Vec<PathExpr>, Span)> {
+fn parse_pathexpr_list_until_ws_plus(input: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n", *BRKTOKS), ws1)(input)
 }
 
@@ -493,7 +485,7 @@ fn parse_rule_flags_or_description(i: Span) -> IResult<Span, String> {
     let (s, r) = cut(map_res(take_until("^"), from_utf8))(s)?;
     let (s, _) = tag("^")(s)?;
     let (s, _) = multispace0(s)?;
-    Ok((s, String::from(r)))
+    Ok((s, r))
 }
 
 // parse the insides of a rule, which includes a description and rule formula
@@ -606,7 +598,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, for_each) = opt(tag("foreach"))(s)?;
     let (s, input) = context("rule input", cut(opt(parse_rule_inp)))(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, c) = peek(take(1 as usize))(s)?;
+    let (s, c) = peek(take(1_usize))(s)?;
     let (s, secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
         let (s, _) = opt(sp1)(s)?;
         let (s, secondary_input) = context("secondary inputs", opt(parse_secondary_inp))(s)?;
@@ -623,7 +615,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, output0) = context("rule output", opt(parse_primary_output0))(s)?;
     let has_more = output0
         .as_ref()
-        .map_or(false, |(_, has_more)| has_more.clone());
+        .map_or(false, |(_, has_more)| *has_more);
     let (s, output1) = if has_more {
         context("rule output", cut(parse_primary_output1))(s)?
     } else {
@@ -642,7 +634,6 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = opt(sp1)(s)?;
     let (s, v2) = opt(parse_pathexpr_bin)(s)?;
     let (s, _) = multispace0(s)?;
-    let _curs = s.clone();
     //let (s, _) = line_ending(s)?;
     Ok((
         s,
@@ -650,9 +641,9 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
             Statement::Rule(
                 Link {
                     source: from_input(
-                        input.map(|(x, _)| x).unwrap_or(Vec::new()),
+                        input.map(|(x, _)| x).unwrap_or_default(),
                         for_each.is_some(),
-                        secondary_input.unwrap_or((Vec::new(), default_inp())).0,
+                        secondary_input.unwrap_or_else(|| (Vec::new(), default_inp())).0,
                     ),
                     target: from_output(output, secondary_output, exclude_patterns, v1, v2),
                     rule_formula,
@@ -679,7 +670,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     let (s, for_each) = opt(tag("foreach"))(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, input) = opt(context("rule input", cut(parse_rule_inp)))(s)?;
-    let (s, c) = peek(take(1 as usize))(s)?;
+    let (s, c) = peek(take(1_usize))(s)?;
     let (s, secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
         let (s, _) = opt(sp1)(s)?;
         let (s, secondary_input) =
@@ -695,7 +686,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     let (s, output0) = context("rule output", opt(parse_primary_output0))(s)?;
     let has_more = output0
         .as_ref()
-        .map_or(false, |(_, has_more)| has_more.clone());
+        .map_or(false, |(_, has_more)| *has_more);
     let (s, output1) = if has_more {
         context("rule output", opt(parse_primary_output1))(s)?
     } else {
@@ -703,9 +694,9 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     };
 
     let (output, secondary_output) = if has_more {
-        (output0.unwrap().0, output1.unwrap_or(Vec::new()))
+        (output0.unwrap().0, output1.unwrap_or_default())
     } else {
-        (output1.unwrap_or(Vec::new()), Vec::new())
+        (output1.unwrap_or_default(), Default::default())
     };
     /*    let output = if has_secondary { output0.unwrap() } else { output1.unwrap_or(Vec::new())};
         let secondary_output = if has_secondary { output1.unwrap_or(Vec::new())} else { Vec::new() };
@@ -715,12 +706,12 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
         s,
         (
             Statement::MacroAssignment(
-                from_utf8(macroname).unwrap_or("".to_owned()),
+                from_utf8(macroname).unwrap_or_default(),
                 Link {
                     source: from_input(
-                        input.map(|(x, _)| x).unwrap_or(Vec::new()),
+                        input.map(|(x, _)| x).unwrap_or_default(),
                         for_each.is_some(),
-                        secondary_input.unwrap_or((Vec::new(), default_inp())).0,
+                        secondary_input.unwrap_or_else(|| (Vec::new(), default_inp())).0,
                     ),
                     target: from_output(output, secondary_output, None, None, None),
                     rule_formula,
@@ -932,5 +923,5 @@ pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
 
 /// locate TupRules.tup\[.lua\] walking up the directory tree
 pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
-    locate_file(cur_tupfile, "Tuprules.tup").or(locate_file(cur_tupfile, "Tuprules.lua"))
+    locate_file(cur_tupfile, "Tuprules.tup").or_else(|| locate_file(cur_tupfile, "Tuprules.lua"))
 }

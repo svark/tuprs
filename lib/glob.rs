@@ -224,7 +224,7 @@ impl<'a> Candidate<'a> {
     }
 
     pub fn path(&self) -> &Cow<'a, [u8]> {
-        return &self.path;
+        &self.path
     }
 }
 impl GlobMatcher {
@@ -238,7 +238,7 @@ impl GlobMatcher {
     }
 
     pub(crate) fn re(&self) -> &Regex {
-        return &self.re;
+        &self.re
     }
     /// get the i-the matching capturing group in path. Each glob pattern has corresponds to a capturing group
     pub fn group<P: AsRef<Path>>(&self, path: P, i: usize) -> Option<String> {
@@ -347,7 +347,7 @@ impl<'a> GlobBuilder<'a> {
     /// Parses and builds the pattern.
     pub fn build(&self) -> Result<Glob, Error> {
         let mut p = Parser {
-            glob: &self.glob,
+            glob: self.glob,
             stack: vec![Tokens::default()],
             chars: self.glob.chars().peekable(),
             prev: None,
@@ -410,7 +410,7 @@ impl Tokens {
             re.push('$');
             return re;
         }
-        self.tokens_to_regex(options, &self, &mut re);
+        self.tokens_to_regex(options, self, &mut re);
         re.push('$');
         re
     }
@@ -428,7 +428,7 @@ impl Tokens {
                     if options.literal_separator {
                         re.push_str("[^/]");
                     } else {
-                        re.push_str(".");
+                        re.push('.');
                     }
                     if options.capture_globs {
                         re.push(')');
@@ -498,7 +498,7 @@ impl Tokens {
                     let mut parts = vec![];
                     for pat in patterns {
                         let mut altre = String::new();
-                        self.tokens_to_regex(options, &pat, &mut altre);
+                        self.tokens_to_regex(options, pat, &mut altre);
                         if !altre.is_empty() {
                             parts.push(altre);
                         }
@@ -550,7 +550,7 @@ impl<'a> Parser<'a> {
     fn error(&self, kind: ErrorKind) -> Error {
         Error {
             glob: Some(self.glob.to_string()),
-            kind: kind,
+            kind,
         }
     }
 
@@ -574,7 +574,8 @@ impl<'a> Parser<'a> {
         if self.stack.len() > 1 {
             return Err(self.error(ErrorKind::NestedAlternates));
         }
-        Ok(self.stack.push(Tokens::default()))
+        self.stack.push(Tokens::default());
+        Ok(())
     }
 
     fn pop_alternate(&mut self) -> Result<(), Error> {
@@ -587,7 +588,8 @@ impl<'a> Parser<'a> {
 
     fn push_token(&mut self, tok: Token) -> Result<(), Error> {
         if let Some(ref mut pat) = self.stack.last_mut() {
-            return Ok(pat.push(tok));
+            pat.push(tok);
+            return Ok(());
         }
         Err(self.error(ErrorKind::UnopenedAlternates))
     }
@@ -602,7 +604,7 @@ impl<'a> Parser<'a> {
     fn have_tokens(&self) -> Result<bool, Error> {
         match self.stack.last() {
             None => Err(self.error(ErrorKind::UnopenedAlternates)),
-            Some(ref pat) => Ok(!pat.is_empty()),
+            Some( pat) => Ok(!pat.is_empty()),
         }
     }
 
@@ -613,7 +615,8 @@ impl<'a> Parser<'a> {
         if self.stack.len() <= 1 {
             self.push_token(Token::Literal(','))
         } else {
-            Ok(self.stack.push(Tokens::default()))
+            self.stack.push(Tokens::default());
+            Ok(())
         }
     }
 
@@ -649,12 +652,11 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        if !prev.map(is_separator).unwrap_or(false) {
-            if self.stack.len() <= 1 || (prev != Some(',') && prev != Some('{')) {
-                self.push_token(Token::ZeroOrMore)?;
-                self.push_token(Token::ZeroOrMore)?;
-                return Ok(());
-            }
+        if !prev.map(is_separator).unwrap_or(false) && (self.stack.len() <= 1 || (prev != Some(',') && prev != Some('{')))
+        {
+            self.push_token(Token::ZeroOrMore)?;
+            self.push_token(Token::ZeroOrMore)?;
+            return Ok(());
         }
         let is_suffix = match self.peek() {
             None => {
@@ -735,7 +737,7 @@ impl<'a> Parser<'a> {
                         // invariant: in_range is only set when there is
                         // already at least one character seen.
                         let r = ranges.last_mut().unwrap();
-                        add_to_last_range(&self.glob, r, '-')?;
+                        add_to_last_range(self.glob, r, '-')?;
                         in_range = false;
                     } else {
                         assert!(!ranges.is_empty());
@@ -746,7 +748,7 @@ impl<'a> Parser<'a> {
                     if in_range {
                         // invariant: in_range is only set when there is
                         // already at least one character seen.
-                        add_to_last_range(&self.glob, ranges.last_mut().unwrap(), c)?;
+                        add_to_last_range(self.glob, ranges.last_mut().unwrap(), c)?;
                     } else {
                         ranges.push((c, c));
                     }
@@ -770,6 +772,6 @@ impl<'a> Parser<'a> {
     }
 
     fn peek(&mut self) -> Option<char> {
-        self.chars.peek().map(|&ch| ch)
+        self.chars.peek().cloned()
     }
 }

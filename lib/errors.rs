@@ -5,6 +5,7 @@ use std::io::Error as IoErr;
 use thiserror::Error as ThisError;
 
 /// Errors returning during parsing and subst-ing Tupfiles
+#[non_exhaustive]
 #[derive(Debug, ThisError)]
 pub enum Error {
     /// Parsing error when reading a Tupfile, usually reported by nom
@@ -52,7 +53,4 @@ pub enum Error {
     /// Raw lua errors
     #[error(transparent)]
     LuaError(#[from] mlua::Error),
-    #[doc(hidden)]
-    #[error("Unknown")]
-    __NonExhaustive__,
 }

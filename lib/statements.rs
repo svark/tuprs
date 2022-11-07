@@ -169,7 +169,7 @@ impl Env {
         for var in self.set.iter() {
             hmap.insert(
                 var.to_string(),
-                std::env::var(var).unwrap_or("".to_string()),
+                std::env::var(var).unwrap_or_default(),
             );
         }
         hmap
@@ -183,9 +183,9 @@ impl From<usize> for EnvDescriptor {
         Self(i)
     }
 }
-impl Into<usize> for EnvDescriptor {
-    fn into(self) -> usize {
-        self.0
+impl From<EnvDescriptor> for usize {
+    fn from(e: EnvDescriptor) -> Self {
+       e.0
     }
 }
 impl Default for EnvDescriptor {
@@ -310,19 +310,16 @@ impl CleanupPaths for Statement {
         match self {
             Statement::Rule(l, _) => {
                 l.cleanup();
-                ()
             }
             Statement::LetExpr {
                 left: _left, right, ..
             } => {
                 right.cleanup();
-                ()
             }
             Statement::LetRefExpr {
                 left: _left, right, ..
             } => {
                 right.cleanup();
-                ()
             }
             Statement::IfElseEndIf {
                 eq: _,
@@ -331,27 +328,21 @@ impl CleanupPaths for Statement {
             } => {
                 then_statements.cleanup();
                 else_statements.cleanup();
-                ()
             }
             Statement::Include(r) => {
                 r.cleanup();
-                ()
             }
             Statement::Err(r) => {
                 r.cleanup();
-                ()
             }
             Statement::MacroAssignment(_, link) => {
                 link.cleanup();
-                ()
             }
             Statement::Preload(v) => {
                 v.cleanup();
-                ()
             }
             Statement::Run(v) => {
                 v.cleanup();
-                ()
             }
             _ => (),
         }
@@ -376,7 +367,7 @@ impl Cat for &Vec<PathExpr> {
     fn cat(self) -> String {
         self.iter()
             .map(|x| x.cat_ref())
-            .fold("".to_owned(), |x, y| x + y)
+            .fold(String::new(), |x, y| x + y)
     }
 }
 
@@ -393,7 +384,7 @@ impl Cat for &PathExpr {
             PathExpr::Literal(x) => x.clone(),
             PathExpr::Sp1 => " ".to_string(),
             PathExpr::Group(p, g) => format!("{}<{}>", p.cat(), g.cat()),
-            _ => "".to_owned(),
+            _ => String::new(),
         }
     }
 }
@@ -410,7 +401,7 @@ impl CatRef for PathExpr {
 impl Cat for &RuleFormula {
     fn cat(self) -> String {
         if self.description.is_empty() {
-            format!("{}", self.formula.cat())
+             self.formula.cat()
         } else {
             format!("^{}^ {}", self.description.cat(), self.formula.cat())
         }
@@ -427,15 +418,15 @@ impl RuleFormula {
     /// in the form ^ desc^ command
     pub(crate) fn new_from_raw(combined_formula: &str) -> RuleFormula {
         let mut sz = 0;
-        let desc = if combined_formula.starts_with("^") {
-            if let Some(an) = combined_formula[1..].find("^") {
+        let desc = if let Some(display_str) = combined_formula.strip_prefix('^') {
+            if let Some(an) = display_str.find('^') {
                 sz = an;
                 combined_formula[1..an].to_owned()
             } else {
-                "".to_owned()
+                String::new()
             }
         } else {
-            "".to_owned()
+            String::new()
         };
         let formula = combined_formula[sz..].to_owned();
         RuleFormula::new(desc, formula)

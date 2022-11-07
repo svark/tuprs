@@ -90,10 +90,10 @@ impl SubstMap {
                     }
                 }
                 if !inserted {
-                    def_exported.insert(k.to_string(), std::env::var(k).unwrap_or("".to_string()));
+                    def_exported.insert(k.to_string(), std::env::var(k).unwrap_or_default());
                 }
             } else {
-                def_exported.insert(k.to_string(), std::env::var(k).unwrap_or("".to_string()));
+                def_exported.insert(k.to_string(), std::env::var(k).unwrap_or_default());
             }
         }
 
@@ -215,7 +215,7 @@ impl ExpandRun for Vec<LocatedStatement> {
                 l.get_statement()
                     .expand_run(m, bo)
                     .iter()
-                    .map(|s| LocatedStatement::new(s.clone(), l.getloc().clone()))
+                    .map(|s| LocatedStatement::new(s.clone(), *l.getloc()))
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<Self>>()
@@ -266,41 +266,41 @@ impl PathExpr {
     /// SFINAE holds
     fn subst(&self, m: &mut SubstMap) -> Vec<PathExpr> {
         match self {
-            &PathExpr::DollarExpr(ref x) => {
+            PathExpr::DollarExpr(ref x) => {
                 if let Some(val) = m.expr_map.get(x.as_str()) {
                     intersperse_sp1(val)
                 } else if let Some(val) = m.imported_env_map.get(x.as_str()) {
                     vec![PathExpr::from(val.clone())]
-                } else if x.contains("%") {
+                } else if x.contains('%') {
                     vec![self.clone()]
                 } else {
                     vec![PathExpr::from("".to_owned())] // postpone subst until placeholders are fixed
                 }
             }
-            &PathExpr::AtExpr(ref x) => {
+            PathExpr::AtExpr(ref x) => {
                 if let Some(val) = m.conf_map.get(x.as_str()) {
                     intersperse_sp1(val)
-                } else if !x.contains("%") {
+                } else if !x.contains('%') {
                     vec![PathExpr::Literal("".to_owned())]
                 } else {
                     vec![self.clone()]
                 }
             }
-            &PathExpr::AmpExpr(ref x) => {
+            PathExpr::AmpExpr(ref x) => {
                 if let Some(val) = m.rexpr_map.get(x.as_str()) {
                     intersperse_sp1(val)
                     // val.iter().map(|x| PathExpr::from(x.clone())).collect()
-                } else if !x.contains("%") {
-                    vec![PathExpr::Literal("".to_owned())]
+                } else if !x.contains('%') {
+                    vec![PathExpr::from("".to_owned())]
                 } else {
                     vec![self.clone()]
                 }
             }
 
-            &PathExpr::Group(ref xs, ref ys) => {
+            PathExpr::Group(ref xs, ref ys) => {
                 vec![PathExpr::Group(
-                    xs.iter().map(|x| x.subst(m)).flatten().collect(),
-                    ys.iter().map(|y| y.subst(m)).flatten().collect(),
+                    xs.iter().flat_map(|x| x.subst(m)).collect(),
+                    ys.iter().flat_map(|y| y.subst(m)).collect(),
                 )]
             }
             _ => vec![self.clone()],
@@ -309,7 +309,7 @@ impl PathExpr {
 }
 
 /// creates `PathExpr' array separated by PathExpr::Sp1
-fn intersperse_sp1(val: &Vec<String>) -> Vec<PathExpr> {
+fn intersperse_sp1(val: &[String]) -> Vec<PathExpr> {
     let mut vs = Vec::new();
     for pe in val.iter().map(|x| PathExpr::from(x.clone())) {
         vs.push(pe);
@@ -324,8 +324,7 @@ impl Subst for Vec<PathExpr> {
     fn subst(&self, m: &mut SubstMap, _: &mut BufferObjects) -> Result<Self, Err> {
         let mut newpe: Vec<_> = self
             .iter()
-            .map(|x| x.subst(m))
-            .flatten()
+            .flat_map(|x| x.subst(m))
             .filter(|x| !is_empty(x))
             .collect();
         newpe.cleanup();
@@ -360,7 +359,9 @@ impl AddAssign for Source {
         self.primary.append(&mut o.primary);
         self.secondary.cleanup();
         self.secondary.append(&mut o.secondary);
-        self.for_each |= o.for_each;
+        if o.for_each {
+            self.for_each = o.for_each;
+        }
     }
 }
 
@@ -442,7 +443,7 @@ impl ExpandMacro for Link {
                     } else {
                         return Err(Err::UnknownMacroRef(
                             name.clone(),
-                            RuleRef::new(&m.get_cur_file_desc(), &Loc::new(pos.0, pos.1 as u32)),
+                            RuleRef::new(m.get_cur_file_desc(), &Loc::new(pos.0, pos.1 as u32)),
                         ));
                     }
                 }
@@ -478,7 +479,7 @@ pub(crate) fn get_parent_str(cur_file: &Path) -> &str {
 }
 
 /// strings in pathexpr that are space separated
-fn tovecstring(right: &Vec<PathExpr>) -> Vec<String> {
+fn tovecstring(right: &[PathExpr]) -> Vec<String> {
     right
         .split(|x| x == &PathExpr::Sp1)
         .map(|x| x.to_vec().cat())
@@ -495,13 +496,10 @@ pub fn load_conf_vars(
         if conf_file.is_file() {
             if let Some(fstr) = conf_file.to_str() {
                 for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
-                    match statement {
-                        Statement::LetExpr { left, right, .. } => {
-                            if left.name.starts_with("CONFIG_") {
-                                conf_vars.insert(left.name[7..].to_string(), tovecstring(right));
-                            }
+                    if let Statement::LetExpr { left, right, .. } = statement {
+                        if left.name.starts_with("CONFIG_") {
+                            conf_vars.insert(left.name[7..].to_string(), tovecstring(right));
                         }
-                        _ => (),
                     }
                 }
             }
@@ -525,7 +523,7 @@ pub fn load_conf_vars(
 pub(crate) fn set_cwd(filename: &Path, m: &mut SubstMap, bo: &mut BufferObjects) -> PathBuf {
     debug!("reading {:?}", filename);
     let cf = switch_dir(filename, m, bo);
-    let ref mut def_vars = m.expr_map;
+    let def_vars = &mut m.expr_map;
     let p = get_parent_str(m.cur_file.as_path());
     {
         def_vars.remove("TUP_CWD");
@@ -562,7 +560,7 @@ impl Subst for Vec<LocatedStatement> {
     fn subst(&self, m: &mut SubstMap, bo: &mut BufferObjects) -> Result<Self, Err> {
         let mut newstats = Vec::new();
         for statement in self.iter() {
-            let ref loc = statement.getloc();
+            let  loc = statement.getloc();
             match statement.get_statement() {
                 Statement::LetExpr {
                     left,
@@ -584,7 +582,7 @@ impl Subst for Vec<LocatedStatement> {
                         match m.expr_map.get(left.name.as_str()) {
                             Some(prevright) => prevright
                                 .iter()
-                                .map(|x| x.clone())
+                                .cloned()
                                 .chain(subst_right)
                                 .collect(),
                             _ => subst_right,
@@ -624,7 +622,7 @@ impl Subst for Vec<LocatedStatement> {
                         match m.rexpr_map.get(left.name.as_str()) {
                             Some(prevright) => prevright
                                 .iter()
-                                .map(|x| x.clone())
+                                .cloned()
                                 .chain(subst_right)
                                 .collect(),
                             _ => subst_right,
@@ -657,7 +655,7 @@ impl Subst for Vec<LocatedStatement> {
                     else_statements,
                 } => {
                     let cvar = PathExpr::AtExpr(checked_var.0.name.clone());
-                    if cvar.subst(m).iter().any(|x| is_empty(x)) == checked_var.1 {
+                    if cvar.subst(m).iter().any( is_empty) == checked_var.1 {
                         newstats.append(&mut then_statements.subst(m, bo)?);
                     } else {
                         newstats.append(&mut else_statements.subst(m, bo)?);
@@ -699,7 +697,7 @@ impl Subst for Vec<LocatedStatement> {
                     let env_desc = m.cur_env_desc.clone();
                     newstats.push(LocatedStatement::new(
                         Statement::Rule(l.subst(m, bo)?, env_desc),
-                        **loc,
+                        *loc,
                     ));
                 }
                 // dont subst inside a macro assignment
@@ -716,7 +714,7 @@ impl Subst for Vec<LocatedStatement> {
                 Statement::Preload(v) => {
                     newstats.push(LocatedStatement::new(
                         Statement::Preload(v.subst(m, bo)?),
-                        **loc,
+                        *loc,
                     ));
                 }
                 Statement::Export(var) => {
@@ -729,7 +727,7 @@ impl Subst for Vec<LocatedStatement> {
                 Statement::Run(r) => {
                     newstats.push(LocatedStatement::new(
                         Statement::Run(r.subst(m, bo)?),
-                        **loc,
+                        *loc,
                     ));
                 }
                 Statement::Comment => {
@@ -780,7 +778,7 @@ pub fn parse_tup<P: AsRef<Path>>(
     tup_file_path: P,
     mut bo: BufferObjects,
 ) -> Result<(Vec<ResolvedLink>, OutputTagInfo, BufferObjects), crate::errors::Error> {
-    let mut m = SubstMap::new(&confvars, tup_file_path.as_ref(), &mut bo);
+    let mut m = SubstMap::new(confvars, tup_file_path.as_ref(), &mut bo);
     if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
         // wer are not going to  resolve group paths during the first phase of parsing.
         let output_tag_info = OutputTagInfo::new_no_resolve_groups();

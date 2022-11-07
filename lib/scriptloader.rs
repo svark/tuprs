@@ -154,21 +154,21 @@ pub struct ScriptRuleCommand {
 
 impl ScriptInputBuilder {
     pub fn new() -> ScriptInputBuilder {
-        return ScriptInputBuilder::default();
+        ScriptInputBuilder::default()
     }
     pub fn push(&mut self, s: &str) -> &mut Self {
-        if let Some(bracket_pos) = s.find("{") {
+        if let Some(bracket_pos) = s.find('{') {
             let (suffix, _) = s.take_split(bracket_pos);
             let p2 = suffix
                 .trim()
-                .strip_prefix("{")
-                .and_then(|p| p.strip_suffix("}"));
+                .strip_prefix('{')
+                .and_then(|p| p.strip_suffix('}'));
             self.push_bin(p2.unwrap_or(""));
-        } else if s.trim().starts_with("^") {
+        } else if s.trim().starts_with('^') {
             self.push_exclude_pattern(&s[1..]);
-        } else if let Some(bracket_pos) = s.find("<") {
+        } else if let Some(bracket_pos) = s.find('<') {
             let (suffix, prefix) = s.take_split(bracket_pos);
-            let suffix = suffix.strip_prefix("<").and_then(|p| p.strip_suffix(">"));
+            let suffix = suffix.strip_prefix('<').and_then(|p| p.strip_suffix('>'));
             self.push_group(prefix, suffix.unwrap_or(""));
         } else {
             self.primary_inputs.push(s.to_string().into());
@@ -199,19 +199,14 @@ impl ScriptInputBuilder {
     }
 
     pub fn push_extra(&mut self, s: &str) -> &mut Self {
-        if let Some(bracket_pos) = s.find("{") {
-            let (likely_bin_name, _) = s.take_split(bracket_pos);
-            let p2 = likely_bin_name
-                .trim()
-                .strip_prefix("{")
-                .and_then(|p| p.strip_suffix("}"));
-            self.push_extra_bin(p2.unwrap_or(""));
-        } else if s.starts_with("^") {
-            self.push_extra_exclude_pattern(&s[1..]);
-        } else if let Some(bracket_pos) = s.find("<") {
+        if let Some(bracket_pos) = s.find('{') {
+            let (bin_name, _) = s.take_split(bracket_pos);
+            self.push_extra_bin(bin_name);
+        } else if let Some(exclude_pattern) = s.trim().strip_prefix('^') {
+            self.push_extra_exclude_pattern(exclude_pattern);
+        } else if let Some(bracket_pos) = s.find('<') {
             let (grp_name, grp_path) = s.take_split(bracket_pos); // take_split returns suffix, prefix
-            let p2 = grp_name.strip_prefix("<").and_then(|p| p.strip_suffix(">"));
-            self.push_extra_group(grp_path, p2.unwrap_or(""));
+            self.push_extra_group(grp_path.trim(), grp_name);
         } else {
             self.secondary_inputs.push(s.to_string().into());
         }
@@ -221,12 +216,12 @@ impl ScriptInputBuilder {
     pub fn push_extra_group(&mut self, grp_path: &str, grp_name: &str) -> &mut Self {
         self.secondary_inputs.push(PathExpr::Group(
             vec![grp_path.to_string().into()],
-            vec![grp_name.to_string().into()],
+            vec![grp_name.trim_matches(|c| c == '<' || c == '>').to_string().into()],
         ));
         self
     }
     pub fn push_extra_bin(&mut self, bin: &str) -> &mut Self {
-        self.secondary_inputs.push(PathExpr::Bin(bin.to_owned()));
+        self.secondary_inputs.push(PathExpr::Bin(bin.trim_matches(|c| c == '{' || c == '}').to_owned()));
         self
     }
     pub(crate) fn build(self) -> Source {
@@ -247,7 +242,7 @@ impl ScriptInputBuilder {
 
 impl ScriptOutputBuilder {
     pub fn new() -> ScriptOutputBuilder {
-        return ScriptOutputBuilder::default();
+        ScriptOutputBuilder::default()
     }
     pub fn push(&mut self, s: &str) -> &mut Self {
         self.primary_outputs.push(s.to_string().into());
@@ -257,12 +252,12 @@ impl ScriptOutputBuilder {
     pub fn set_group(&mut self, grp_path: &str, grp_name: &str) -> &mut Self {
         self.group = Some(PathExpr::Group(
             vec![grp_path.to_string().into()],
-            vec![grp_name.to_string().into()],
+            vec![grp_name.trim_matches(|c| c == '>' || c == '<').to_string().into()],
         ));
         self
     }
     pub fn set_bin(&mut self, bin: &str) -> &mut Self {
-        self.bin = Some(PathExpr::Bin(bin.to_owned()));
+        self.bin = Some(PathExpr::Bin(bin.trim_matches(|c| c == '{' || c == '}').to_string()));
         self
     }
 
@@ -291,12 +286,12 @@ impl ScriptRuleCommand {
     pub fn new() -> ScriptRuleCommand {
         ScriptRuleCommand::default()
     }
-    pub fn set_command(&mut self, command: String) -> &mut Self {
-        self.command = command;
+    pub fn set_command(&mut self, command: &str) -> &mut Self {
+        self.command = command.to_string();
         self
     }
-    pub fn set_display_str(&mut self, display_fn: String) -> &mut Self {
-        self.display_fn = display_fn;
+    pub fn set_display_str(&mut self, display_fn: &str) -> &mut Self {
+        self.display_fn = display_fn.to_string();
         self
     }
     pub(crate) fn build(self) -> RuleFormula {
@@ -308,12 +303,16 @@ impl ScriptRuleCommand {
 }
 
 impl TupScriptContext {
-    pub(crate) fn new(smap: SubstMap, bo: BufferObjects, out: OutputTagInfo) -> TupScriptContext {
+    pub(crate) fn new(
+        smap: SubstMap,
+        bo: BufferObjects,
+        output_tag_info: OutputTagInfo,
+    ) -> TupScriptContext {
         TupScriptContext {
             resolved_links: vec![],
-            smap: smap,
-            output_tag_info: out,
-            bo: bo,
+            smap,
+            output_tag_info,
+            bo,
         }
     }
 
@@ -339,7 +338,7 @@ impl TupScriptContext {
         };
         let env = self.smap.cur_env_desc.clone();
         let statement = LocatedStatement {
-            statement: Rule(l, env.clone()),
+            statement: Rule(l, env),
             loc: Loc::new(lineno, 0),
         };
         let (rlinks, out) = statement
@@ -347,7 +346,7 @@ impl TupScriptContext {
                 self.smap.get_cur_file(),
                 &self.output_tag_info,
                 &mut self.bo,
-                &self.smap.get_cur_file_desc(),
+                self.smap.get_cur_file_desc(),
             )
             .expect("unable to resolve paths");
         //self.resolved_links = rlinks.drain(..).map(|l| (l, env.clone())).collect();
@@ -380,7 +379,7 @@ impl TupScriptContext {
         let env = self.smap.cur_env_desc.clone();
         //self.links.push((l,env));
         let statement = LocatedStatement {
-            statement: Rule(l, env.clone()),
+            statement: Rule(l, env),
             loc: Loc::new(lineno, 0),
         };
         let (rlinks, out) = statement
@@ -388,13 +387,13 @@ impl TupScriptContext {
                 self.smap.get_cur_file(),
                 &self.output_tag_info,
                 &mut self.bo,
-                &self.smap.get_cur_file_desc(),
+                self.smap.get_cur_file_desc(),
             )
             .expect("unable to resolve paths");
         self.resolved_links = rlinks;
         let mut paths = Vec::new();
         for i in out.get_output_files() {
-            let path = self.bo.pbo.get(&i);
+            let path = self.bo.pbo.get(i);
             paths.push(path.as_path().to_string_lossy().to_string());
         }
         Ok(paths)
@@ -409,39 +408,35 @@ impl TupScriptContext {
             .conf_map
             .get(name)
             .map(|x| x.join(""))
-            .unwrap_or("".to_string())
+            .unwrap_or_default()
     }
     pub fn get_cwd(&self) -> String {
         self.smap
             .cur_file
             .parent()
-            .unwrap_or(Path::new(""))
+            .unwrap_or_else(|| Path::new(""))
             .to_string_lossy()
             .to_string()
     }
-    pub fn dir(a: &String) -> String {
-        Path::new(a.as_str())
-            .parent()
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
+    pub fn dir(a: &str) -> String {
+        Path::new(a).parent().unwrap().to_string_lossy().to_string()
     }
-    pub fn file(a: &String) -> String {
-        Path::new(a.as_str())
+    pub fn file(a: &str) -> String {
+        Path::new(a)
             .file_name()
             .unwrap()
             .to_string_lossy()
             .to_string()
     }
-    pub fn extension(a: &String) -> String {
-        Path::new(a.as_str())
+    pub fn extension(a: &str) -> String {
+        Path::new(a)
             .extension()
             .unwrap()
             .to_string_lossy()
             .to_string()
     }
-    pub fn base(a: &String) -> String {
-        Path::new(a.as_str())
+    pub fn base(a: &str) -> String {
+        Path::new(a)
             .file_stem()
             .unwrap()
             .to_string_lossy()
@@ -555,12 +550,11 @@ impl UserData for TupScriptContext {
             } else {
                 inps1.iter().position(|v| v.type_name().eq("string"))
             };
-            let numinps = command_at_index
-                .map(|i| i)
-                .unwrap_or(std::cmp::min(inps1.iter().count(), 1));
+            let numinps =
+                command_at_index.unwrap_or_else(|| std::cmp::min(inps1.iter().count(), 1));
             let outindex = command_at_index
                 .map(|i| (i + 1))
-                .unwrap_or(std::cmp::min(inps1.iter().skip(1).count(), 1));
+                .unwrap_or_else(|| std::cmp::min(inps1.iter().skip(1).count(), 1));
             let inps: Vec<_> = inps1
                 .iter()
                 .take(numinps)
@@ -577,7 +571,7 @@ impl UserData for TupScriptContext {
                         if let Value::String(ref s) = k {
                             if s.as_bytes().eq("extra_inputs".as_bytes()) {
                                 if let Value::String(ref s) = v {
-                                    if let Some(extra_inp) = s.to_str().ok() {
+                                    if let Ok(extra_inp) = s.to_str() {
                                         inputs.push_extra(extra_inp);
                                     }
                                 }
@@ -587,28 +581,21 @@ impl UserData for TupScriptContext {
                                         .into_iter()
                                         .filter_map(|x| x.ok())
                                         .for_each(|val: Value| {
-                                            if let Some(s) = lua_ctx.convert_to_string(&val).ok() {
+                                            if let Ok(s) = lua_ctx.convert_to_string(&val) {
                                                 inputs.push_extra(s.as_str());
                                             }
                                         });
-                                }
-                            } else if s.as_bytes().eq("bin".as_bytes()) {
-                                if let Value::String(ref s) = v {
-                                    if let Some(binname) = s.to_str().ok() {
-                                        inputs.push_bin(binname);
-                                    }
                                 }
                             }
                         }
                         if let Value::Integer(_) = k {
                             if let Value::String(ref i) = v {
-                                if let Some(inp) = i.to_str().ok() {
+                                if let Ok(inp) = i.to_str() {
                                     inputs.push(inp);
                                 }
                             }
                         }
                     };
-                    ()
                 });
             }
             if let Some(Value::Table(t)) = outs.first() {
@@ -617,17 +604,18 @@ impl UserData for TupScriptContext {
                         if let Value::String(s) = &k {
                             if s.as_bytes().eq("extra_outputs".as_bytes()) {
                                 if let Value::String(s) = v {
-                                    if let Some(out) = s.to_str().ok() {
-                                        if let Some(bracket_pos) = out.find("<") {
-                                            let (suffix, prefix) = out.take_split(bracket_pos);
-                                            let suffix = suffix
-                                                .strip_prefix("<")
-                                                .and_then(|p| p.strip_suffix(">"));
-                                            outputs.set_group(prefix, suffix.unwrap_or(""));
-                                        } else if out.starts_with("{") {
-                                            outputs.set_bin(&out[1..]);
-                                        } else if out.starts_with("^") {
-                                            outputs.set_exclude_pattern(&out[1..]);
+                                    if let Ok(out) = s.to_str() {
+                                        if let Some(bracket_pos) = out.find('<') {
+                                            let (grp_name, path_prefix) = out.take_split(bracket_pos);
+                                            outputs.set_group(path_prefix, grp_name);
+                                        } else if let Some(curl_bracket_pos) = out.find('{')
+                                        {
+                                            let (bin_name, _) = out.take_split(curl_bracket_pos);
+                                            outputs.set_bin(bin_name);
+                                        } else if let Some(exclude_pattern) =
+                                            out.trim().strip_prefix('^')
+                                        {
+                                            outputs.set_exclude_pattern(exclude_pattern);
                                         } else {
                                             outputs.push_extra(out);
                                         }
@@ -650,22 +638,19 @@ impl UserData for TupScriptContext {
                 });
             }
             if let Some(rule) = command_at_index.and_then(|i| inps1.get(i)) {
-                let mut desc: String = String::new();
-                let mut cmd: String = String::new();
+                let mut desc: &str = "";
+                let mut cmd: &str = "";
                 if let Value::String(s) = rule {
-                    if let Some(r) = s.to_str().ok() {
+                    if let Ok(r) = s.to_str() {
                         let r = r.trim_start();
-                        if r.starts_with('^') {
-                            let r = &r[1..];
-                            desc = r.to_string();
-                            cmd = "".to_string();
-                            let pos = r.find('^');
-                            pos.map(|p| {
-                                desc = r[0..p].to_string();
-                                cmd = r[p + 1..].to_string();
-                            });
+                        if let Some(r) = r.strip_prefix('^') {
+                            desc = r;
+                            cmd = "";
+                            if let Some(p) = r.find('^') {
+                                (cmd, desc) = r.take_split(p);
+                            }
                         } else {
-                            cmd = r.to_string();
+                            cmd = r;
                         }
                     }
                 }
@@ -682,7 +667,7 @@ impl UserData for TupScriptContext {
                 let mut cnt: usize = 1;
                 for p in paths {
                     t.set(cnt, p)?;
-                    cnt = cnt + 1;
+                    cnt += 1;
                 }
                 Ok(Value::Table(t))
             } else {
@@ -716,10 +701,11 @@ impl UserData for TupScriptContext {
                 } else {
                     inps1.iter().position(|v| v.type_name().eq("string"))
                 };
-                let numinps = command_at_index.unwrap_or(std::cmp::min(inps1.iter().count(), 1));
+                let numinps =
+                    command_at_index.unwrap_or_else(|| std::cmp::min(inps1.iter().count(), 1));
                 let outindex = command_at_index
                     .map(|i| (i + 1))
-                    .unwrap_or(std::cmp::min(inps1.iter().skip(1).count(), 1));
+                    .unwrap_or_else(|| std::cmp::min(inps1.iter().skip(1).count(), 1));
                 let inps: Vec<_> = inps1
                     .iter()
                     .take(numinps)
@@ -736,7 +722,7 @@ impl UserData for TupScriptContext {
                             if let Value::String(ref s) = k {
                                 if s.as_bytes().eq("extra_inputs".as_bytes()) {
                                     if let Value::String(ref s) = v {
-                                        if let Some(extra_inp) = s.to_str().ok() {
+                                        if let Ok(extra_inp) = s.to_str() {
                                             inputs.push_extra(extra_inp);
                                         }
                                     }
@@ -747,7 +733,7 @@ impl UserData for TupScriptContext {
                                             .filter_map(|x| x.ok())
                                             .for_each(|v: Value| {
                                                 if let Value::String(ref s) = v {
-                                                    if let Some(inp) = s.to_str().ok() {
+                                                    if let Ok(inp) = s.to_str() {
                                                         inputs.push_extra(inp);
                                                     }
                                                 }
@@ -757,13 +743,12 @@ impl UserData for TupScriptContext {
                             }
                             if let Value::Integer(_) = k {
                                 if let Value::String(ref i) = v {
-                                    if let Some(inp) = i.to_str().ok() {
+                                    if let Ok(inp) = i.to_str() {
                                         inputs.push(inp);
                                     }
                                 }
                             }
                         };
-                        ()
                     });
                 }
 
@@ -773,13 +758,10 @@ impl UserData for TupScriptContext {
                             if let Value::String(s) = &k {
                                 if s.as_bytes().eq("extra_outputs".as_bytes()) {
                                     if let Value::String(s) = v {
-                                        if let Some(out) = s.to_str().ok() {
-                                            if let Some(bracket_pos) = out.find("<") {
-                                                let (suffix, prefix) = out.take_split(bracket_pos);
-                                                let suffix = suffix
-                                                    .strip_prefix("<")
-                                                    .and_then(|p| p.strip_suffix(">"));
-                                                outputs.set_group(prefix, suffix.unwrap_or(""));
+                                        if let Ok(out) = s.to_str() {
+                                            if let Some(bracket_pos) = out.find('<') {
+                                                let (grp_name, path_prefix) = out.take_split(bracket_pos);
+                                                outputs.set_group(path_prefix.trim(), grp_name.trim());
                                             } else {
                                                 outputs.push_extra(out);
                                             }
@@ -789,7 +771,7 @@ impl UserData for TupScriptContext {
                             }
                             if let Value::Integer(_) = &k {
                                 if let Value::String(s) = &v {
-                                    if let Some(out) = s.to_str().ok() {
+                                    if let Ok(out) = s.to_str() {
                                         outputs.push(out);
                                     }
                                 }
@@ -799,22 +781,20 @@ impl UserData for TupScriptContext {
                 }
 
                 if let Some(rule) = command_at_index.and_then(|i| inps1.get(i)) {
-                    let mut desc: String = String::new();
-                    let mut cmd: String = String::new();
+                    let mut desc: &str = "";
+                    let mut cmd: &str = "";
                     if let Value::String(s) = rule {
-                        if let Some(r) = s.to_str().ok() {
+                        if let Ok(r) = s.to_str() {
                             let r = r.trim_start();
-                            if r.starts_with('^') {
-                                let r = &r[1..];
-                                desc = r.to_string();
-                                cmd = "".to_string();
-                                let pos = r.find('^');
-                                pos.map(|p| {
-                                    desc = r[0..p].to_string();
-                                    cmd = r[p + 1..].to_string();
-                                });
+                            if let Some(r) = r.strip_prefix('^') {
+                                desc = r;
+                                cmd = "";
+                                if let Some(p) = r.find('^') {
+                                    desc = &r[0..p];
+                                    cmd = &r[p + 1..];
+                                }
                             } else {
-                                cmd = r.to_string();
+                                cmd = r;
                             }
                         }
                     }
@@ -831,7 +811,7 @@ impl UserData for TupScriptContext {
                     let mut cnt: usize = 1;
                     for p in paths {
                         t.set(cnt, p)?;
-                        cnt = cnt + 1;
+                        cnt += 1;
                     }
                     Ok(Value::Table(t))
                 } else {
@@ -864,7 +844,7 @@ impl UserData for TupScriptContext {
                     cnt as mlua::Integer,
                     m.as_path(&scriptctx.bo).to_string_lossy().to_string(),
                 )?;
-                cnt = cnt + 1;
+                cnt += 1;
             }
             Ok(glob_out)
         });
@@ -904,7 +884,7 @@ impl UserData for TupScriptContext {
 }
 
 /// main entry point for parsing Tupfile.lua
-pub(crate) fn parse_script<'a>(
+pub(crate) fn parse_script(
     script_path: &Path,
     cfg: SubstMap,
     bo: BufferObjects,
@@ -959,14 +939,14 @@ pub(crate) fn parse_script<'a>(
                 });
             }
             if let Value::String(s) = b {
-                t.set(t.len()? + 1 as i64, s)?;
+                t.set(t.len()? + 1_i64, s)?;
             } else if let Value::Table(t0) = b {
                 let n1 = t.len()?;
                 let mut n2 = 1;
                 for pair in t0.pairs::<Value, Value>() {
                     let (_, val) = pair?;
                     t.set(n2 + n1, val)?;
-                    n2 = n2 + 1;
+                    n2 += 1;
                 }
             } else if let Value::Nil = b {
                 // no additions
