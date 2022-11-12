@@ -318,7 +318,6 @@ impl TupScriptContext {
             arts: Artifacts::new(),
             smap,
             bo,
-            ..Default::default()
         }
     }
 
@@ -357,7 +356,7 @@ impl TupScriptContext {
         let arts = statement
             .resolve_paths(
                 self.smap.get_cur_file(),
-                &self.arts.get_outs(),
+                self.arts.get_outs(),
                 self.bo_as_mut().deref_mut(),
                 self.smap.get_cur_file_desc(),
             )
@@ -405,7 +404,7 @@ impl TupScriptContext {
         let arts = statement
             .resolve_paths(
                 self.smap.get_cur_file(),
-                &self.arts.get_outs(),
+                self.arts.get_outs(),
                 self.bo_as_mut().deref_mut(),
                 self.smap.get_cur_file_desc(),
             )

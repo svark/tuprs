@@ -104,9 +104,9 @@ impl SubstState {
     ) -> Self {
         let mut def_vars = HashMap::new();
         let dir = get_parent_str(cur_file);
-        def_vars.insert("TUP_CWD".to_owned(), vec![dir.to_owned()]);
+        def_vars.insert("TUP_CWD".to_owned(), vec![dir]);
 
-        let smap = SubstState {
+        SubstState {
             conf_map: conf_map.clone(),
             expr_map: def_vars,
             cur_file: cur_file.to_path_buf(),
@@ -114,9 +114,7 @@ impl SubstState {
             cur_file_desc,
             cur_env_desc,
             ..SubstState::default()
-        };
-
-        smap
+        }
     }
 
     pub(crate) fn set_env(&mut self, ed: EnvDescriptor) {
@@ -167,7 +165,7 @@ impl ExpandRun for Statement {
                             {
                                 let matches =
                                     discover_inputs_from_glob(m.get_tup_dir(), arg_path, &outs, bo)
-                                        .expect(&*format!("error matching glob pattern {}", arg));
+                                        .unwrap_or_else(|_| panic!("error matching glob pattern {}", arg));
                                 for ofile in matches {
                                     let p = ofile.as_path(bo.deref());
                                     cmd.arg(
@@ -182,7 +180,7 @@ impl ExpandRun for Statement {
                     let env = bo.get_env(&m.cur_env_desc);
                     cmd.envs(env.getenv()).current_dir(m.get_tup_dir());
                     //println!("running {:?}", cmd);
-                    let output = cmd.stdout(Stdio::piped()).output().expect(&*format!(
+                    let output = cmd.stdout(Stdio::piped()).output().unwrap_or_else(|_|panic!(
                         "Failed to execute tup run {} in Tupfile : {}",
                         script_args.cat().as_str(),
                         m.get_tup_dir().to_string_lossy().to_string().as_str()
@@ -476,7 +474,7 @@ impl ExpandMacro for Link {
 
 /// parent folder path for a given tupfile
 pub(crate) fn get_parent(cur_file: &Path) -> &Path {
-    cur_file.parent().expect(&*format!(
+    cur_file.parent().unwrap_or_else(|| panic!(
         "unable to find parent folder for tup file:{:?}",
         cur_file
     ))
@@ -785,6 +783,11 @@ impl Artifacts {
     pub fn len(&self) -> usize {
         self.resolved_links.len()
     }
+
+    /// checks if there are no links found
+    pub fn is_empty(&self) -> bool {
+        self.resolved_links.is_empty()
+    }
     ///Merges outputs from parsing one tupfile  with the next. All the new links will be extended.
     pub fn merge(&mut self, mut artifacts: Artifacts) -> Result<(), crate::errors::Error> {
         self.outs.merge(&artifacts.outs)?;
@@ -804,11 +807,11 @@ impl Artifacts {
     }
 
     pub(crate) fn acquire_groups(&mut self, outs: &OutputAssocs) {
-        self.outs.acquire_groups(outs.get_groups().clone())
+        self.outs.acquire_groups(outs.get_groups().clone());
     }
 
     pub(crate) fn get_outs(&self) -> &OutputAssocs {
-        return &self.outs;
+        &self.outs
     }
     /// Returns the output files from all the rules found after current parsing sesssion
     pub fn get_output_files(&self) -> &HashSet<PathDescriptor> {
@@ -817,12 +820,23 @@ impl Artifacts {
 
     /// Returns a vector over slices of resolved links grouped by the tupfile that generated them
     pub fn rules_by_tup(&self) -> Vec<&'_ [ResolvedLink]> {
-        self.resolved_links
-            .as_slice()
-            .group_by(|x, y| {
-                x.get_rule_ref().get_tupfile_desc() == y.get_rule_ref().get_tupfile_desc()
-            })
-            .collect::<Vec<_>>()
+        let mut link_iter = self.resolved_links.as_slice().iter().peekable();
+        let mut out = Vec::new();
+        let mut start_index = 0;
+        let mut end_index = 0;
+        while let Some(x) = link_iter.next() {
+            end_index += 1;
+            if let Some(nx) = link_iter.peek() {
+                if nx.get_rule_ref().get_tupfile_desc() != x.get_rule_ref().get_tupfile_desc() {
+                    out.push(&self.resolved_links[start_index..end_index]);
+                    start_index = end_index;
+                }
+            }
+        }
+        if start_index != end_index {
+            out.push(&self.resolved_links[start_index..end_index]);
+        }
+        out
     }
 
     /// Returns a slice over resolved links that the parser found so far.

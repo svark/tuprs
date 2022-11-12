@@ -1,4 +1,4 @@
-#![feature(slice_group_by)]
+//#![feature(slice_group_by)]
 //! Crate for parsing a tupfile and thereafter de-globbing and decoding variables in a Tupfile
 #![warn(missing_docs)]
 #[macro_use]

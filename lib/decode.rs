@@ -82,7 +82,7 @@ impl ToString for NormalPath {
     /// Inner path in form that can be compared or stored as a bytes
     fn to_string(&self) -> String {
         // following converts backslashes to forward slashes
-        normalize_path(self.as_path()).to_string()
+        normalize_path(self.as_path())
     }
 }
 
@@ -255,11 +255,13 @@ where
     /// descriptor is assigned by finding using size of buffer
     pub fn add<P: AsRef<Path>>(&mut self, path: P) -> (T, bool) {
         //debug_assert!(path.as_ref().is_absolute(), "expected a absolute path as input but found:{:?}", path.as_ref());
-        let pbuf = diff_paths(path.as_ref(), self.get_root_dir()).expect(&*format!(
-            "could not diff paths \n: {:?} - {:?}",
-            path.as_ref(),
-            self.get_root_dir()
-        ));
+        let pbuf = diff_paths(path.as_ref(), self.get_root_dir()).unwrap_or_else(|| {
+            panic!(
+                "could not diff paths \n: {:?} - {:?}",
+                path.as_ref(),
+                self.get_root_dir()
+            )
+        });
         let np = NormalPath::new(pbuf);
         self.add_normal_path(np)
     }
@@ -884,7 +886,7 @@ impl BufferObjects {
         cur_env_desc: &EnvDescriptor,
     ) -> Option<EnvDescriptor> {
         if !self.has_env(&var) {
-            let mut env = self.get_env(&cur_env_desc).clone();
+            let mut env = self.get_env(cur_env_desc).clone();
             env.add(var);
             let (id, _) = self.add_env(Cow::Owned(env));
             Some(id)
@@ -900,7 +902,7 @@ impl BufferObjects {
     pub fn get_rule(&self, id: &RuleDescriptor) -> &RuleFormulaUsage {
         self.rbo
             .get_rule(id)
-            .expect(&*format!("unable to fetch rule formula for id:{}", id))
+            .unwrap_or_else(|| panic!("unable to fetch rule formula for id:{}", id))
     }
 
     /// Returns path corresponding to an path descriptor. This panics if there is no match
@@ -969,11 +971,9 @@ impl DecodeInputPaths for PathExpr {
         match self {
             PathExpr::Literal(_) => {
                 let np = normalized_path(tup_cwd, self);
-                let path_buf = diff_paths(np.as_path(), tup_cwd).expect(&*format!(
-                    "unable to diff with {:?} from {:?}",
-                    tup_cwd,
-                    np.as_path()
-                ));
+                let path_buf = diff_paths(np.as_path(), tup_cwd).unwrap_or_else(|| {
+                    panic!("unable to diff with {:?} from {:?}", tup_cwd, np.as_path())
+                });
                 let root = bo.get_root_dir();
                 let pes = discover_inputs_from_glob(
                     root.join(tup_cwd).as_path(),
@@ -1503,7 +1503,7 @@ fn paths_from_exprs(tup_cwd: &Path, p: &[PathExpr], bo: &mut BufferObjects) -> V
     p.split(|x| matches!(x, &PathExpr::Sp1))
         .filter(|x| !x.is_empty())
         .map(|x| {
-            let path = PathBuf::new().join(&x.to_vec().cat());
+            let path = PathBuf::new().join(x.to_vec().cat());
             let (pid, _) = bo.add_path_from(path.as_path(), tup_cwd);
             let pathbuf = bo.get_path(&pid);
             OutputType::new(pathbuf.as_path().into())
@@ -1797,7 +1797,7 @@ impl ResolvePaths for Vec<ResolvedLink> {
         for statement in self.iter() {
             let art = statement.resolve_paths(
                 dummy.as_path(),
-                &resolved_artifacts.get_outs(),
+                resolved_artifacts.get_outs(),
                 bo,
                 statement.get_rule_ref().get_tupfile_desc(),
             )?;
@@ -1978,7 +1978,7 @@ impl ResolvePaths for Vec<LocatedStatement> {
         for stmt in self.iter() {
             let stmtstr = stmt.cat();
             log!(Debug, "final resolve of {}", stmtstr);
-            let art = stmt.resolve_paths(tupfile, &merged_arts.get_outs(), bo, tup_desc)?;
+            let art = stmt.resolve_paths(tupfile, merged_arts.get_outs(), bo, tup_desc)?;
             merged_arts.merge(art)?;
         }
         Ok(merged_arts)
