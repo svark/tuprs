@@ -350,8 +350,8 @@ impl Subst for Source {
 }
 use bimap::hash::{Iter, RightValues};
 use decode::{
-    BufferObjects, discover_inputs_from_glob, ExpandRun, GroupPathDescriptor, InputResolvedType,
-    normalize_path, NormalPath, OutputAssocs, PathDescriptor, ResolvedLink, ResolvePaths,
+    discover_inputs_from_glob, normalize_path, BufferObjects, ExpandRun, GroupPathDescriptor,
+    InputResolvedType, NormalPath, OutputAssocs, PathDescriptor, ResolvePaths, ResolvedLink,
     RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
 };
 use log::debug;
@@ -535,13 +535,10 @@ pub(crate) fn set_cwd(filename: &Path, m: &mut SubstState, bo: &mut BufferObject
     let def_vars = &mut m.expr_map;
 
     let diff = diff_paths(m.cur_file.as_path(), m.tup_base_path.as_path()).unwrap();
-    let p =  get_parent_str(diff.as_path());
+    let p = get_parent_str(diff.as_path());
     {
         def_vars.remove("TUP_CWD");
-        def_vars.insert(
-            "TUP_CWD".to_owned(),
-            vec![p],
-        );
+        def_vars.insert("TUP_CWD".to_owned(), vec![p]);
     }
     cf
 }
@@ -749,7 +746,6 @@ impl Subst for Vec<LocatedStatement> {
         Ok(newstats)
     }
 }
-
 
 /// TupParser parser for a file containing tup file syntax
 /// Inputs are config vars, Tupfile\[.lua\] path and a buffer in which to store descriptors for files.

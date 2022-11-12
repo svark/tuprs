@@ -16,14 +16,14 @@ use path_dedot::ParseDot;
 //use path_absolutize::Absolutize;
 use regex::{Captures, Regex};
 
-use bimap::hash::{RightValues};
+use crate::transform::locate_file;
+use bimap::hash::RightValues;
 use bimap::BiMap;
 use bstr::ByteSlice;
 use daggy::Dag;
 use errors::{Error as Err, Error};
 use log::Level::Debug;
 use log::{debug, log};
-use crate::transform::locate_file;
 use pathdiff::diff_paths;
 use petgraph::graph::NodeIndex;
 use statements::*;
@@ -136,8 +136,6 @@ impl RuleRef {
     pub fn get_tupfile_desc(&self) -> &TupPathDescriptor {
         &self.tup_path_desc
     }
-
-
 }
 
 /// `RuleFormula' usage new and accessors
@@ -220,7 +218,10 @@ impl_from_usize!(RuleDescriptor);
 
 /// path to descriptor(T) `BiMap', path stored is relative to rootdir (.1 in this struct)
 #[derive(Debug, Default, Clone)]
-pub(crate) struct GenPathBufferObject<T: PartialEq + Eq + Hash + Clone>(BiMap<NormalPath, T>, PathBuf);
+pub(crate) struct GenPathBufferObject<T: PartialEq + Eq + Hash + Clone>(
+    BiMap<NormalPath, T>,
+    PathBuf,
+);
 
 /// Env to descriptor bimap
 #[derive(Debug, Default, Clone)]
@@ -287,7 +288,6 @@ where
     pub fn try_get(&self, pd: &T) -> Option<&NormalPath> {
         self.0.get_by_right(pd)
     }
-
 }
 /// Friendly name for BiMap<TupPathDescriptor, NormalPath>
 pub(crate) type TupPathBufferObject = GenPathBufferObject<TupPathDescriptor>;
@@ -731,8 +731,6 @@ fn get_resolved_path<'a, 'b>(
     }
 }
 
-
-
 /// Resolved name of the given Input,
 /// For Group(or UnResolvedGroup) entries, group name is returned
 /// For Bin entries, bin name is returned
@@ -875,7 +873,6 @@ impl BufferObjects {
         self.tbo.get(t).as_path()
     }
 
-
     /// Returns env correponding to a envdescriptor. Panics if none is found
     pub fn get_env(&self, id: &EnvDescriptor) -> &Env {
         self.ebo.get(id)
@@ -905,7 +902,6 @@ impl BufferObjects {
             .get_rule(id)
             .expect(&*format!("unable to fetch rule formula for id:{}", id))
     }
-
 
     /// Returns path corresponding to an path descriptor. This panics if there is no match
     pub fn get_path(&self, id: &PathDescriptor) -> &NormalPath {
@@ -1728,7 +1724,6 @@ impl ResolvedLink {
     pub fn get_rule_ref(&self) -> &RuleRef {
         &self.rule_ref
     }
-
 }
 
 // update the groups/bins with the path to primary target and also add secondary targets

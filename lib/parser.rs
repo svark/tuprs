@@ -6,6 +6,7 @@ use nom::multi::{many0, many1, many_till};
 use nom::sequence::{delimited, preceded};
 use nom::AsBytes;
 
+use crate::transform;
 use nom::bytes::complete::{is_a, is_not};
 use nom::Err;
 use nom::IResult;
@@ -14,10 +15,9 @@ use nom::{
     bytes::complete::{tag, take, take_until, take_while},
     character::complete::{char, one_of},
 };
-use nom_locate::{LocatedSpan, position};
+use nom_locate::{position, LocatedSpan};
 use statements::*;
 use std::path::{Path, PathBuf};
-use crate::transform;
 
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
@@ -901,5 +901,6 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
 
 /// locate TupRules.tup\[.lua\] walking up the directory tree
 pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
-    transform::locate_file(cur_tupfile, "Tuprules.tup").or_else(|| transform::locate_file(cur_tupfile, "Tuprules.lua"))
+    transform::locate_file(cur_tupfile, "Tuprules.tup")
+        .or_else(|| transform::locate_file(cur_tupfile, "Tuprules.lua"))
 }
