@@ -604,7 +604,7 @@ impl<'a> Parser<'a> {
     fn have_tokens(&self) -> Result<bool, Error> {
         match self.stack.last() {
             None => Err(self.error(ErrorKind::UnopenedAlternates)),
-            Some( pat) => Ok(!pat.is_empty()),
+            Some(pat) => Ok(!pat.is_empty()),
         }
     }
 
@@ -652,7 +652,8 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
 
-        if !prev.map(is_separator).unwrap_or(false) && (self.stack.len() <= 1 || (prev != Some(',') && prev != Some('{')))
+        if !prev.map(is_separator).unwrap_or(false)
+            && (self.stack.len() <= 1 || (prev != Some(',') && prev != Some('{')))
         {
             self.push_token(Token::ZeroOrMore)?;
             self.push_token(Token::ZeroOrMore)?;

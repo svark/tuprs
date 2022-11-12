@@ -27,4 +27,3 @@ pathdiff = "0.2.1"
 # Cargo complains that the patch should appear at the workspace level. But adding here anyway for independent usages.
 [patch.crates-io]
 lua-src = {git = "https://github.com/svark/lua-src-rs"}
-

@@ -1,4 +1,4 @@
-//! Module that uses nom to parse a Tupfile into vector of ```Statement'''
+//! Module that uses nom to parse a Tupfile
 use nom::character::complete::{line_ending, multispace0, multispace1, space1};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
@@ -14,9 +14,10 @@ use nom::{
     bytes::complete::{tag, take, take_until, take_while},
     character::complete::{char, one_of},
 };
-use nom_locate::{position, LocatedSpan};
+use nom_locate::{LocatedSpan, position};
 use statements::*;
 use std::path::{Path, PathBuf};
+use crate::transform;
 
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
@@ -123,17 +124,14 @@ fn parse_pathexpr_angle(i: Span) -> IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)
 fn parse_pathexpr_at(i: Span) -> IResult<Span, PathExpr> {
     context(
         "config(@) expression",
-        cut(map(parse_pathexpr_ref_raw, PathExpr::AtExpr
-        )),
+        cut(map(parse_pathexpr_ref_raw, PathExpr::AtExpr)),
     )(i)
 }
 // parse rvalue dollar expression eg $(H)
 fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
     context(
         "dollar expression",
-        cut(map(parse_pathexpr_ref_raw,
-            PathExpr::DollarExpr
-        )),
+        cut(map(parse_pathexpr_ref_raw, PathExpr::DollarExpr)),
     )(i)
 }
 
@@ -141,9 +139,7 @@ fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_amp(i: Span) -> IResult<Span, PathExpr> {
     context(
         "ampersand expression",
-        cut(map(parse_pathexpr_ref_raw,
-            PathExpr::AmpExpr
-        )),
+        cut(map(parse_pathexpr_ref_raw, PathExpr::AmpExpr)),
     )(i)
 }
 
@@ -156,7 +152,7 @@ fn parse_pathexpr_macroref(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_exclude_pattern(i: Span) -> IResult<Span, PathExpr> {
     context(
         "exclude pattern",
-        map(parse_pathexpr_hat,  PathExpr::ExcludePattern),
+        map(parse_pathexpr_hat, PathExpr::ExcludePattern),
     )(i)
 }
 
@@ -199,7 +195,7 @@ fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
 fn test_pathexpr_ref(i: Span) -> bool {
     let res = || -> IResult<Span, bool> {
         let (_, r) = (peek(take(1_usize))(i))?;
-        let ismatch = matches!(r.as_bytes(),b"$" | b"@" | b"&");
+        let ismatch = matches!(r.as_bytes(), b"$" | b"@" | b"&");
         Ok((i, ismatch))
     };
     res().map(|x| x.1).unwrap_or(false)
@@ -613,9 +609,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = opt(sp1)(s)?;
     // read until "|" or lineending
     let (s, output0) = context("rule output", opt(parse_primary_output0))(s)?;
-    let has_more = output0
-        .as_ref()
-        .map_or(false, |(_, has_more)| *has_more);
+    let has_more = output0.as_ref().map_or(false, |(_, has_more)| *has_more);
     let (s, output1) = if has_more {
         context("rule output", cut(parse_primary_output1))(s)?
     } else {
@@ -643,7 +637,9 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
                     source: from_input(
                         input.map(|(x, _)| x).unwrap_or_default(),
                         for_each.is_some(),
-                        secondary_input.unwrap_or_else(|| (Vec::new(), default_inp())).0,
+                        secondary_input
+                            .unwrap_or_else(|| (Vec::new(), default_inp()))
+                            .0,
                     ),
                     target: from_output(output, secondary_output, exclude_patterns, v1, v2),
                     rule_formula,
@@ -684,9 +680,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     let (s, rule_formula) = context("rule formula", cut(parse_rule_gut))(s)?;
     let (s, _) = tag(">")(s)?;
     let (s, output0) = context("rule output", opt(parse_primary_output0))(s)?;
-    let has_more = output0
-        .as_ref()
-        .map_or(false, |(_, has_more)| *has_more);
+    let has_more = output0.as_ref().map_or(false, |(_, has_more)| *has_more);
     let (s, output1) = if has_more {
         context("rule output", opt(parse_primary_output1))(s)?
     } else {
@@ -711,7 +705,9 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
                     source: from_input(
                         input.map(|(x, _)| x).unwrap_or_default(),
                         for_each.is_some(),
-                        secondary_input.unwrap_or_else(|| (Vec::new(), default_inp())).0,
+                        secondary_input
+                            .unwrap_or_else(|| (Vec::new(), default_inp()))
+                            .0,
                     ),
                     target: from_output(output, secondary_output, None, None, None),
                     rule_formula,
@@ -903,25 +899,7 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
 
-/// locate a file by its name relative to current tup file path by recursively going up the directory tree
-pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
-    let mut cwd = cur_tupfile;
-    let pb: PathBuf;
-    if cur_tupfile.is_dir() {
-        pb = cur_tupfile.join("Tupfile");
-        cwd = &pb;
-    }
-    while let Some(parent) = cwd.parent() {
-        let p = parent.join(file_to_loc);
-        if p.is_file() {
-            return Some(p);
-        }
-        cwd = parent;
-    }
-    None
-}
-
 /// locate TupRules.tup\[.lua\] walking up the directory tree
 pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
-    locate_file(cur_tupfile, "Tuprules.tup").or_else(|| locate_file(cur_tupfile, "Tuprules.lua"))
+    transform::locate_file(cur_tupfile, "Tuprules.tup").or_else(|| transform::locate_file(cur_tupfile, "Tuprules.lua"))
 }

@@ -160,17 +160,14 @@ impl Env {
         self.set.insert(k)
     }
     /// check if key is present in the set of env vars
-    pub fn contains(&self, k: &String) -> bool {
+    pub fn contains(&self, k: &str) -> bool {
         self.set.contains(k)
     }
     /// returns a map of env name and value pairs
     pub fn getenv(&self) -> HashMap<String, String> {
         let mut hmap = HashMap::new();
         for var in self.set.iter() {
-            hmap.insert(
-                var.to_string(),
-                std::env::var(var).unwrap_or_default(),
-            );
+            hmap.insert(var.to_string(), std::env::var(var).unwrap_or_default());
         }
         hmap
     }
@@ -185,7 +182,7 @@ impl From<usize> for EnvDescriptor {
 }
 impl From<EnvDescriptor> for usize {
     fn from(e: EnvDescriptor) -> Self {
-       e.0
+        e.0
     }
 }
 impl Default for EnvDescriptor {
@@ -401,7 +398,7 @@ impl CatRef for PathExpr {
 impl Cat for &RuleFormula {
     fn cat(self) -> String {
         if self.description.is_empty() {
-             self.formula.cat()
+            self.formula.cat()
         } else {
             format!("^{}^ {}", self.description.cat(), self.formula.cat())
         }

@@ -1,3 +1,4 @@
+#![feature(slice_group_by)]
 //! Crate for parsing a tupfile and thereafter de-globbing and decoding variables in a Tupfile
 #![warn(missing_docs)]
 #[macro_use]
@@ -67,9 +68,9 @@ fn test_op() {
 
         use std::path::Path;
         let tuppath = Path::new("./tupdata1.txt");
-        let mut map = SubstMap {
+        let mut map = SubstState {
             conf_map: load_conf_vars(tuppath).expect("conf var open error from tupdata1.txt"),
-            ..SubstMap::default()
+            ..SubstState::default()
         };
 
         assert_eq!(
@@ -272,7 +273,7 @@ fn test_parse() {
     use std::path::Path;
     stmtsloc.cleanup();
 
-    let mut map = SubstMap::default();
+    let mut map = SubstState::default();
     let mut bo = BufferObjects::new(".");
     set_cwd(Path::new("."), &mut map, &mut bo);
     let stmts_ = stmtsloc
@@ -354,7 +355,7 @@ fn test_parse() {
         )
     );
     use decode::*;
-    let taginfo = OutputTagInfo::new();
+    let taginfo = OutputAssocs::new();
     use decode::ResolvePaths;
     use statements::Loc;
     let mut bo = BufferObjects::new(Path::new("."));
@@ -363,7 +364,7 @@ fn test_parse() {
         .resolve_paths(Path::new("."), &taginfo, &mut bo, &tup_desc)
         .unwrap();
     use statements::Cat;
-    if let Some(deglobbed_link) = decodedrule.0.first() {
+    if let Some(deglobbed_link) = decodedrule.get_resolved_links().first() {
         let rule_formula = bo.get_rule(&deglobbed_link.get_rule_desc());
         assert_eq!(
             rule_formula.get_formula().cat(),
@@ -380,7 +381,7 @@ fn test_parse() {
     let decodedrule1 = LocatedStatement::new(rule1, Loc::new(0, 0))
         .resolve_paths(Path::new("."), &taginfo, &mut bo, &tup_desc)
         .unwrap();
-    if let Some(deglobbed_link) = decodedrule1.0.first() {
+    if let Some(deglobbed_link) = decodedrule1.get_resolved_links().first() {
         let rf = bo.get_rule(&deglobbed_link.get_rule_desc());
         let mut rule_exp = String::new();
         rule_exp.push_str("type file.txt");
