@@ -410,12 +410,12 @@ impl Tokens {
             re.push('$');
             return re;
         }
-        self.tokens_to_regex(options, self, &mut re);
+        Self::tokens_to_regex(options, self, &mut re);
         re.push('$');
         re
     }
 
-    fn tokens_to_regex(&self, options: &GlobOptions, tokens: &[Token], re: &mut String) {
+    fn tokens_to_regex(options: &GlobOptions, tokens: &[Token], re: &mut String) {
         for tok in tokens {
             match *tok {
                 Token::Literal(c) => {
@@ -498,7 +498,7 @@ impl Tokens {
                     let mut parts = vec![];
                     for pat in patterns {
                         let mut altre = String::new();
-                        self.tokens_to_regex(options, pat, &mut altre);
+                        Self::tokens_to_regex(options, pat, &mut altre);
                         if !altre.is_empty() {
                             parts.push(altre);
                         }

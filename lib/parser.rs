@@ -111,10 +111,10 @@ fn parse_pathexpr_hat(i: Span) -> IResult<Span, String> {
 // read '<' and the list of rvals inside it until '>'
 fn parse_pathexpr_angle(i: Span) -> IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)> {
     //let input = i.clone();
-    let (s, v0) = many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n<{", *BRKTOKS), tag("<"))(i)?;
+    let (s, v0) = many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n<{", &BRKTOKS), tag("<"))(i)?;
     //let (s, _) = tag("<")(s)?;
     let (s, v) = many_till(
-        |i| parse_pathexpr_no_ws(i, ">", *BRKTOKS), // avoid reading tags , newlines, spaces
+        |i| parse_pathexpr_no_ws(i, ">", &BRKTOKS), // avoid reading tags , newlines, spaces
         tag(">"),
     )(s)?;
     //let v0 = v0.map(|x| x.0);
@@ -300,13 +300,13 @@ fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExp
             delimited(multispace0, line_ending, multispace0),
             |_| (Vec::new(), Span::new(b"".as_ref())),
         )),
-        complete(|i| parse_pelist_till_delim_with_ws(i, "\r\n", *BRKTOKSWS)),
+        complete(|i| parse_pelist_till_delim_with_ws(i, "\r\n", &BRKTOKSWS)),
     ))(input)
 }
 
 // read all pathexpr separated by whitespaces, pausing at BRKTOKS
 fn parse_pathexpr_list_until_ws_plus(input: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
-    many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n", *BRKTOKS), ws1)(input)
+    many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n", &BRKTOKS), ws1)(input)
 }
 
 // parse a lvalue ref to a ident
@@ -491,7 +491,7 @@ pub(crate) fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
         parse_rule_flags_or_description,
     ))(i)?;
     let (s, me) = opt(parse_pathexpr_macroref)(s)?;
-    let (s, formula) = parse_pelist_till_delim_with_ws(s, "|", *BRKTOKSWS)?;
+    let (s, formula) = parse_pelist_till_delim_with_ws(s, "|", &BRKTOKSWS)?;
     Ok((
         s,
         RuleFormula {
@@ -533,7 +533,7 @@ fn default_inp<'a>() -> Span<'a> {
 /// parse rule inputs including groups and bin and exclude patterns
 pub(crate) fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     let (s, _) = opt(sp1)(i)?;
-    let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
+    let pe = |i| parse_pathexpr_ws(i, "|", &BRKTOKSIO);
     many_till(
         alt((
             complete(parse_pathexpr_exclude_pattern),
@@ -549,7 +549,7 @@ pub(crate) fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span
     //context("read secondary inputs",  preceded( tag("|"),
     let (s, _) = opt(sp1)(i)?;
     //let (s, _) = tag("|")(s)?;
-    let pe = |i| parse_pathexpr_ws(i, "|", *BRKTOKSIO);
+    let pe = |i| parse_pathexpr_ws(i, "|", &BRKTOKSIO);
     many_till(
         alt((
             complete(parse_pathexpr_group),
@@ -570,14 +570,14 @@ fn parse_output_delim(i: Span) -> IResult<Span, Span> {
 
 fn parse_primary_output1(i: Span) -> IResult<Span, Vec<PathExpr>> {
     let (s, _) = tag("|")(i)?;
-    let pe = |i| parse_pathexpr_ws(i, "\r\n", *BRKTOKSIO);
+    let pe = |i| parse_pathexpr_ws(i, "\r\n", &BRKTOKSIO);
     let (s, v0) = many_till(pe, parse_output_delim)(s)?;
     Ok((s, v0.0))
 }
 
 fn parse_primary_output0(i: Span) -> IResult<Span, (Vec<PathExpr>, bool)> {
     let (s, _) = opt(sp1)(i)?;
-    let pe = |i| parse_pathexpr_ws(i, "|<{^\r\n", *BRKTOKSIO);
+    let pe = |i| parse_pathexpr_ws(i, "|<{^\r\n", &BRKTOKSIO);
     let (s, v0) = many_till(pe, parse_output_delim)(s)?;
     //eprintln!("{}", v0.1.as_bytes().first().unwrap_or(&b' ').as_char());
     let has_more = v0.1.as_bytes().first().map(|&c| c == b'|').unwrap_or(false);
@@ -778,9 +778,9 @@ pub(crate) fn parse_eq(i: Span) -> IResult<Span, EqCond> {
     ))(s)?;
     let (s, _) = opt(ws1)(s)?;
     let (s, _) = char('(')(s)?;
-    let (s, e1) = parse_pelist_till_delim_no_ws(s, ",", *BRKTOKS)?;
+    let (s, e1) = parse_pelist_till_delim_no_ws(s, ",", &BRKTOKS)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, e2) = parse_pelist_till_delim_no_ws(s, ")", *BRKTOKS)?;
+    let (s, e2) = parse_pelist_till_delim_no_ws(s, ")", &BRKTOKS)?;
     Ok((
         s,
         EqCond {
