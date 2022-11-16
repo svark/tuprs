@@ -1,6 +1,6 @@
 # tuprs  
 ![Build Status](https://github.com/svark/tuprs/actions/workflows/rust.yml/badge.svg)
-Library for parsing a tup file into resolved rules, its inputs and outputs. Tup is a build system that make robustness and convenience
+Library for parsing a tup file into resolved rules, its inputs and outputs. 
 For convenience there are two versions of the api.
 First version works directly with tupfile or the lua but may not resolve groups.
 ```rust
