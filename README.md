@@ -1,6 +1,8 @@
 # tuprs  
 ![Build Status](https://github.com/svark/tuprs/actions/workflows/rust.yml/badge.svg)
-Library for parsing a tup file into resolved rules, its inputs and outputs. 
+---
+[Tup](https://gittup.org/tup) is a build system that works with files and has a light syntax describing rules, its inputs and outputs. It provides strong build guarantees in each run , executing only the rules affected by changes in file system. Furthermore, it can dynamically track file dependencies via dll injection in windows and ld-preloading in linux. This library parses a tup file into resolved rules, its inputs and outputs. 
+
 For convenience there are two versions of the api.
 First version works directly with tupfile or the lua but may not resolve groups.
 ```rust
