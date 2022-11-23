@@ -165,7 +165,9 @@ impl ExpandRun for Statement {
                             {
                                 let matches =
                                     discover_inputs_from_glob(m.get_tup_dir(), arg_path, &outs, bo)
-                                        .unwrap_or_else(|_| panic!("error matching glob pattern {}", arg));
+                                        .unwrap_or_else(|_| {
+                                            panic!("error matching glob pattern {}", arg)
+                                        });
                                 for ofile in matches {
                                     let p = ofile.as_path(bo.deref());
                                     cmd.arg(
@@ -180,11 +182,13 @@ impl ExpandRun for Statement {
                     let env = bo.get_env(&m.cur_env_desc);
                     cmd.envs(env.getenv()).current_dir(m.get_tup_dir());
                     //println!("running {:?}", cmd);
-                    let output = cmd.stdout(Stdio::piped()).output().unwrap_or_else(|_|panic!(
-                        "Failed to execute tup run {} in Tupfile : {}",
-                        script_args.cat().as_str(),
-                        m.get_tup_dir().to_string_lossy().to_string().as_str()
-                    ));
+                    let output = cmd.stdout(Stdio::piped()).output().unwrap_or_else(|_| {
+                        panic!(
+                            "Failed to execute tup run {} in Tupfile : {}",
+                            script_args.cat().as_str(),
+                            m.get_tup_dir().to_string_lossy().to_string().as_str()
+                        )
+                    });
                     //println!("status:{}", output.status);
                     let contents = output.stdout;
                     //println!("{}", String::from_utf8(contents.clone()).unwrap_or("".to_string()));
@@ -474,10 +478,9 @@ impl ExpandMacro for Link {
 
 /// parent folder path for a given tupfile
 pub(crate) fn get_parent(cur_file: &Path) -> &Path {
-    cur_file.parent().unwrap_or_else(|| panic!(
-        "unable to find parent folder for tup file:{:?}",
-        cur_file
-    ))
+    cur_file
+        .parent()
+        .unwrap_or_else(|| panic!("unable to find parent folder for tup file:{:?}", cur_file))
 }
 
 /// parent folder path as a string slice
