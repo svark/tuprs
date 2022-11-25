@@ -2001,7 +2001,7 @@ pub fn parse_dir(root: &Path) -> Result<Artifacts, crate::errors::Error> {
         }
     }
     let root_tupfile_ini =
-        locate_file(root, "Tupfile.ini").ok_or(crate::errors::Error::RootNotFound)?;
+        locate_file(root, "Tupfile.ini", "").ok_or(crate::errors::Error::RootNotFound)?;
     let conf_vars = load_conf_vars(root_tupfile_ini.as_path())?;
     let mut artifacts_all = Artifacts::new();
     let mut parser = transform::TupParser::new_from(root, conf_vars);

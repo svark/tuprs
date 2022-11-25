@@ -1001,7 +1001,7 @@ impl TupParser {
 }
 
 /// locate a file by its name relative to current tup file path by recursively going up the directory tree
-pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
+pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str, alt_ext: &str) -> Option<PathBuf> {
     let mut cwd = cur_tupfile;
     let pb: PathBuf;
     if cur_tupfile.is_dir() {
@@ -1012,6 +1012,13 @@ pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str) -> Option<PathBuf> {
         let p = parent.join(file_to_loc);
         if p.is_file() {
             return Some(p);
+        }
+
+        if !alt_ext.is_empty() {
+            let p = p.with_extension(alt_ext);
+            if p.is_file() {
+                return Some(p);
+            }
         }
         cwd = parent;
     }

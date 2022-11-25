@@ -901,6 +901,5 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
 
 /// locate TupRules.tup\[.lua\] walking up the directory tree
 pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
-    transform::locate_file(cur_tupfile, "Tuprules.tup")
-        .or_else(|| transform::locate_file(cur_tupfile, "Tuprules.lua"))
+    transform::locate_file(cur_tupfile, "Tuprules.tup", "lua")
 }
