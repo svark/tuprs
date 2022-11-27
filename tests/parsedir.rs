@@ -10,8 +10,8 @@ mod tests {
         d.push("tests/tuptest");
         let statements = parse_dir(d.as_path()).expect("failed to parse!");
         //let statements0 = statements[0].get_statements();
-       // println!("{:?}", statements);
-        assert_eq!(statements.len(), 10);
+        // println!("{:?}", statements);
+        assert_eq!(statements.len(), 11);
     }
     #[test]
     fn test_script() {

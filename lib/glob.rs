@@ -245,12 +245,14 @@ impl GlobMatcher {
         //let lossy_str = path.as_ref().to_string_lossy();
         let c = Candidate::new(path.as_ref());
         log::debug!("group regex: {:?}", self.re);
-        let res = self.re
+        let res = self
+            .re
             .captures_iter(c.path.as_ref())
             .inspect(|c| log::debug!("{:?}", c))
             .filter_map(|c| c.name(name))
             .filter_map(|m| str::from_utf8(m.as_bytes()).ok())
-            .map(|s| s.to_string()).next();
+            .map(|s| s.to_string())
+            .next();
         res
     }
 }

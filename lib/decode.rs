@@ -11,9 +11,9 @@ use std::path::{Component, Path, PathBuf};
 use std::slice::Iter;
 
 use glob::{Candidate, GlobBuilder, GlobMatcher};
-use walkdir::WalkDir;
 use path_dedot::ParseDot;
 use regex::{Captures, Regex};
+use walkdir::WalkDir;
 
 use crate::transform::locate_file;
 use bimap::hash::RightValues;
@@ -255,8 +255,7 @@ where
         //debug_assert!(path.as_ref().is_absolute(), "expected a absolute path as input but found:{:?}", path.as_ref());
         let pbuf = if path.as_ref().is_relative() && self.get_root_dir().is_absolute() {
             path.as_ref().to_path_buf() //assume that the relative-path is relative to the root
-        }
-        else {
+        } else {
             diff_paths(path.as_ref(), self.get_root_dir()).unwrap_or_else(|| {
                 panic!(
                     "could not diff paths \n: {:?} - {:?}",
@@ -673,23 +672,22 @@ pub(crate) fn discover_inputs_from_glob(
     let np = NormalPath::absolute_from(glob_path, tup_cwd);
     let (mut base_path, recurse) = get_non_pattern_prefix(np.as_path());
     let mut to_match = np.as_path();
-    if base_path.eq(np.as_path())
-    {
+    if base_path.eq(np.as_path()) {
         let mut pes = Vec::new();
         {
             let path = base_path.as_path();
             let (path_desc, _) = bo.add_path_from(path, tup_cwd);
             pes.push(MatchingPath::with_captures(path_desc, None));
         }
-         if log_enabled!(log::Level::Debug) {
-             //    debug!("{:?}", pes);
-             for pe in pes.iter() {
-                 debug!("mp:{:?}", pe);
-             }
-         }
+        if log_enabled!(log::Level::Debug) {
+            //    debug!("{:?}", pes);
+            for pe in pes.iter() {
+                debug!("mp:{:?}", pe);
+            }
+        }
         // discover inputs from previous outputs
         //outputs.outputs_matching_glob(bo, &globs, &mut pes);
-        return Ok(pes)
+        return Ok(pes);
     }
     let pbuf: PathBuf;
     if base_path.eq(&PathBuf::new()) {
@@ -700,7 +698,10 @@ pub(crate) fn discover_inputs_from_glob(
     let slash_corrected_glob = to_match.to_string_lossy().replace('\\', "/");
     let globs = MyGlob::new(slash_corrected_glob.as_str())?;
     debug!("glob regex used for finding matches {}", globs.re());
-    debug!("base path for files matching glob: {:?}", base_path.as_path());
+    debug!(
+        "base path for files matching glob: {:?}",
+        base_path.as_path()
+    );
     let mut walkdir = WalkDir::new(base_path.as_path());
     if !recurse {
         walkdir = walkdir.max_depth(1);
@@ -721,8 +722,10 @@ pub(crate) fn discover_inputs_from_glob(
     for matching in filtered_paths {
         let path = matching.path();
         let (path_desc, _) = bo.add_path_from_root(path);
-        pes.push(MatchingPath::with_captures(path_desc,
-                                             globs.group(path, "GM")));
+        pes.push(MatchingPath::with_captures(
+            path_desc,
+            globs.group(path, "GM"),
+        ));
     }
     if log_enabled!(log::Level::Debug) {
         for pe in pes.iter() {
@@ -1005,6 +1008,7 @@ impl DecodeInputPaths for PathExpr {
     ) -> Result<Vec<InputResolvedType>, Err> {
         let mut vs = Vec::new();
         debug!("Decoding input paths of {:?}", &self);
+
         match self {
             PathExpr::Literal(_) => {
                 let np = normalized_path(tup_cwd, self);
@@ -1024,7 +1028,11 @@ impl DecodeInputPaths for PathExpr {
                 let (ref grp_desc, _) = bo.add_group_pathexpr(self, tup_cwd);
                 if tag_info.resolve_groups {
                     if let Some(paths) = tag_info.groups.get(grp_desc) {
-                        vs.extend( paths.iter().map( |x| InputResolvedType::GroupEntry(*grp_desc,*x)))
+                        vs.extend(
+                            paths
+                                .iter()
+                                .map(|x| InputResolvedType::GroupEntry(*grp_desc, *x)),
+                        )
                     } else {
                         //let (, _) = bo.add_path(Path::new(&*p.cat()), tup_cwd);
                         vs.push(InputResolvedType::UnResolvedGroupEntry(*grp_desc));
@@ -1040,10 +1048,7 @@ impl DecodeInputPaths for PathExpr {
                         vs.push(InputResolvedType::BinEntry(*bin_desc, *p))
                     }
                 } else {
-                    return Err(Error::StaleBinRef(
-                        b.clone(),
-                        rule_ref.clone(),
-                    ));
+                    return Err(Error::StaleBinRef(b.clone(), rule_ref.clone()));
                 }
             }
             _ => {}
@@ -1221,8 +1226,10 @@ impl InputsAsPaths {
             !matches!(x, &InputResolvedType::GroupEntry(_, _))
                 && !matches!(x, &InputResolvedType::UnResolvedGroupEntry(_))
         };
-        let relpath = |x| diff_paths(x, tup_cwd)
-            .unwrap_or_else(|| panic!("path diff failure {:?} with base:{:?}", x, tup_cwd));
+        let relpath = |x| {
+            diff_paths(x, tup_cwd)
+                .unwrap_or_else(|| panic!("path diff failure {:?} with base:{:?}", x, tup_cwd))
+        };
         let try_grp = |x: &InputResolvedType| {
             if let &InputResolvedType::GroupEntry(ref grp_desc, _) = x {
                 Some((bo.get_group_name(grp_desc), relpath(bo.get_path_from(x))))
@@ -1626,11 +1633,7 @@ fn get_deglobbed_rule(
     let t = resolver.target;
     let tup_cwd = resolver.tup_cwd;
     let secondary_deglobbed_inps = resolver.secondary_inp;
-    debug!(
-        "deglobbing tup at dir:{:?}, rule:{:?}",
-        tup_cwd,
-        r.cat()
-    );
+    debug!("deglobbing tup at dir:{:?}, rule:{:?}", tup_cwd, r.cat());
 
     let input_as_paths = InputsAsPaths::new(tup_cwd, primary_deglobbed_inps, bo, rule_ref.clone());
     let secondary_inputs_as_paths =
@@ -1831,11 +1834,10 @@ impl ResolvePaths for Vec<ResolvedLink> {
         let mut last_tup_desc = TupPathDescriptor(usize::MAX);
         let last_pbuf = PathBuf::new();
         for statement in self.iter() {
-
             let cur_tup_desc = statement.get_rule_ref().get_tupfile_desc();
             let tup_cwd = if last_tup_desc.eq(cur_tup_desc) {
                 last_pbuf.clone()
-            }else {
+            } else {
                 bo.get_tup_path(cur_tup_desc).to_path_buf()
             };
 
@@ -2020,6 +2022,7 @@ impl ResolvePaths for Vec<LocatedStatement> {
         let mut merged_arts = Artifacts::from(Vec::new(), alltaginfos);
         for stmt in self.iter() {
             let art = stmt.resolve_paths(tupfile, merged_arts.get_outs(), bo, tup_desc)?;
+            debug!("{:?}", art);
             merged_arts.merge(art)?;
         }
         Ok(merged_arts)

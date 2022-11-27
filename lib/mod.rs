@@ -6,10 +6,10 @@ extern crate nom;
 #[macro_use]
 extern crate lazy_static;
 extern crate daggy;
-extern crate walkdir;
 extern crate nom_locate;
 extern crate petgraph;
 extern crate regex;
+extern crate walkdir;
 pub mod decode;
 pub mod errors;
 mod glob;
@@ -70,7 +70,7 @@ fn test_op() {
         let tuppath = Path::new("./tupdata1.txt");
         let mut map = SubstState {
             conf_map: load_conf_vars(tuppath).expect("conf var open error from tupdata1.txt"),
-            tup_base_path : tuppath.to_path_buf(),
+            tup_base_path: tuppath.to_path_buf(),
             ..SubstState::default()
         };
 

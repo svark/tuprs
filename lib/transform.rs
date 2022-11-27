@@ -119,7 +119,8 @@ impl SubstState {
 
     pub(crate) fn replace_tup_cwd(&mut self, dir: &str) -> Option<Vec<String>> {
         let v = self.expr_map.remove("TUP_CWD");
-        self.expr_map.insert("TUP_CWD".to_string(), vec![dir.to_string()]);
+        self.expr_map
+            .insert("TUP_CWD".to_string(), vec![dir.to_string()]);
         v
     }
 
@@ -169,13 +170,23 @@ impl ExpandRun for Statement {
                             let arg_path = Path::new(arg);
                             let outs = OutputAssocs::new();
                             {
-                                let matches =
-                                    discover_inputs_from_glob(m.get_tup_dir(), arg_path, &outs, bo)
-                                        .unwrap_or_else(|_| {
-                                            panic!("error matching glob pattern {}", arg)
-                                        });
+                                let matches = discover_inputs_from_glob(
+                                    &*bo.get_root_dir().join(m.get_tup_dir()),
+                                    arg_path,
+                                    &outs,
+                                    bo,
+                                )
+                                .unwrap_or_else(|_| panic!("error matching glob pattern {}", arg));
+                                debug!("expand_run num files from glob:{:?}", matches.len());
                                 for ofile in matches {
-                                    let p = ofile.as_path(bo.deref());
+                                    let p = diff_paths(ofile.as_path(bo.deref()), m.get_tup_dir())
+                                        .unwrap_or_else(|| {
+                                            panic!(
+                                                "Failed to diff path{:?} with base:{:?}",
+                                                ofile.as_path(bo.deref()),
+                                                m.get_tup_dir()
+                                            )
+                                        });
                                     cmd.arg(
                                         p.to_string_lossy().to_string().as_str().replace('\\', "/"),
                                     );
@@ -361,7 +372,7 @@ use decode::{
     InputResolvedType, NormalPath, OutputAssocs, PathDescriptor, ResolvePaths, ResolvedLink,
     RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
 };
-use log::{debug};
+use log::debug;
 use nom::AsBytes;
 use pathdiff::diff_paths;
 use scriptloader::parse_script;
@@ -450,7 +461,10 @@ impl ExpandMacro for Link {
         for pathexpr in self.rule_formula.formula.iter() {
             match pathexpr {
                 &PathExpr::MacroRef(ref name) => {
-                    debug!("Expanding macro name:{}\n in rule: {:?}", name, self.rule_formula);
+                    debug!(
+                        "Expanding macro name:{}\n in rule: {:?}",
+                        name, self.rule_formula
+                    );
                     if let Some(explink) = m.rule_map.get(name.as_str()) {
                         source += explink.source.clone();
                         target += explink.target.clone();
@@ -547,9 +561,10 @@ pub(crate) fn set_cwd(filename: &Path, m: &mut SubstState, bo: &mut BufferObject
     debug!("diffing:{:?} with base: {:?}", m.cur_file.as_path(), tupdir);
     let diff = diff_paths(m.cur_file.as_path(), tupdir).expect("Could not diff");
     debug!("switching to diff:{:?}", diff);
-    let parent = diff.parent().unwrap_or_else(|| panic!("unexpected diff:{:?}", diff));
-    if parent.eq(Path::new(""))
-    {
+    let parent = diff
+        .parent()
+        .unwrap_or_else(|| panic!("unexpected diff:{:?}", diff));
+    if parent.eq(Path::new("")) {
         m.replace_tup_cwd(".");
     } else {
         let p = get_path_str(parent);
@@ -773,7 +788,6 @@ pub struct TupParser {
     config_vars: HashMap<String, Vec<String>>,
 }
 
-
 /// Artifacts represent rules and their outputs that the parser gathers.
 #[derive(Debug, Clone, Default)]
 pub struct Artifacts {
@@ -986,11 +1000,13 @@ impl TupParser {
             let mut bo_ref_mut = self.borrow_mut_ref();
             let stmts = stmts.subst(&mut m, bo_ref_mut.deref_mut())?;
             let output_tag_info = OutputAssocs::new_no_resolve_groups();
+            debug!("num stmts:{:?}", stmts.len());
             let stmts = stmts
                 .expand_run(&mut m, bo_ref_mut.deref_mut())
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
+            debug!("num statements after expand run:{:?}", stmts.len());
             stmts.resolve_paths(
                 m.get_cur_file(),
                 &output_tag_info,
@@ -1014,7 +1030,11 @@ impl TupParser {
 }
 
 /// locate a file by its name relative to current tup file path by recursively going up the directory tree
-pub fn locate_file<P:AsRef<Path>>(cur_tupfile: P, file_to_loc: &str, alt_ext: &str) -> Option<PathBuf> {
+pub fn locate_file<P: AsRef<Path>>(
+    cur_tupfile: P,
+    file_to_loc: &str,
+    alt_ext: &str,
+) -> Option<PathBuf> {
     let mut cwd = cur_tupfile.as_ref();
     let pb: PathBuf;
     if cwd.is_dir() {

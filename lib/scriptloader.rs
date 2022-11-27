@@ -924,14 +924,14 @@ pub(crate) fn parse_script(
         )?;
         let globals = lua.globals();
         globals.set("tup", tup_shared)?;
-        let cur_dir = script_path.parent()
-       .unwrap_or_else(|| panic!("Could not find\
-             a parent folder for script:{:?}. Maybe missing a dot at the beginning", script_path.as_path()))
-            ;
-        globals.set(
-            "TUP_CWD",
-            cur_dir.to_string_lossy().to_string(),
-        )?;
+        let cur_dir = script_path.parent().unwrap_or_else(|| {
+            panic!(
+                "Could not find\
+             a parent folder for script:{:?}. Maybe missing a dot at the beginning",
+                script_path.as_path()
+            )
+        });
+        globals.set("TUP_CWD", cur_dir.to_string_lossy().to_string())?;
         lua.set_hook(
             HookTriggers {
                 every_line: true,
@@ -993,7 +993,7 @@ pub(crate) fn parse_script(
         lua.load(prelude).exec()?;
         let mut contents = Vec::new();
         for tup_rules in locate_tuprules(script_path.as_path()) {
-            let mut tup_rules_file = File::open(root.join(tup_rules) )?;
+            let mut tup_rules_file = File::open(root.join(tup_rules))?;
             tup_rules_file.read_to_end(&mut contents)?;
             lua.load(contents.as_bytes()).exec()?;
             contents.clear();

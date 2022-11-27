@@ -1,11 +1,11 @@
 //! Module that uses nom to parse a Tupfile
-use std::collections::VecDeque;
 use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
 use nom::sequence::{delimited, preceded};
 use nom::AsBytes;
+use std::collections::VecDeque;
 
 use crate::transform;
 use nom::bytes::complete::{is_a, is_not};
@@ -72,10 +72,10 @@ fn sp1(input: Span) -> IResult<Span, Span> {
 }
 
 /// ignore until line ending
-fn ws0_line_ending(i: Span) -> IResult<Span,()> {
+fn ws0_line_ending(i: Span) -> IResult<Span, ()> {
     let (s, _) = opt(many0(space0))(i)?;
-    let (s, _)=  line_ending(s)?;
-    Ok((s,()))
+    let (s, _) = line_ending(s)?;
+    Ok((s, ()))
 }
 // checks for presence of a group expression that begins with some path.`
 fn parse_pathexpr_raw_angle(input: Span) -> IResult<Span, Span> {
@@ -193,13 +193,13 @@ fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
             Ok((s, ("".to_string()).into()))
         }
 
-        b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\}" | b"\\<"  | b"\\>" | b"\\^" | b"\\|"   => {
-           let (s, _) = take(1_usize)(i)?;
-           let (s, r) = take(1_usize)(s)?;
-           let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
+        b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\}" | b"\\<" | b"\\>" | b"\\^" | b"\\|" => {
+            let (s, _) = take(1_usize)(i)?;
+            let (s, r) = take(1_usize)(s)?;
+            let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
             Ok((s, pe))
-       }
-        [b'\\',..] => {
+        }
+        [b'\\', ..] => {
             let (s, r) = take(2_usize)(i)?;
             let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
             Ok((s, pe))
@@ -311,10 +311,9 @@ fn parse_pelist_till_delim_no_ws<'a, 'b>(
 //  wrapper over the previous parser that handles empty inputs and stops at newline;
 fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     alt((
-        complete(map(
-            ws0_line_ending,
-            |_| (Vec::new(), Span::new(b"".as_ref())),
-        )),
+        complete(map(ws0_line_ending, |_| {
+            (Vec::new(), Span::new(b"".as_ref()))
+        })),
         complete(|i| parse_pelist_till_delim_with_ws(i, "\r\n", &BRKTOKSWS)),
     ))(input)
 }
@@ -909,15 +908,14 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
 }
 
 /// locate TupRules.tup\[.lua\] walking up the directory tree
-pub(crate) fn locate_tuprules<P:AsRef<Path>>(cur_tupfile: P) -> VecDeque<PathBuf> {
+pub(crate) fn locate_tuprules<P: AsRef<Path>>(cur_tupfile: P) -> VecDeque<PathBuf> {
     let mut v = VecDeque::new();
 
     let mut tupr = cur_tupfile.as_ref();
-    while let Some(p) = transform::locate_file(tupr, "Tuprules.tup", "lua")
-    {
+    while let Some(p) = transform::locate_file(tupr, "Tuprules.tup", "lua") {
         v.push_front(p);
         tupr = v.front().and_then(|p| p.parent()).unwrap();
-        if tupr.as_os_str().is_empty() || tupr.as_os_str().eq( "."){
+        if tupr.as_os_str().is_empty() || tupr.as_os_str().eq(".") {
             break;
         }
         tupr = tupr.parent().unwrap();
