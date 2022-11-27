@@ -117,6 +117,12 @@ impl SubstState {
         }
     }
 
+    pub(crate) fn replace_tup_cwd(&mut self, dir: &str) -> Option<Vec<String>> {
+        let v = self.expr_map.remove("TUP_CWD");
+        self.expr_map.insert("TUP_CWD".to_string(), vec![dir.to_string()]);
+        v
+    }
+
     pub(crate) fn set_env(&mut self, ed: EnvDescriptor) {
         self.cur_env_desc = ed;
     }
@@ -180,13 +186,14 @@ impl ExpandRun for Statement {
                         }
                     }
                     let env = bo.get_env(&m.cur_env_desc);
-                    cmd.envs(env.getenv()).current_dir(m.get_tup_dir());
-                    //println!("running {:?}", cmd);
+                    let dir = bo.get_root_dir().join(m.get_tup_dir());
+                    cmd.envs(env.getenv()).current_dir(dir.as_path());
+                    debug!("running {:?} to fetch more rules", cmd);
                     let output = cmd.stdout(Stdio::piped()).output().unwrap_or_else(|_| {
                         panic!(
-                            "Failed to execute tup run {} in Tupfile : {}",
+                            "Failed to execute tup run {} in Tupfile : {:?}",
                             script_args.cat().as_str(),
-                            m.get_tup_dir().to_string_lossy().to_string().as_str()
+                            dir.as_os_str()
                         )
                     });
                     //println!("status:{}", output.status);
@@ -194,12 +201,10 @@ impl ExpandRun for Statement {
                     //println!("{}", String::from_utf8(contents.clone()).unwrap_or("".to_string()));
                     let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
                         .expect("failed to parse output of tup run");
-                    let lstmts = lstmts
+                    let mut lstmts = lstmts
                         .subst(m, bo)
                         .expect("subst failure in generated tup rules");
-                    for located_stmt in lstmts {
-                        vs.push(located_stmt.move_statement());
-                    }
+                    vs.extend(lstmts.drain(..).map(LocatedStatement::move_statement));
                 }
             }
             _ => vs.push(self.clone()),
@@ -356,7 +361,7 @@ use decode::{
     InputResolvedType, NormalPath, OutputAssocs, PathDescriptor, ResolvePaths, ResolvedLink,
     RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
 };
-use log::debug;
+use log::{debug};
 use nom::AsBytes;
 use pathdiff::diff_paths;
 use scriptloader::parse_script;
@@ -445,6 +450,7 @@ impl ExpandMacro for Link {
         for pathexpr in self.rule_formula.formula.iter() {
             match pathexpr {
                 &PathExpr::MacroRef(ref name) => {
+                    debug!("Expanding macro name:{}\n in rule: {:?}", name, self.rule_formula);
                     if let Some(explink) = m.rule_map.get(name.as_str()) {
                         source += explink.source.clone();
                         target += explink.target.clone();
@@ -487,6 +493,9 @@ pub(crate) fn get_parent(cur_file: &Path) -> &Path {
 pub(crate) fn get_parent_str(cur_file: &Path) -> String {
     normalize_path(cur_file.parent().unwrap())
 }
+pub(crate) fn get_path_str(cur_file: &Path) -> String {
+    normalize_path(cur_file)
+}
 
 /// strings in pathexpr that are space separated
 fn tovecstring(right: &[PathExpr]) -> Vec<String> {
@@ -507,8 +516,8 @@ pub fn load_conf_vars(
             if let Some(fstr) = conf_file.to_str() {
                 for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
                     if let Statement::LetExpr { left, right, .. } = statement {
-                        if left.name.starts_with("CONFIG_") {
-                            conf_vars.insert(left.name[7..].to_string(), tovecstring(right));
+                        if let Some(rest) = left.name.strip_prefix("CONFIG_") {
+                            conf_vars.insert(rest.to_string(), tovecstring(right));
                         }
                     }
                 }
@@ -532,20 +541,25 @@ pub fn load_conf_vars(
 /// set the current TUP_CWD in expression map in SubstState as we switch to reading a included file
 pub(crate) fn set_cwd(filename: &Path, m: &mut SubstState, bo: &mut BufferObjects) -> PathBuf {
     debug!("reading {:?}", filename);
-    let cf = switch_dir(filename, m, bo);
-    let def_vars = &mut m.expr_map;
+    let cf = switch_to_reading(filename, m, bo);
+    let tupdir = m.tup_base_path.parent().unwrap();
 
-    let diff = diff_paths(m.cur_file.as_path(), m.tup_base_path.as_path()).unwrap();
-    let p = get_parent_str(diff.as_path());
+    debug!("diffing:{:?} with base: {:?}", m.cur_file.as_path(), tupdir);
+    let diff = diff_paths(m.cur_file.as_path(), tupdir).expect("Could not diff");
+    debug!("switching to diff:{:?}", diff);
+    let parent = diff.parent().unwrap_or_else(|| panic!("unexpected diff:{:?}", diff));
+    if parent.eq(Path::new(""))
     {
-        def_vars.remove("TUP_CWD");
-        def_vars.insert("TUP_CWD".to_owned(), vec![p]);
+        m.replace_tup_cwd(".");
+    } else {
+        let p = get_path_str(parent);
+        m.replace_tup_cwd(p.as_str());
     }
     cf
 }
 
 /// update `SubstState' to point to newer file that is being read (like in include statement)
-fn switch_dir(filename: &Path, m: &mut SubstState, bo: &mut BufferObjects) -> PathBuf {
+fn switch_to_reading(filename: &Path, m: &mut SubstState, bo: &mut BufferObjects) -> PathBuf {
     let cf = m.cur_file.clone();
     m.cur_file = filename.to_path_buf();
     let (d, _) = bo.add_tup(filename);
@@ -672,11 +686,12 @@ impl Subst for Vec<LocatedStatement> {
 
                 Statement::IncludeRules => {
                     let parent = get_parent(m.cur_file.as_path());
-                    if let Some(f) = locate_tuprules(parent) {
+                    for f in locate_tuprules(parent) {
                         let include_stmts = parse_tupfile(f.as_path())?;
                         //m.cur_file = f;
-                        switch_dir(f.as_path(), m, bo);
+                        let cf = set_cwd(f.as_path(), m, bo);
                         newstats.append(&mut include_stmts.subst(m, bo)?);
+                        set_cwd(cf.as_path(), m, bo);
                     }
                 }
                 Statement::Include(s) => {
@@ -758,9 +773,6 @@ pub struct TupParser {
     config_vars: HashMap<String, Vec<String>>,
 }
 
-impl TupParser {}
-
-impl TupParser {}
 
 /// Artifacts represent rules and their outputs that the parser gathers.
 #[derive(Debug, Clone, Default)]
@@ -961,15 +973,16 @@ impl TupParser {
 
         let mut m = SubstState::new(
             &self.config_vars,
-            tup_file_path.as_ref(),
+            self.borrow_ref().get_tup_path(&tup_desc),
             tup_desc,
             env_desc,
         );
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
-            parse_script(tup_file_path.as_ref(), m, self.bo.clone())
+            parse_script(m, self.bo.clone())
         } else {
-            let stmts = parse_tupfile(tup_file_path.as_ref())?;
+            //let tup_file_path = m.get_cur_file().to_path_buf();
+            let stmts = parse_tupfile(tup_file_path)?;
             let mut bo_ref_mut = self.borrow_mut_ref();
             let stmts = stmts.subst(&mut m, bo_ref_mut.deref_mut())?;
             let output_tag_info = OutputAssocs::new_no_resolve_groups();
@@ -979,10 +992,10 @@ impl TupParser {
                 .flatten()
                 .collect::<Vec<_>>();
             stmts.resolve_paths(
-                tup_file_path.as_ref(),
+                m.get_cur_file(),
                 &output_tag_info,
                 bo_ref_mut.deref_mut(),
-                m.get_cur_file_desc(),
+                &tup_desc,
             )
         }
     }
@@ -1001,11 +1014,11 @@ impl TupParser {
 }
 
 /// locate a file by its name relative to current tup file path by recursively going up the directory tree
-pub fn locate_file(cur_tupfile: &Path, file_to_loc: &str, alt_ext: &str) -> Option<PathBuf> {
-    let mut cwd = cur_tupfile;
+pub fn locate_file<P:AsRef<Path>>(cur_tupfile: P, file_to_loc: &str, alt_ext: &str) -> Option<PathBuf> {
+    let mut cwd = cur_tupfile.as_ref();
     let pb: PathBuf;
-    if cur_tupfile.is_dir() {
-        pb = cur_tupfile.join("Tupfile");
+    if cwd.is_dir() {
+        pb = cwd.join("Tupfile");
         cwd = &pb;
     }
     while let Some(parent) = cwd.parent() {

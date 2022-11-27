@@ -435,6 +435,9 @@ impl TupScriptContext {
             .to_string_lossy()
             .to_string()
     }
+    pub fn get_root(&self) -> std::path::PathBuf {
+        self.bo.deref().borrow().get_root_dir().to_path_buf()
+    }
     pub fn dir(a: &str) -> String {
         Path::new(a).parent().unwrap().to_string_lossy().to_string()
     }
@@ -907,22 +910,27 @@ impl UserData for TupScriptContext {
 
 /// main entry point for parsing Tupfile.lua
 pub(crate) fn parse_script(
-    script_path: &Path,
-    cfg: SubstState,
+    parse_state: SubstState,
     bo: std::rc::Rc<std::cell::RefCell<BufferObjects>>,
 ) -> Result<Artifacts, Err> {
     let lua = unsafe { mlua::Lua::unsafe_new() };
     let r = lua.scope(|scope| {
-        let tupscriptctx = TupScriptContext::new(cfg, bo);
+        let script_path = parse_state.get_cur_file().to_path_buf();
+        let tupscriptctx = TupScriptContext::new(parse_state, bo);
+        let root = tupscriptctx.get_root();
         let tup_shared = scope.create_userdata(tupscriptctx)?;
         lua.load_from_std_lib(
             StdLib::DEBUG | StdLib::STRING | StdLib::UTF8 | StdLib::IO | StdLib::OS,
         )?;
         let globals = lua.globals();
         globals.set("tup", tup_shared)?;
+        let cur_dir = script_path.parent()
+       .unwrap_or_else(|| panic!("Could not find\
+             a parent folder for script:{:?}. Maybe missing a dot at the beginning", script_path.as_path()))
+            ;
         globals.set(
             "TUP_CWD",
-            script_path.parent().unwrap().to_string_lossy().to_string(),
+            cur_dir.to_string_lossy().to_string(),
         )?;
         lua.set_hook(
             HookTriggers {
@@ -938,11 +946,7 @@ pub(crate) fn parse_script(
         )?;
         lua.set_named_registry_value(
             CURDIR.as_bytes(),
-            script_path
-                .parent()
-                .expect("could not find script path")
-                .to_string_lossy()
-                .to_string(),
+            root.join(cur_dir).to_string_lossy().to_string(),
         )?;
         let tup_append_table = lua.create_function(|luactx, (a, b): (Value, Value)| {
             let mut t = luactx.create_table()?;
@@ -987,14 +991,14 @@ pub(crate) fn parse_script(
             tostring = tup_tostring
         "#;
         lua.load(prelude).exec()?;
-        let mut file = File::open(script_path)?;
         let mut contents = Vec::new();
-        if let Some(tup_rules) = locate_tuprules(script_path) {
-            let mut tup_rules_file = File::open(tup_rules)?;
+        for tup_rules in locate_tuprules(script_path.as_path()) {
+            let mut tup_rules_file = File::open(root.join(tup_rules) )?;
             tup_rules_file.read_to_end(&mut contents)?;
             lua.load(contents.as_bytes()).exec()?;
             contents.clear();
         }
+        let mut file = File::open(root.join(script_path.as_path()))?;
         file.read_to_end(&mut contents)?;
         lua.load(contents.as_bytes()).exec()?;
         let tup_shared: AnyUserData = globals.get("tup")?;

@@ -6,7 +6,7 @@ extern crate nom;
 #[macro_use]
 extern crate lazy_static;
 extern crate daggy;
-extern crate jwalk;
+extern crate walkdir;
 extern crate nom_locate;
 extern crate petgraph;
 extern crate regex;
@@ -70,6 +70,7 @@ fn test_op() {
         let tuppath = Path::new("./tupdata1.txt");
         let mut map = SubstState {
             conf_map: load_conf_vars(tuppath).expect("conf var open error from tupdata1.txt"),
+            tup_base_path : tuppath.to_path_buf(),
             ..SubstState::default()
         };
 
@@ -274,8 +275,9 @@ fn test_parse() {
     stmtsloc.cleanup();
 
     let mut map = SubstState::default();
+    map.tup_base_path = std::path::PathBuf::from("./Tupfile");
     let mut bo = BufferObjects::new(".");
-    set_cwd(Path::new("."), &mut map, &mut bo);
+    set_cwd(Path::new("./Tupfile"), &mut map, &mut bo);
     let stmts_ = stmtsloc
         .subst(&mut map, &mut bo)
         .expect("subst failure")
@@ -361,7 +363,7 @@ fn test_parse() {
     let mut bo = BufferObjects::new(Path::new("."));
     let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
     let decodedrule = LocatedStatement::new(rule, Loc::new(0, 0))
-        .resolve_paths(Path::new("."), &taginfo, &mut bo, &tup_desc)
+        .resolve_paths(Path::new("./Tupfile"), &taginfo, &mut bo, &tup_desc)
         .unwrap();
     use statements::Cat;
     if let Some(deglobbed_link) = decodedrule.get_resolved_links().first() {
@@ -379,7 +381,7 @@ fn test_parse() {
     use std::io::Write;
     file.write_all("-".as_bytes()).expect("file write error");
     let decodedrule1 = LocatedStatement::new(rule1, Loc::new(0, 0))
-        .resolve_paths(Path::new("."), &taginfo, &mut bo, &tup_desc)
+        .resolve_paths(Path::new("file.txt"), &taginfo, &mut bo, &tup_desc)
         .unwrap();
     if let Some(deglobbed_link) = decodedrule1.get_resolved_links().first() {
         let rf = bo.get_rule(&deglobbed_link.get_rule_desc());

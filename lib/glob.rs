@@ -241,13 +241,17 @@ impl GlobMatcher {
         &self.re
     }
     /// get the i-the matching capturing group in path. Each glob pattern has corresponds to a capturing group
-    pub fn group<P: AsRef<Path>>(&self, path: P, i: usize) -> Option<String> {
-        let lossy_str = path.as_ref().to_string_lossy();
-        self.re
-            .captures(lossy_str.as_bytes())
-            .and_then(|c| c.get(i))
-            .and_then(|m| std::str::from_utf8(m.as_bytes()).ok())
-            .map(|s| s.to_string())
+    pub fn group<P: AsRef<Path>>(&self, path: P, name: &str) -> Option<String> {
+        //let lossy_str = path.as_ref().to_string_lossy();
+        let c = Candidate::new(path.as_ref());
+        log::debug!("group regex: {:?}", self.re);
+        let res = self.re
+            .captures_iter(c.path.as_ref())
+            .inspect(|c| log::debug!("{:?}", c))
+            .filter_map(|c| c.name(name))
+            .filter_map(|m| str::from_utf8(m.as_bytes()).ok())
+            .map(|s| s.to_string()).next();
+        res
     }
 }
 /// A builder for a pattern.
@@ -423,7 +427,7 @@ impl Tokens {
                 }
                 Token::Any => {
                     if options.capture_globs {
-                        re.push('(');
+                        re.push_str("(?P<GM>(");
                     }
                     if options.literal_separator {
                         re.push_str("[^/]");
@@ -436,7 +440,7 @@ impl Tokens {
                 }
                 Token::ZeroOrMore => {
                     if options.capture_globs {
-                        re.push('(');
+                        re.push_str("(?P<GM>");
                     }
                     if options.literal_separator {
                         re.push_str("[^/]*");
@@ -449,21 +453,21 @@ impl Tokens {
                 }
                 Token::RecursivePrefix => {
                     if options.capture_globs {
-                        re.push_str("(/?|.*/)");
+                        re.push_str("(?P<GM>/?|.*/)");
                     } else {
                         re.push_str("(?:/?|.*/)");
                     }
                 }
                 Token::RecursiveSuffix => {
                     if options.capture_globs {
-                        re.push_str("/(.*)");
+                        re.push_str("/(?P<GM>.*)");
                     } else {
                         re.push_str("/.*");
                     }
                 }
                 Token::RecursiveZeroOrMore => {
                     if options.capture_globs {
-                        re.push_str("(/|/.*/)");
+                        re.push_str("(?P<GM>/|/.*/)");
                     } else {
                         re.push_str("(?:/|/.*/)");
                     }
@@ -473,7 +477,7 @@ impl Tokens {
                     ref ranges,
                 } => {
                     if options.capture_globs {
-                        re.push('(');
+                        re.push_str("(?P<GM>");
                     }
                     re.push('[');
                     if negated {

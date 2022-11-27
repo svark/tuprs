@@ -1,5 +1,6 @@
 //! Module that uses nom to parse a Tupfile
-use nom::character::complete::{line_ending, multispace0, multispace1, space1};
+use std::collections::VecDeque;
+use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
@@ -48,11 +49,11 @@ fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
 }
 /// check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
-    nom::character::is_alphanumeric(c) || c == b'_'
+    nom::character::is_alphanumeric(c) || c == b'_' || c == b'-'
 }
 
 fn is_ident_perc(c: u8) -> bool {
-    nom::character::is_alphanumeric(c) || c == b'_' || c == b'%'
+    nom::character::is_alphanumeric(c) || c == b'_' || c == b'-' || c == b'%'
 }
 fn ws1(input: Span) -> IResult<Span, Span> {
     alt((
@@ -65,9 +66,16 @@ fn manynewlineesc(input: Span) -> IResult<Span, Span> {
     let (s, _) = many1(preceded(tag("\\"), line_ending))(input)?;
     Ok((s, default_inp()))
 }
-// read a space or blackslash newline continuation
+/// read a space or blackslash newline continuation
 fn sp1(input: Span) -> IResult<Span, Span> {
     alt((complete(manynewlineesc), space1))(input)
+}
+
+/// ignore until line ending
+fn ws0_line_ending(i: Span) -> IResult<Span,()> {
+    let (s, _) = opt(many0(space0))(i)?;
+    let (s, _)=  line_ending(s)?;
+    Ok((s,()))
 }
 // checks for presence of a group expression that begins with some path.`
 fn parse_pathexpr_raw_angle(input: Span) -> IResult<Span, Span> {
@@ -184,8 +192,15 @@ fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
             let (s, _) = take(2_usize)(i)?;
             Ok((s, ("".to_string()).into()))
         }
-        b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\<" | b"\\^" | b"\\|" => {
-            let (s, _) = take(2_usize)(i)?;
+
+        b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\}" | b"\\<"  | b"\\>" | b"\\^" | b"\\|"   => {
+           let (s, _) = take(1_usize)(i)?;
+           let (s, r) = take(1_usize)(s)?;
+           let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
+            Ok((s, pe))
+       }
+        [b'\\',..] => {
+            let (s, r) = take(2_usize)(i)?;
             let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
             Ok((s, pe))
         }
@@ -297,7 +312,7 @@ fn parse_pelist_till_delim_no_ws<'a, 'b>(
 fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
     alt((
         complete(map(
-            delimited(multispace0, line_ending, multispace0),
+            ws0_line_ending,
             |_| (Vec::new(), Span::new(b"".as_ref())),
         )),
         complete(|i| parse_pelist_till_delim_with_ws(i, "\r\n", &BRKTOKSWS)),
@@ -352,7 +367,6 @@ fn parse_export(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = sp1(s)?;
     let (s, r) = context("export expression", cut(take_while(is_ident)))(s)?;
     let (s, _) = multispace0(s)?;
-    let (s, _) = line_ending(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
     Ok((s, (Statement::Export(raw.to_owned()), i).into()))
 }
@@ -378,8 +392,6 @@ fn parse_import(i: Span) -> IResult<Span, LocatedStatement> {
         preceded(multispace0, cut(take_while(is_ident))),
     ))(s)?;
     let (s, _) = multispace0(s)?;
-    let (s, _) = line_ending(s)?;
-
     let default_raw = def.and_then(|x| from_utf8(x).ok());
     Ok((
         s,
@@ -395,9 +407,7 @@ fn parse_preload(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = sp1(s)?;
     // preload a single directory
     let (s, r) = context("preload expression", cut(parse_pathexpr_list_until_ws_plus))(s)?;
-
     let (s, _) = multispace0(s)?;
-    let (s, _) = line_ending(s)?;
     Ok((s, (Statement::Preload(r.0), i).into()))
 }
 
@@ -417,8 +427,7 @@ fn parse_run(i: Span) -> IResult<Span, LocatedStatement> {
 fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("include_rules")(s)?;
-    let (s, _) = context("include_rules", multispace0)(s)?;
-    let (s, _) = line_ending(s)?;
+    let (s, _) = complete(ws0_line_ending)(s)?;
     Ok((s, (Statement::IncludeRules, i).into()))
 }
 
@@ -900,6 +909,18 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
 }
 
 /// locate TupRules.tup\[.lua\] walking up the directory tree
-pub(crate) fn locate_tuprules(cur_tupfile: &Path) -> Option<PathBuf> {
-    transform::locate_file(cur_tupfile, "Tuprules.tup", "lua")
+pub(crate) fn locate_tuprules<P:AsRef<Path>>(cur_tupfile: P) -> VecDeque<PathBuf> {
+    let mut v = VecDeque::new();
+
+    let mut tupr = cur_tupfile.as_ref();
+    while let Some(p) = transform::locate_file(tupr, "Tuprules.tup", "lua")
+    {
+        v.push_front(p);
+        tupr = v.front().and_then(|p| p.parent()).unwrap();
+        if tupr.as_os_str().is_empty() || tupr.as_os_str().eq( "."){
+            break;
+        }
+        tupr = tupr.parent().unwrap();
+    }
+    v
 }
