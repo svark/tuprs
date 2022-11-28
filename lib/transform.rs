@@ -840,7 +840,9 @@ impl Artifacts {
     pub fn is_empty(&self) -> bool {
         self.resolved_links.is_empty()
     }
-    ///Merges outputs from parsing one tupfile  with the next. All the new links will be extended.
+
+    /// Merges outputs from parsing one tupfile  with the next. All the new links will be extended.
+    /// Merging operation fails with an error if it finds if any of the outputs it finds in `artifacts` have a previous owner
     pub fn merge(&mut self, mut artifacts: Artifacts) -> Result<(), crate::errors::Error> {
         self.outs.merge(&artifacts.outs)?;
         self.resolved_links.extend(artifacts.drain_resolved_links());
@@ -991,10 +993,10 @@ impl TupParser {
         return self.bo.deref().borrow_mut();
     }
 
-    /// Primary APi to parse a tupfile or lua file. Parser gathers rules, groups, bins and  its file refernces it finds in tupfile.
+    /// Primary APi to parse a tupfile or lua file. Parser gathers rules, groups, bins and file paths it finds in tupfile.
     /// These are all referenced by their ids that generated  on the fly.
-    /// Upon success the parser returns `Artifacts` that holds  references  to all the resolved outputs by their ids
-    /// The parser currently also allows you to read its buffers (id-objec pairs) and even update its based on externally saved data via `ReadBufferObjects` and `WriteBufObjects`
+    /// Upon success the parser returns `Artifacts` that holds  references to all the resolved outputs by their ids
+    /// The parser currently also allows you to read its buffers (id-object pairs) and even update it based on externally saved data via `ReadBufferObjects` and `WriteBufObjects`
     /// See [Artifacts]
     pub fn parse<P: AsRef<Path>>(
         &mut self,
@@ -1039,7 +1041,8 @@ impl TupParser {
         }
     }
 
-    /// Re-resolve for resolved groups that were left unresolved  in the first round of parsing
+    /// Re-resolve for resolved groups that were left unresolved in the first round of parsing
+    /// This step is usually run as a second pass to resolve group references across Tupfiles
     pub fn reresolve(&mut self, arts: Artifacts) -> Result<Artifacts, crate::errors::Error> {
         let pbuf = PathBuf::new();
         let mut boref = self.borrow_mut_ref();
