@@ -68,10 +68,10 @@ fn test_op() {
 
         use std::path::Path;
         let tuppath = Path::new("./tupdata1.txt");
-        let mut map = SubstState {
+        let mut map = ParseState {
             conf_map: load_conf_vars(tuppath).expect("conf var open error from tupdata1.txt"),
             tup_base_path: tuppath.to_path_buf(),
-            ..SubstState::default()
+            ..ParseState::default()
         };
 
         assert_eq!(
@@ -274,7 +274,7 @@ fn test_parse() {
     use std::path::Path;
     stmtsloc.cleanup();
 
-    let mut map = SubstState::default();
+    let mut map = ParseState::default();
     map.tup_base_path = std::path::PathBuf::from("./Tupfile");
     let mut bo = BufferObjects::new(".");
     set_cwd(Path::new("./Tupfile"), &mut map, &mut bo);

@@ -25,8 +25,8 @@ use log::{debug, log_enabled};
 use pathdiff::diff_paths;
 use petgraph::graph::NodeIndex;
 use statements::*;
-use transform::{load_conf_vars, Artifacts, SubstState, TupParser};
-use {glob, transform};
+use transform::{load_conf_vars, Artifacts, ParseState, TupParser};
+use glob;
 
 /// Normal Path packages a PathBuf, giving relative paths wrt current tup directory
 #[derive(Debug, Default, Eq, PartialEq, Clone, Hash)]
@@ -615,9 +615,9 @@ pub(crate) struct MyGlob {
 }
 
 impl MyGlob {
-    pub(crate) fn new(path_pattern: &str) -> Result<Self, crate::errors::Error> {
+    pub(crate) fn new(path_pattern: &str) -> Result<Self, Error> {
         let to_glob_error = |e: &glob::Error| {
-            crate::errors::Error::GlobError(
+            Error::GlobError(
                 path_pattern.to_string() + ":" + e.kind().to_string().as_str(),
             )
         };
@@ -668,7 +668,7 @@ pub(crate) fn discover_inputs_from_glob(
     glob_path: &Path,
     outputs: &OutputAssocs,
     bo: &mut BufferObjects,
-) -> Result<Vec<MatchingPath>, crate::errors::Error> {
+) -> Result<Vec<MatchingPath>, Error> {
     let np = NormalPath::absolute_from(glob_path, tup_cwd);
     let (mut base_path, recurse) = get_non_pattern_prefix(np.as_path());
     let mut to_match = np.as_path();
@@ -846,6 +846,7 @@ pub(crate) struct BufferObjects {
     tbo: TupPathBufferObject,
     ebo: EnvBufferObject,
     rbo: RuleBufferObject,
+    statement_cache : HashMap<TupPathDescriptor, Vec<LocatedStatement>>,
 }
 // Accessors for BufferObjects
 impl BufferObjects {
@@ -856,6 +857,7 @@ impl BufferObjects {
             bbo: BinBufferObject::new(root.as_ref()),
             gbo: GroupBufferObject::new(root.as_ref()),
             tbo: TupPathBufferObject::new(root.as_ref()),
+            statement_cache: HashMap::new(),
             ..Default::default()
         }
     }
@@ -982,6 +984,19 @@ impl BufferObjects {
     /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
     pub fn group_iter(&self) -> bimap::hash::Iter<'_, NormalPath, GroupPathDescriptor> {
         self.gbo.group_iter()
+    }
+
+    /// Add statements to cache.
+    pub(crate) fn add_statements_to_cache(&mut self, tup_desc: &TupPathDescriptor, vs: Vec<LocatedStatement>) {
+        self.statement_cache.insert(*tup_desc, vs);
+    }
+
+    pub(crate) fn is_cached(&self, tup_desc : &TupPathDescriptor) -> bool {
+        self.statement_cache.contains_key(tup_desc)
+    }
+    /// Get statement already in cache from the given tup file(or one of the included files)
+    pub(crate) fn get_statements(&self, tup_desc: &TupPathDescriptor) -> Option<&Vec<LocatedStatement>> {
+        self.statement_cache.get(tup_desc)
     }
 }
 
@@ -1817,7 +1832,7 @@ pub(crate) trait ResolvePaths {
 }
 
 pub(crate) trait ExpandRun {
-    fn expand_run(&self, m: &mut SubstState, bo: &mut BufferObjects) -> Vec<Self>
+    fn expand_run(&self, m: &mut ParseState, bo: &mut BufferObjects, loc: &Loc) -> Vec<Self>
     where
         Self: Sized;
 }
@@ -1900,7 +1915,7 @@ impl ResolvePaths for ResolvedLink {
                                 .push(InputResolvedType::GroupEntry(*g, *pd))
                         }
                     } else {
-                        return Err(crate::errors::Error::StaleGroupRef(
+                        return Err(Error::StaleGroupRef(
                             bo.get_input_path_str(i),
                             rlink.get_rule_ref().clone(),
                         ));
@@ -2030,7 +2045,7 @@ impl ResolvePaths for Vec<LocatedStatement> {
 }
 
 /// `parse_dir' scans and parses all Tupfiles from a directory root, When sucessful it returns de-globbed, decoded links(rules)
-pub fn parse_dir(root: &Path) -> Result<Artifacts, crate::errors::Error> {
+pub fn parse_dir(root: &Path) -> Result<Artifacts, Error> {
     let mut tupfiles = Vec::new();
     let tf = OsString::from("Tupfile");
     let tflua = OsString::from("Tupfile.lua");
@@ -2045,10 +2060,10 @@ pub fn parse_dir(root: &Path) -> Result<Artifacts, crate::errors::Error> {
         }
     }
     let root_tupfile_ini =
-        locate_file(root, "Tupfile.ini", "").ok_or(crate::errors::Error::RootNotFound)?;
+        locate_file(root, "Tupfile.ini", "").ok_or(Error::RootNotFound)?;
     let conf_vars = load_conf_vars(root_tupfile_ini.as_path())?;
     let mut artifacts_all = Artifacts::new();
-    let mut parser = transform::TupParser::new_from(root, conf_vars);
+    let mut parser = TupParser::new_from(root, conf_vars);
     for tup_file_path in tupfiles.iter() {
         let artifacts = parser.parse(tup_file_path)?;
         artifacts_all.merge(artifacts)?;
@@ -2061,7 +2076,7 @@ pub fn parse_dir(root: &Path) -> Result<Artifacts, crate::errors::Error> {
 fn dag_check_artifacts(
     parser: &mut TupParser,
     artifacts_all: &mut Artifacts,
-) -> Result<Vec<NodeIndex>, crate::errors::Error> {
+) -> Result<Vec<NodeIndex>, Error> {
     let statement_from_id = |i: NodeIndex| artifacts_all.get_resolved_link(i.index());
     let mut dag: Dag<u32, u32> = Dag::new();
     let mut provided_by: HashMap<_, Vec<_>> = HashMap::new();
@@ -2082,7 +2097,7 @@ fn dag_check_artifacts(
             for pnodeid in pnodeids {
                 for nodeid in nodeids {
                     dag.update_edge(*pnodeid, *nodeid, 1).map_err(|_| {
-                        crate::errors::Error::DependencyCycle(
+                        Error::DependencyCycle(
                             {
                                 let stmt = statement_from_id(*pnodeid);
                                 let tup_desc = stmt.get_rule_ref().get_tupfile_desc();
@@ -2132,7 +2147,7 @@ fn dag_check_artifacts(
     }
     // Run toposort to check for cycles in dependency
     let nodes: Vec<_> = petgraph::algo::toposort(&dag, None).map_err(|e| {
-        crate::errors::Error::DependencyCycle("".to_string(), {
+        Error::DependencyCycle("".to_string(), {
             let stmt = statement_from_id(e.node_id());
             let tup_file_desc = stmt.get_rule_ref().get_tupfile_desc();
             let bo_ref = parser.borrow_ref();

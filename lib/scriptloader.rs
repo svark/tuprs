@@ -16,7 +16,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
-use transform::{Artifacts, SubstState};
+use transform::{Artifacts, ParseState};
 
 lazy_static! {
     static ref LINENO: &'static str = "lineno";
@@ -114,7 +114,7 @@ use statements::*;
 
 #[derive(Clone, Debug, Default)]
 pub struct TupScriptContext {
-    smap: SubstState,
+    parse_state: ParseState,
     bo: Rc<RefCell<BufferObjects>>,
     arts: Artifacts,
 }
@@ -313,10 +313,10 @@ impl ScriptRuleCommand {
     }
 }
 impl TupScriptContext {
-    pub(crate) fn new(smap: SubstState, bo: Rc<RefCell<BufferObjects>>) -> TupScriptContext {
+    pub(crate) fn new(parse_state: ParseState, bo: Rc<RefCell<BufferObjects>>) -> TupScriptContext {
         TupScriptContext {
             arts: Artifacts::new(),
-            smap,
+            parse_state: parse_state,
             bo,
         }
     }
@@ -329,7 +329,7 @@ impl TupScriptContext {
     }
 
     pub fn export(&mut self, var: String) {
-        self.bo_as_mut().add_env_var(var, &self.smap.cur_env_desc);
+        self.bo_as_mut().add_env_var(var, &self.parse_state.cur_env_desc);
     }
 
     pub fn for_each_rule(
@@ -348,17 +348,17 @@ impl TupScriptContext {
             rule_formula,
             pos: (lineno, 0),
         };
-        let env = self.smap.cur_env_desc.clone();
+        let env = self.parse_state.cur_env_desc.clone();
         let statement = LocatedStatement {
             statement: Rule(l, env),
             loc: Loc::new(lineno, 0),
         };
         let arts = statement
             .resolve_paths(
-                self.smap.get_cur_file(),
+                self.parse_state.get_cur_file(),
                 self.arts.get_outs(),
                 self.bo_as_mut().deref_mut(),
-                self.smap.get_cur_file_desc(),
+                self.parse_state.get_cur_file_desc(),
             )
             .expect("unable to resolve paths");
         //self.resolved_links = rlinks.drain(..).map(|l| (l, env.clone())).collect();
@@ -395,7 +395,7 @@ impl TupScriptContext {
             rule_formula,
             pos: (lineno, 0),
         };
-        let env = self.smap.cur_env_desc.clone();
+        let env = self.parse_state.cur_env_desc.clone();
         //self.links.push((l,env));
         let statement = LocatedStatement {
             statement: Rule(l, env),
@@ -403,10 +403,10 @@ impl TupScriptContext {
         };
         let arts = statement
             .resolve_paths(
-                self.smap.get_cur_file(),
+                self.parse_state.get_cur_file(),
                 self.arts.get_outs(),
                 self.bo_as_mut().deref_mut(),
-                self.smap.get_cur_file_desc(),
+                self.parse_state.get_cur_file_desc(),
             )
             .expect("unable to resolve paths");
         let mut paths = Vec::new();
@@ -421,14 +421,14 @@ impl TupScriptContext {
     }
 
     pub fn config(&self, name: &str) -> String {
-        self.smap
+        self.parse_state
             .conf_map
             .get(name)
             .map(|x| x.join(""))
             .unwrap_or_default()
     }
     pub fn get_cwd(&self) -> String {
-        self.smap
+        self.parse_state
             .cur_file
             .parent()
             .unwrap_or_else(|| Path::new(""))
@@ -910,7 +910,7 @@ impl UserData for TupScriptContext {
 
 /// main entry point for parsing Tupfile.lua
 pub(crate) fn parse_script(
-    parse_state: SubstState,
+    parse_state: ParseState,
     bo: std::rc::Rc<std::cell::RefCell<BufferObjects>>,
 ) -> Result<Artifacts, Err> {
     let lua = unsafe { mlua::Lua::unsafe_new() };
