@@ -25,7 +25,7 @@ let artifacts = p.parse(tupfile);
 The second version  scans the directory tree and runs the parser over all Tupfiles it finds.
 This version assumes that group references will be completely resolved and errors out if there are no group providers for a group reference. See [Tup manual](https://gittup.org/tup/manual.html)
 ```rust
-use parser::parse_dir;
+use tupparser::parse_dir;
 let tupf = parse_dir("/tuproot")?;
 ```
 
