@@ -15,7 +15,6 @@ use path_dedot::ParseDot;
 use regex::{Captures, Regex};
 use walkdir::WalkDir;
 
-use crate::transform::locate_file;
 use bimap::hash::RightValues;
 use bimap::BiMap;
 use bstr::ByteSlice;
@@ -25,7 +24,7 @@ use log::{debug, log_enabled};
 use pathdiff::diff_paths;
 use petgraph::graph::NodeIndex;
 use statements::*;
-use transform::{load_conf_vars, Artifacts, ParseState, TupParser};
+use transform::{Artifacts, ParseState, TupParser};
 use glob;
 
 /// Normal Path packages a PathBuf, giving relative paths wrt current tup directory
@@ -136,7 +135,6 @@ impl RuleRef {
     }
 }
 
-/// `RuleFormula' usage new and accessors
 impl RuleFormulaUsage {
     pub(crate) fn new(rule_formula: RuleFormula, rule_ref: RuleRef) -> RuleFormulaUsage {
         RuleFormulaUsage {
@@ -144,10 +142,11 @@ impl RuleFormulaUsage {
             rule_ref,
         }
     }
+    /// `RuleFormula` that this object refers to
     pub(crate) fn get_formula(&self) -> &RuleFormula {
         &self.rule_formula
     }
-    /// `RuleRef' that this usage refers to
+    /// returns `RuleRef' which is the location of the referred rule in a Tupfile
     pub fn get_rule_ref(&self) -> &RuleRef {
         &self.rule_ref
     }
@@ -2059,11 +2058,8 @@ pub fn parse_dir(root: &Path) -> Result<Artifacts, Error> {
             tupfiles.push(entry.path().to_path_buf());
         }
     }
-    let root_tupfile_ini =
-        locate_file(root, "Tupfile.ini", "").ok_or(Error::RootNotFound)?;
-    let conf_vars = load_conf_vars(root_tupfile_ini.as_path())?;
     let mut artifacts_all = Artifacts::new();
-    let mut parser = TupParser::new_from(root, conf_vars);
+    let mut parser = TupParser::try_new_from(root)?;
     for tup_file_path in tupfiles.iter() {
         let artifacts = parser.parse(tup_file_path)?;
         artifacts_all.merge(artifacts)?;

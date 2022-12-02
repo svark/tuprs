@@ -23,10 +23,23 @@ extern crate bstr;
 extern crate core;
 extern crate log;
 extern crate mlua;
-//extern crate path_absolutize;
 extern crate path_dedot;
 extern crate pathdiff;
 extern crate thiserror;
+pub use transform::TupParser;
+pub use transform::ReadBufferObjects;
+pub use transform::WriteBufferObjects;
+pub use transform::Artifacts;
+pub use transform::load_conf_vars;
+pub use transform::locate_file;
+pub use decode::TupPathDescriptor;
+pub use decode::RuleDescriptor;
+pub use decode::InputResolvedType;
+pub use decode::GroupPathDescriptor;
+pub use decode::ResolvedLink;
+pub use decode::BinDescriptor;
+pub use decode::PathDescriptor;
+pub use decode::OutputAssocs;
 #[test]
 fn test_op() {
     use statements::CleanupPaths;

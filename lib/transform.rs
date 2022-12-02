@@ -32,8 +32,6 @@ pub(crate) struct ParseState {
     pub(crate) cur_env_desc: EnvDescriptor,
 }
 
-impl ParseState {}
-
 // Default Env to feed into every tupfile
 fn init_env() -> Env {
     let mut def_exported = HashMap::new();
@@ -162,8 +160,12 @@ impl ExpandRun for Statement {
             }
             Statement::Run(script_args) => {
                 if let Some(script) = script_args.first() {
-                    let mut cmd = std::process::Command::new(script.cat().as_str());
-                    for arg_expr in script_args.iter().skip(1) {
+                    let mut cmd  = if !cfg!(windows) || Path::new(script.cat_ref()).extension() == Some(OsStr::new("sh")) {
+                         std::process::Command::new("sh")
+                    }else {
+                        std::process::Command::new("cmd.exe")
+                    };
+                    for arg_expr in script_args.iter() {
                         let arg = arg_expr.cat();
                         let arg = arg.trim();
                         if arg.contains('*') {
@@ -199,26 +201,26 @@ impl ExpandRun for Statement {
                     let env = bo.get_env(&m.cur_env_desc);
                     let dir = bo.get_root_dir().join(m.get_tup_dir());
                     if cmd.get_args().len() != 0 {
-                        //return Err(Error::EmptyArgumentsForRun(Loc::new()));
-                    cmd.envs(env.getenv()).current_dir(dir.as_path());
-                    debug!("running {:?} to fetch more rules", cmd);
-                    let output = cmd.stdout(Stdio::piped()).output().unwrap_or_else(|_| {
-                        panic!(
-                            "Failed to execute tup run {} in Tupfile : {:?} at pos:{:?}",
-                            script_args.cat().as_str(),
-                            dir.as_os_str(),
-                            loc
-                        )
-                    });
-                    //println!("status:{}", output.status);
-                    let contents = output.stdout;
-                    //println!("{}", String::from_utf8(contents.clone()).unwrap_or("".to_string()));
-                    let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
-                        .expect("failed to parse output of tup run");
-                    let mut lstmts = lstmts
-                        .subst(m, bo)
-                        .expect("subst failure in generated tup rules");
-                    vs.extend(lstmts.drain(..).map(LocatedStatement::move_statement));
+                        cmd.envs(env.getenv()).current_dir(dir.as_path());
+
+                        debug!("running {:?} to fetch more rules", cmd);
+                        let output = cmd.stdout(Stdio::piped()).output().unwrap_or_else(|_| {
+                            panic!(
+                                "Failed to execute tup run {} in Tupfile : {:?} at pos:{:?}",
+                                script_args.cat().as_str(),
+                                dir.as_os_str(),
+                                loc
+                            )
+                        });
+                        //println!("status:{}", output.status);
+                        let contents = output.stdout;
+                        //println!("{}", String::from_utf8(contents.clone()).unwrap_or("".to_string()));
+                        let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
+                            .expect("failed to parse output of tup run");
+                        let mut lstmts = lstmts
+                            .subst(m, bo)
+                            .expect("subst failure in generated tup rules");
+                        vs.extend(lstmts.drain(..).map(LocatedStatement::move_statement));
                     }else {
                         eprintln!("Warning tup run arguments are empty in Tupfile in dir:{:?} at pos:{:?}", dir, loc);
                     }
@@ -276,19 +278,6 @@ fn is_empty(rval: &PathExpr) -> bool {
 }
 
 impl PathExpr {
-    /*fn uses_env(&self, m: &mut ParseState) -> Option<&String> {
-        match self {
-            &PathExpr::DollarExpr(ref x) => {
-                if m.imported_env_map.get(x.as_str()).is_some() {
-                    Some(x)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }*/
-
     /// substitute a single pathexpr into an array of literal pathexpr
     /// SFINAE holds
     fn subst(&self, m: &mut ParseState) -> Vec<PathExpr> {
@@ -387,6 +376,7 @@ use std::ops::{AddAssign, Deref, DerefMut};
 use std::process::Stdio;
 use std::rc::Rc;
 use std::vec::Drain;
+use errors::Error::{RootNotFound};
 
 impl AddAssign for Source {
     /// append more sources
@@ -932,7 +922,7 @@ impl ReadBufferObjects<'_> {
         self.bo.group_iter()
     }
 
-    /// returns the rule corresponding to ruledescriptor
+    /// returns the rule corresponding to `RuleDescriptor`
     pub fn get_rule(&self, rd: &RuleDescriptor) -> &RuleFormulaUsage {
         self.bo.get_rule(rd)
     }
@@ -954,13 +944,26 @@ impl ReadBufferObjects<'_> {
     }
 }
 impl TupParser {
-    /// Constructor a new Tupfile parser.
+    /// Constructor a empty new Tupfile parser with no root.
     pub fn new() -> TupParser {
         TupParser {
             bo: Rc::new(RefCell::from(BufferObjects::default())),
             config_vars: HashMap::new(),
         }
     }
+    /// Fallible constructor that attempts to setup a parser after looking from the current folder,
+    /// a root folder where Tupfile.ini exists. If found, it also attempts to load config vars from
+    /// tup.config files it can successfully locate in the root folder.
+    pub fn try_new_from<P:AsRef<Path>>(cur_folder: P) -> Result<TupParser, crate::errors::Error> {
+         let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(
+             RootNotFound
+        )?;
+
+        let root = tup_ini.parent().ok_or(RootNotFound)?;
+        let conf_vars = load_conf_vars(root)?;
+        Ok(TupParser::new_from(root, conf_vars))
+    }
+
     /// Construct at the given rootdir and using config vars
     pub fn new_from<P: AsRef<Path>>(
         root_dir: P,
@@ -993,8 +996,8 @@ impl TupParser {
         return self.bo.deref().borrow_mut();
     }
 
-    /// Primary APi to parse a tupfile or lua file. Parser gathers rules, groups, bins and file paths it finds in tupfile.
-    /// These are all referenced by their ids that generated  on the fly.
+    /// `parse` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
+    /// These are all referenced by their ids that are generated  on the fly.
     /// Upon success the parser returns `Artifacts` that holds  references to all the resolved outputs by their ids
     /// The parser currently also allows you to read its buffers (id-object pairs) and even update it based on externally saved data via `ReadBufferObjects` and `WriteBufObjects`
     /// See [Artifacts]
