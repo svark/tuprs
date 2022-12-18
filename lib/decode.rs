@@ -106,6 +106,36 @@ pub struct RuleFormulaUsage {
     rule_ref: RuleRef,
 }
 
+impl RuleFormulaUsage {
+    /// Command string to execute in a rule
+    pub fn get_rule_str(&self) -> String {
+        self.rule_formula.formula.cat()
+    }
+    /// Display string that appears in the console as the rule is run
+    pub fn get_display_str(&self) -> String {
+        let formula = self.rule_formula.description.cat();
+        let r = Regex::new("^\\^([bcjot]+)").unwrap();
+        let display_str = if let Some(s) = r.captures(formula.as_str()){
+             //formula.strip_prefix("^o ").unwrap()
+            formula.strip_prefix(s.get(0).unwrap().as_str()).unwrap()
+        }else {
+            formula.as_str()
+        };
+        display_str.trim_start().to_string()
+    }
+    /// additional flags "bcjot" that alter the way rule is run
+    pub fn get_flags(&self) -> String {
+        let formula = self.rule_formula.description.cat();
+        let r = Regex::new("^\\^([bcjot]+)").unwrap();
+        if r.is_match(formula.as_str()) {
+            let s = r.captures(formula.as_str()).unwrap();
+            s.get(0).unwrap().as_str().to_string()
+        }else {
+            formula
+        }
+    }
+}
+
 impl std::fmt::Display for RuleRef {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
