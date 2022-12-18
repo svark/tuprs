@@ -6,18 +6,26 @@ Rules can be specificed in Tupfile syntax or in lua as described in the tup manu
 
 First version works with directly with a Tupfile or the Tupfile.lua.
 ```rust
-use parser::tup_file_path;
-let tupf = parse_tup("Tupfile")?;
+use tupparser::TupParser;
+let p = TupParser::new();
+let tupf = p.parse("Tupfile")?;
 ```
 or a lua file
 ```rust
-let tupf = parse_tup("Tupfile.lua")?;
+let tupf = p.parse("Tupfile.lua")?;
+```
+
+If you are inside a directory that is already initialized with tup init, the following will locate the root folder that contains Tupfile.ini and load config vars from tup.config automatically.
+```rust
+let curdir = std::env::current_dir().unwrap();
+let p = TupParser::try_new_from(curdir).expect("Root not found");
+let artifacts = p.parse(tupfile);
 ```
 
 The second version  scans the directory tree and runs the parser over all Tupfiles it finds.
 This version assumes that group references will be completely resolved and errors out if there are no group providers for a group reference. See [Tup manual](https://gittup.org/tup/manual.html)
 ```rust
-use parser::parse_dir;
+use tupparser::parse_dir;
 let tupf = parse_dir("/tuproot")?;
 ```
 
