@@ -329,7 +329,8 @@ impl TupScriptContext {
     }
 
     pub fn export(&mut self, var: String) {
-        self.bo_as_mut().add_env_var(var, &self.parse_state.cur_env_desc);
+        self.bo_as_mut()
+            .add_env_var(var, &self.parse_state.cur_env_desc);
     }
 
     pub fn for_each_rule(

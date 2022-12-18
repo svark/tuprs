@@ -1,5 +1,5 @@
 //! This module has datastructures and methods to transform Statements to Statements with substitutions and expansions
-use errors::{Error as Err};
+use errors::Error as Err;
 use parser::locate_tuprules;
 use parser::{parse_statements_until_eof, parse_tupfile, Span};
 use platform::*;
@@ -160,9 +160,11 @@ impl ExpandRun for Statement {
             }
             Statement::Run(script_args) => {
                 if let Some(script) = script_args.first() {
-                    let mut cmd  = if !cfg!(windows) || Path::new(script.cat_ref()).extension() == Some(OsStr::new("sh")) {
-                         std::process::Command::new("sh")
-                    }else {
+                    let mut cmd = if !cfg!(windows)
+                        || Path::new(script.cat_ref()).extension() == Some(OsStr::new("sh"))
+                    {
+                        std::process::Command::new("sh")
+                    } else {
                         std::process::Command::new("cmd.exe")
                     };
                     for arg_expr in script_args.iter() {
@@ -221,7 +223,7 @@ impl ExpandRun for Statement {
                             .subst(m, bo)
                             .expect("subst failure in generated tup rules");
                         vs.extend(lstmts.drain(..).map(LocatedStatement::move_statement));
-                    }else {
+                    } else {
                         eprintln!("Warning tup run arguments are empty in Tupfile in dir:{:?} at pos:{:?}", dir, loc);
                     }
                 }
@@ -368,6 +370,7 @@ use decode::{
     InputResolvedType, NormalPath, OutputAssocs, PathDescriptor, ResolvePaths, ResolvedLink,
     RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
 };
+use errors::Error::RootNotFound;
 use log::debug;
 use nom::AsBytes;
 use pathdiff::diff_paths;
@@ -376,7 +379,6 @@ use std::ops::{AddAssign, Deref, DerefMut};
 use std::process::Stdio;
 use std::rc::Rc;
 use std::vec::Drain;
-use errors::Error::{RootNotFound};
 
 impl AddAssign for Source {
     /// append more sources
@@ -718,7 +720,7 @@ impl Subst for Vec<LocatedStatement> {
                         pscat
                     };
                     if p.is_file() {
-                        let include_stmmts = get_or_insert_parsed_statement(bo,p)?;
+                        let include_stmmts = get_or_insert_parsed_statement(bo, p)?;
                         let cf = set_cwd(p, m, bo);
                         newstats.append(&mut include_stmmts.subst(m, bo)?);
                         set_cwd(cf.as_path(), m, bo);
@@ -783,11 +785,10 @@ fn get_or_insert_parsed_statement(
     if !bo.is_cached(&tup_desc) {
         let res = parse_tupfile(f)?;
         bo.add_statements_to_cache(&tup_desc, res);
-    }else {
+    } else {
         debug!("Reusing cached statements for {:?}", f);
     }
-    let include_stmts =
-        bo.get_statements(&tup_desc).cloned().unwrap_or_default();
+    let include_stmts = bo.get_statements(&tup_desc).cloned().unwrap_or_default();
     Ok(include_stmts)
 }
 
@@ -954,10 +955,8 @@ impl TupParser {
     /// Fallible constructor that attempts to setup a parser after looking from the current folder,
     /// a root folder where Tupfile.ini exists. If found, it also attempts to load config vars from
     /// tup.config files it can successfully locate in the root folder.
-    pub fn try_new_from<P:AsRef<Path>>(cur_folder: P) -> Result<TupParser, crate::errors::Error> {
-         let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(
-             RootNotFound
-        )?;
+    pub fn try_new_from<P: AsRef<Path>>(cur_folder: P) -> Result<TupParser, crate::errors::Error> {
+        let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(RootNotFound)?;
 
         let root = tup_ini.parent().ok_or(RootNotFound)?;
         let conf_vars = load_conf_vars(root)?;
@@ -1030,7 +1029,7 @@ impl TupParser {
             let output_tag_info = OutputAssocs::new_no_resolve_groups();
             debug!("num stmts:{:?}", stmts.len());
             let stmts = stmts
-                .expand_run(&mut m, bo_ref_mut.deref_mut(), &Loc::new(0,0))
+                .expand_run(&mut m, bo_ref_mut.deref_mut(), &Loc::new(0, 0))
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();

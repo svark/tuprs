@@ -20,12 +20,12 @@ use bimap::BiMap;
 use bstr::ByteSlice;
 use daggy::Dag;
 use errors::{Error as Err, Error};
+use glob;
 use log::{debug, log_enabled};
 use pathdiff::diff_paths;
 use petgraph::graph::NodeIndex;
 use statements::*;
 use transform::{Artifacts, ParseState, TupParser};
-use glob;
 
 /// Normal Path packages a PathBuf, giving relative paths wrt current tup directory
 #[derive(Debug, Default, Eq, PartialEq, Clone, Hash)]
@@ -115,10 +115,10 @@ impl RuleFormulaUsage {
     pub fn get_display_str(&self) -> String {
         let formula = self.rule_formula.description.cat();
         let r = Regex::new("^\\^([bcjot]+)").unwrap();
-        let display_str = if let Some(s) = r.captures(formula.as_str()){
-             //formula.strip_prefix("^o ").unwrap()
+        let display_str = if let Some(s) = r.captures(formula.as_str()) {
+            //formula.strip_prefix("^o ").unwrap()
             formula.strip_prefix(s.get(0).unwrap().as_str()).unwrap()
-        }else {
+        } else {
             formula.as_str()
         };
         display_str.trim_start().to_string()
@@ -130,7 +130,7 @@ impl RuleFormulaUsage {
         if r.is_match(formula.as_str()) {
             let s = r.captures(formula.as_str()).unwrap();
             s.get(0).unwrap().as_str().to_string()
-        }else {
+        } else {
             formula
         }
     }
@@ -646,9 +646,7 @@ pub(crate) struct MyGlob {
 impl MyGlob {
     pub(crate) fn new(path_pattern: &str) -> Result<Self, Error> {
         let to_glob_error = |e: &glob::Error| {
-            Error::GlobError(
-                path_pattern.to_string() + ":" + e.kind().to_string().as_str(),
-            )
+            Error::GlobError(path_pattern.to_string() + ":" + e.kind().to_string().as_str())
         };
         let glob_pattern = GlobBuilder::new(path_pattern)
             .literal_separator(true)
@@ -875,7 +873,7 @@ pub(crate) struct BufferObjects {
     tbo: TupPathBufferObject,
     ebo: EnvBufferObject,
     rbo: RuleBufferObject,
-    statement_cache : HashMap<TupPathDescriptor, Vec<LocatedStatement>>,
+    statement_cache: HashMap<TupPathDescriptor, Vec<LocatedStatement>>,
 }
 // Accessors for BufferObjects
 impl BufferObjects {
@@ -1016,15 +1014,22 @@ impl BufferObjects {
     }
 
     /// Add statements to cache.
-    pub(crate) fn add_statements_to_cache(&mut self, tup_desc: &TupPathDescriptor, vs: Vec<LocatedStatement>) {
+    pub(crate) fn add_statements_to_cache(
+        &mut self,
+        tup_desc: &TupPathDescriptor,
+        vs: Vec<LocatedStatement>,
+    ) {
         self.statement_cache.insert(*tup_desc, vs);
     }
 
-    pub(crate) fn is_cached(&self, tup_desc : &TupPathDescriptor) -> bool {
+    pub(crate) fn is_cached(&self, tup_desc: &TupPathDescriptor) -> bool {
         self.statement_cache.contains_key(tup_desc)
     }
     /// Get statement already in cache from the given tup file(or one of the included files)
-    pub(crate) fn get_statements(&self, tup_desc: &TupPathDescriptor) -> Option<&Vec<LocatedStatement>> {
+    pub(crate) fn get_statements(
+        &self,
+        tup_desc: &TupPathDescriptor,
+    ) -> Option<&Vec<LocatedStatement>> {
         self.statement_cache.get(tup_desc)
     }
 }
