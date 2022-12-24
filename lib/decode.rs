@@ -26,6 +26,7 @@ use pathdiff::diff_paths;
 use petgraph::graph::NodeIndex;
 use statements::*;
 use transform::{Artifacts, ParseState, TupParser};
+use InputResolvedType::UnResolvedFile;
 
 /// Normal Path packages a PathBuf, giving relative paths wrt current tup directory
 #[derive(Debug, Default, Eq, PartialEq, Clone, Hash)]
@@ -777,6 +778,8 @@ pub enum InputResolvedType {
     UnResolvedGroupEntry(GroupPathDescriptor),
     /// BinEntry contains a bin id and a path (descriptor) that was collected in this bin as  output to some rule
     BinEntry(BinDescriptor, PathDescriptor),
+    // Unresolved file
+    UnResolvedFile(PathDescriptor),
 }
 
 /// Extracts the actual file system path corresponding to a de-globbed input or bin or group entry
@@ -790,6 +793,7 @@ fn get_resolved_path<'a, 'b>(
         InputResolvedType::BinEntry(_, p) => pbo.get(p).as_path(),
         InputResolvedType::UnResolvedGroupEntry(_) => Path::new(""),
         //InputResolvedType::RawUnchecked(p) => pbo.get(p).as_path()
+        InputResolvedType::UnResolvedFile(p) => pbo.get(p).as_path(),
     }
 }
 
@@ -809,6 +813,7 @@ fn get_resolved_name<'a, 'b>(
         InputResolvedType::BinEntry(b, _) => bbo.get(b).to_string(),
         InputResolvedType::UnResolvedGroupEntry(g) => gbo.get(g).to_string(),
         //InputResolvedType::RawUnchecked(p) => pbo.get(p).to_string()
+        InputResolvedType::UnResolvedFile(p) => pbo.get(p).to_string(),
     }
 }
 
@@ -867,13 +872,13 @@ impl ExcludeInputPaths for PathExpr {
 /// Each sub-buffer is a bimap from names to a unique id which simplifies storing references.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BufferObjects {
-    pbo: PathBufferObject,
-    gbo: GroupBufferObject,
-    bbo: BinBufferObject,
-    tbo: TupPathBufferObject,
-    ebo: EnvBufferObject,
-    rbo: RuleBufferObject,
-    statement_cache: HashMap<TupPathDescriptor, Vec<LocatedStatement>>,
+    pbo: PathBufferObject,    //< paths by id
+    gbo: GroupBufferObject,   //< groups by id
+    bbo: BinBufferObject,     //< bins by id
+    tbo: TupPathBufferObject, //< tup paths by id
+    ebo: EnvBufferObject,     //< environment variables by id
+    rbo: RuleBufferObject,    //< Rules by id
+    statement_cache: HashMap<TupPathDescriptor, Vec<LocatedStatement>>, //< Cache of statements from previously read Tupfiles
 }
 // Accessors for BufferObjects
 impl BufferObjects {
@@ -1071,7 +1076,12 @@ impl DecodeInputPaths for PathExpr {
                     tag_info,
                     bo,
                 )?;
-                vs.extend(pes.into_iter().map(InputResolvedType::Deglob));
+                if pes.is_empty() {
+                    let (pd, _) = bo.add_path_from(path_buf.as_path(), tup_cwd);
+                    vs.push(UnResolvedFile(pd));
+                } else {
+                    vs.extend(pes.into_iter().map(InputResolvedType::Deglob));
+                }
             }
             PathExpr::Group(_, _) => {
                 let (ref grp_desc, _) = bo.add_group_pathexpr(self, tup_cwd);
@@ -1315,17 +1325,17 @@ impl InputsAsPaths {
 }
 lazy_static! {
     static ref PERC_NUM_F_RE: Regex =
-        Regex::new(r"%([1-9]+[0-9]*)f").expect("regex compilation error");
+        Regex::new(r"%([1-9][0-9]*)f").expect("regex compilation error"); // pattern for matching  numberedinputs that appear in command line
     static ref PERC_NUM_B_RE: Regex =
-        Regex::new(r"%([1-9]+[0-9]*)b").expect("regex compilation error");
-    static ref GRPRE: Regex = Regex::new(r"%<([^>]+)>").expect("regex compilation error");
+        Regex::new(r"%([1-9][0-9]*)b").expect("regex compilation error"); //< pattern for matching a numbered basename with extension of a input to a rule
+    static ref GRPRE: Regex = Regex::new(r"%<([^>]+)>").expect("regex compilation error"); //< pattern for matching a group
     static ref PER_CAP_B_RE: Regex =
-        Regex::new(r"%([1-9]+[0-9]*)B").expect("regex compilation failure");
+        Regex::new(r"%([1-9][0-9]*)B").expect("regex compilation failure"); //< pattern for matching basename of input to a rule
     static ref PERC_NUM_O_RE: Regex =
-        Regex::new(r"%([1-9]+[0-9]*)o").expect("regex compilation error");
+        Regex::new(r"%([1-9][0-9]*)o").expect("regex compilation error"); //< pattern for matching outputs that appear on command line
     static ref PERC_NUM_CAP_O_RE: Regex =
-        Regex::new(r"%([1-9]+[0-9]*)O").expect("regex compilation error");
-    static ref PERC_I : Regex = Regex::new(r"%([1-9][0-9]*)i").expect("regex compilation error"); // pattern for matching numbered inputs
+        Regex::new(r"%([1-9][0-9]*)O").expect("regex compilation error");
+    static ref PERC_NUM_I : Regex = Regex::new(r"%([1-9][0-9]*)i").expect("regex compilation error"); //< pattern for matching numbered order only inputs (that dont appear in command line)
 }
 
 pub(crate) fn decode_group_captures(
@@ -1380,6 +1390,7 @@ impl DecodeInputPlaceHolders for PathExpr {
             };
 
             let d = if PERC_NUM_F_RE.captures(d.as_str()).is_some() {
+                // numbered inputs will be replaced here
                 let inputs = inp.get_paths();
                 if inputs.is_empty() {
                     return Err(Err::StalePerc('f', rule_ref.clone()));
@@ -1463,12 +1474,12 @@ impl DecodeInputPlaceHolders for PathExpr {
             } else {
                 d
             };
-            let d = if PERC_I.captures(d.as_str()).is_some() {
+            let d = if PERC_NUM_I.captures(d.as_str()).is_some() {
                 if sinp.is_empty() {
                     return Err(Err::StalePercNumberedRef('i', sinp.rule_ref.clone()));
                 }
                 let sinputsflat = sinp.get_paths();
-                replace_decoded_str(d.as_str(), sinputsflat, &PERC_I, &sinp.rule_ref, 'i')?
+                replace_decoded_str(d.as_str(), sinputsflat, &PERC_NUM_I, &sinp.rule_ref, 'i')?
             } else {
                 d
             };
@@ -1496,7 +1507,7 @@ fn replace_decoded_str(
         .map(|caps: &Captures| {
             let i = caps[1].parse::<usize>().unwrap();
             file_names
-                .get(i)
+                .get(i - 1)
                 .ok_or_else(|| Err::StalePercNumberedRef(c, rule_ref.clone()))
         })
         .collect();
@@ -1533,10 +1544,11 @@ impl DecodeOutputPlaceHolders for Vec<PathExpr> {
 impl DecodeOutputPlaceHolders for PathExpr {
     fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Result<Self, Err> {
         let frep = |d: &str| -> Result<String, Err> {
-            debug!("replacing %o's from rule :{}", d);
+            debug!("replacing %o's from rule string :{}", d);
             let d = if d.contains("%o") {
                 let space_separated_outputs = outputs.get_paths().join(" ");
                 if outputs.is_empty() {
+                    debug!("no output found for %o replacement");
                     return Err(Err::StalePerc('o', outputs.rule_ref.clone()));
                 }
                 d.replace("%o", space_separated_outputs.as_str())

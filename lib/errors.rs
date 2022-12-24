@@ -9,7 +9,7 @@ use thiserror::Error as ThisError;
 #[derive(Debug, ThisError)]
 pub enum Error {
     /// Parsing error when reading a Tupfile, usually reported by nom
-    #[error("Parsing error at line {0} and offset {1}")]
+    #[error("Parsing error {0} at {1}")]
     ParseError(String, Loc),
     /// Substitution failure at a location
     #[error("subst failure at line:{0}")]

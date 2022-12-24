@@ -701,8 +701,8 @@ impl Subst for Vec<LocatedStatement> {
                 Statement::IncludeRules => {
                     let parent = get_parent(m.cur_file.as_path());
                     for f in locate_tuprules(parent) {
+                        debug!("reading tuprules {:?}", f);
                         let include_stmts = get_or_insert_parsed_statement(bo, &f)?;
-                        //m.cur_file = f;
                         let cf = set_cwd(f.as_path(), m, bo);
                         newstats.append(&mut include_stmts.subst(m, bo)?);
                         set_cwd(cf.as_path(), m, bo);
@@ -771,6 +771,7 @@ impl Subst for Vec<LocatedStatement> {
                 Statement::Comment => {
                     // ignore
                 }
+                Statement::GitIgnore => {}
             }
         }
         Ok(newstats)

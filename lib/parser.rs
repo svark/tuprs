@@ -49,11 +49,11 @@ fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
 }
 /// check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
-    nom::character::is_alphanumeric(c) || c == b'_' || c == b'-'
+    nom::character::is_alphanumeric(c) || c == b'_' || c == b'-' || c == b'.'
 }
 
 fn is_ident_perc(c: u8) -> bool {
-    nom::character::is_alphanumeric(c) || c == b'_' || c == b'-' || c == b'%'
+    nom::character::is_alphanumeric(c) || c == b'_' || c == b'-' || c == b'.' || c == b'%'
 }
 fn ws1(input: Span) -> IResult<Span, Span> {
     alt((
@@ -429,6 +429,12 @@ fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = complete(ws0_line_ending)(s)?;
     Ok((s, (Statement::IncludeRules, i).into()))
 }
+fn parse_gitignore(i: Span) -> IResult<Span, LocatedStatement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag(".gitignore")(s)?;
+    let (s, _) = complete(ws0_line_ending)(s)?;
+    Ok((s, (Statement::GitIgnore, i).into()))
+}
 
 // parse comment expresssion
 fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
@@ -690,20 +696,16 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     let (s, output0) = context("rule output", opt(parse_primary_output0))(s)?;
     let has_more = output0.as_ref().map_or(false, |(_, has_more)| *has_more);
     let (s, output1) = if has_more {
-        context("rule output", opt(parse_primary_output1))(s)?
+        context("rule output", cut(parse_primary_output1))(s)?
     } else {
-        (s, None)
+        (s, vec![])
     };
 
     let (output, secondary_output) = if has_more {
-        (output0.unwrap().0, output1.unwrap_or_default())
+        (output1, output0.unwrap_or((Vec::new(), false)).0)
     } else {
-        (output1.unwrap_or_default(), Default::default())
+        (output0.unwrap_or((Vec::new(), false)).0, Vec::new())
     };
-    /*    let output = if has_secondary { output0.unwrap() } else { output1.unwrap_or(Vec::new())};
-        let secondary_output = if has_secondary { output1.unwrap_or(Vec::new())} else { Vec::new() };
-    */
-
     Ok((
         s,
         (
@@ -745,6 +747,7 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_run),
         complete(parse_preload),
         complete(parse_import),
+        complete(parse_gitignore),
     ))(i)
 }
 

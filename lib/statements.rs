@@ -240,6 +240,7 @@ pub(crate) enum Statement {
     Preload(Vec<PathExpr>),
     Run(Vec<PathExpr>),
     Comment,
+    GitIgnore,
 }
 
 // we could have used `Into' or 'ToString' trait
