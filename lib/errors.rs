@@ -50,6 +50,12 @@ pub enum Error {
     /// Lua script error
     #[error("Script Error: {0}")]
     ScriptError(String, u32),
+    /// Error running tup run
+    #[error("Error running tup run at {0} : \n {1}")]
+    RunError(RuleRef, String),
+    /// Tuprules file could not be located from current Tupfile
+    #[error("Tup rules could not be located from {0}")]
+    TupRulesNotFound(RuleRef),
     /// Raw lua errors
     #[error(transparent)]
     LuaError(#[from] mlua::Error),

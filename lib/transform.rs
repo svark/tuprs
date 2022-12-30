@@ -146,8 +146,14 @@ impl ParseState {
 impl ExpandRun for Statement {
     /// expand_run adds Statements returned by executing a shell command. Rules that are output from the command should be in the regular format for rules that Tup supports
     /// see docs for how the environment is picked.
-    fn expand_run(&self, m: &mut ParseState, bo: &mut BufferObjects, loc: &Loc) -> Vec<Self> {
+    fn expand_run(
+        &self,
+        m: &mut ParseState,
+        bo: &mut BufferObjects,
+        loc: &Loc,
+    ) -> Result<Vec<Statement>, crate::errors::Error> {
         let mut vs: Vec<Statement> = Vec::new();
+        let rule_ref = RuleRef::new(&m.cur_file_desc, loc);
         match self {
             Statement::Preload(v) => {
                 let dir = v.cat();
@@ -160,14 +166,17 @@ impl ExpandRun for Statement {
             }
             Statement::Run(script_args) => {
                 if let Some(script) = script_args.first() {
+                    let mut acnt = 0;
                     let mut cmd = if !cfg!(windows)
                         || Path::new(script.cat_ref()).extension() == Some(OsStr::new("sh"))
+                        || script.cat_ref() == "sh"
                     {
+                        acnt = if script.cat_ref() == "sh" { 1 } else { 0 };
                         std::process::Command::new("sh")
                     } else {
                         std::process::Command::new("cmd.exe")
                     };
-                    for arg_expr in script_args.iter() {
+                    for arg_expr in script_args.iter().skip(acnt) {
                         let arg = arg_expr.cat();
                         let arg = arg.trim();
                         if arg.contains('*') {
@@ -206,17 +215,35 @@ impl ExpandRun for Statement {
                         cmd.envs(env.getenv()).current_dir(dir.as_path());
 
                         debug!("running {:?} to fetch more rules", cmd);
-                        let output = cmd.stdout(Stdio::piped()).output().unwrap_or_else(|_| {
-                            panic!(
-                                "Failed to execute tup run {} in Tupfile : {:?} at pos:{:?}",
-                                script_args.cat().as_str(),
-                                dir.as_os_str(),
-                                loc
-                            )
-                        });
+                        let output = cmd
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .output()
+                            .unwrap_or_else(|_| {
+                                panic!(
+                                    "Failed to execute tup run {} in Tupfile : {:?} at pos:{:?}",
+                                    script_args.cat().as_str(),
+                                    dir.as_os_str(),
+                                    loc
+                                )
+                            });
                         //println!("status:{}", output.status);
                         let contents = output.stdout;
-                        //println!("{}", String::from_utf8(contents.clone()).unwrap_or("".to_string()));
+                        if !output.stderr.is_empty() {
+                            return Err(crate::errors::Error::RunError(
+                                rule_ref,
+                                std::str::from_utf8(output.stderr.as_slice()).unwrap().to_string(),
+                            ));
+                        }
+                        debug!(
+                            "contents: \n {}",
+                            String::from_utf8(contents.clone()).unwrap_or("".to_string())
+                        );
+                        debug!(
+                            "cx: \n {}",
+                            String::from_utf8(output.stderr.clone()).unwrap_or("".to_string())
+                        );
+
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
                             .expect("failed to parse output of tup run");
                         let mut lstmts = lstmts
@@ -230,26 +257,32 @@ impl ExpandRun for Statement {
             }
             _ => vs.push(self.clone()),
         }
-        vs
+        Ok(vs)
     }
 }
 
 impl ExpandRun for Vec<LocatedStatement> {
     /// discover more rules to add by running shell commands
-    fn expand_run(&self, m: &mut ParseState, bo: &mut BufferObjects, _: &Loc) -> Vec<Self>
+    fn expand_run(
+        &self,
+        m: &mut ParseState,
+        bo: &mut BufferObjects,
+        _: &Loc,
+    ) -> Result<Vec<Self>, crate::errors::Error>
     where
         Self: Sized,
     {
-        self.iter()
-            .map(|l| {
+        self
+            .iter()
+            .map(|l| -> Result<Vec<LocatedStatement>, crate::errors::Error> {
                 let loc = l.getloc();
-                l.get_statement()
-                    .expand_run(m, bo, loc)
-                    .iter()
+                let stmts = l.get_statement()
+                    .expand_run(m, bo, loc)?;
+                Ok(stmts.iter()
                     .map(|s| LocatedStatement::new(s.clone(), *l.getloc()))
-                    .collect::<Vec<_>>()
+                    .collect())
             })
-            .collect::<Vec<Self>>()
+            .collect()
     }
 }
 
@@ -496,14 +529,20 @@ impl ExpandMacro for Link {
 }
 
 /// parent folder path for a given tupfile
-pub(crate) fn get_parent(cur_file: &Path) -> &Path {
-    cur_file
+pub(crate) fn get_parent(cur_file: &Path) -> PathBuf {
+    let p = cur_file
         .parent()
         .unwrap_or_else(|| panic!("unable to find parent folder for tup file:{:?}", cur_file))
+        .to_path_buf();
+    if p.as_os_str().len() == 0 {
+        PathBuf::from(".")
+    } else {
+        p
+    }
 }
 
 /// parent folder path as a string slice
-pub(crate) fn get_parent_str(cur_file: &Path) -> String {
+pub fn get_parent_str(cur_file: &Path) -> String {
     normalize_path(cur_file.parent().unwrap())
 }
 pub(crate) fn get_path_str(cur_file: &Path) -> String {
@@ -679,10 +718,15 @@ impl Subst for Vec<LocatedStatement> {
                         rhs: eq.rhs.subst_pe(m).expect("no errors expected in subst"),
                         not_cond: eq.not_cond,
                     };
-                    if e.lhs.cat().eq(&e.rhs.cat()) && !e.not_cond {
-                        newstats.append(&mut then_statements.subst(m, bo)?);
+                    let (ts, es) = if e.not_cond {
+                        (else_statements, then_statements)
                     } else {
-                        newstats.append(&mut else_statements.subst(m, bo)?);
+                        (then_statements, else_statements)
+                    };
+                    if e.lhs.cat().eq(&e.rhs.cat()) {
+                        newstats.append(&mut ts.subst(m, bo)?);
+                    } else {
+                        newstats.append(&mut es.subst(m, bo)?);
                     }
                 }
                 Statement::IfDef {
@@ -700,12 +744,21 @@ impl Subst for Vec<LocatedStatement> {
 
                 Statement::IncludeRules => {
                     let parent = get_parent(m.cur_file.as_path());
+                    debug!("attemping to file tuprules");
+                    let mut found = false;
                     for f in locate_tuprules(parent) {
                         debug!("reading tuprules {:?}", f);
                         let include_stmts = get_or_insert_parsed_statement(bo, &f)?;
                         let cf = set_cwd(f.as_path(), m, bo);
                         newstats.append(&mut include_stmts.subst(m, bo)?);
                         set_cwd(cf.as_path(), m, bo);
+                        found = true;
+                    }
+                    if !found {
+                        return Err(crate::errors::Error::TupRulesNotFound(RuleRef::new(
+                            &m.cur_file_desc,
+                            loc,
+                        )));
                     }
                 }
                 Statement::Include(s) => {
@@ -854,6 +907,7 @@ impl Artifacts {
 
     pub(crate) fn acquire_groups(&mut self, outs: &OutputAssocs) {
         self.outs.acquire_groups(outs.get_groups().clone());
+        self.outs.acquire_children(outs.get_children().clone());
     }
 
     pub(crate) fn get_outs(&self) -> &OutputAssocs {
@@ -1030,11 +1084,15 @@ impl TupParser {
             let output_tag_info = OutputAssocs::new_no_resolve_groups();
             debug!("num stmts:{:?}", stmts.len());
             let stmts = stmts
-                .expand_run(&mut m, bo_ref_mut.deref_mut(), &Loc::new(0, 0))
+                .expand_run(&mut m, bo_ref_mut.deref_mut(), &Loc::new(0, 0))?
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
-            debug!("num statements after expand run:{:?}", stmts.len());
+            debug!(
+                "num statements after expand run:{:?} in tupfile {:?}",
+                stmts.len(),
+                m.get_cur_file()
+            );
             stmts.resolve_paths(
                 m.get_cur_file(),
                 &output_tag_info,

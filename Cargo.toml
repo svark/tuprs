@@ -23,6 +23,8 @@ log = "0.4.14"
 mlua = {version = "0.8.3", features = ["lua54", "vendored"]}
 pathdiff = "0.2.1"
 
+[dev-dependencies]
+env_logger = "0.10.0"
 # lua patch over mlua's lua-src-rs crate that adds add_assign (+=) operator to variables
 # Cargo complains that the patch should appear at the workspace level. But adding here anyway for independent usages.
 [patch.crates-io]
