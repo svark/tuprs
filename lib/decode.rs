@@ -77,6 +77,11 @@ impl NormalPath {
     pub fn to_path_buf(self) -> PathBuf {
         self.inner
     }
+
+    /// File name
+    pub fn file_name(&self) -> String {
+        self.inner.as_path().file_name().unwrap().to_string_lossy().to_string()
+    }
 }
 
 pub(crate) fn normalize_path(p: &Path) -> String {
@@ -124,25 +129,25 @@ impl RuleFormulaUsage {
     }
     /// Display string that appears in the console as the rule is run
     pub fn get_display_str(&self) -> String {
-        let formula = self.rule_formula.description.cat();
+        let description = self.rule_formula.description.cat();
         let r = Regex::new("^\\^([bcjot]+)").unwrap();
-        let display_str = if let Some(s) = r.captures(formula.as_str()) {
+        let display_str = if let Some(s) = r.captures(description.as_str()) {
             //formula.strip_prefix("^o ").unwrap()
-            formula.strip_prefix(s.get(0).unwrap().as_str()).unwrap()
+            description.strip_prefix(s.get(0).unwrap().as_str()).unwrap()
         } else {
-            formula.as_str()
+            description.as_str()
         };
         display_str.trim_start().to_string()
     }
     /// additional flags "bcjot" that alter the way rule is run
     pub fn get_flags(&self) -> String {
-        let formula = self.rule_formula.description.cat();
+        let description = self.rule_formula.description.cat();
         let r = Regex::new("^\\^([bcjot]+)").unwrap();
-        if r.is_match(formula.as_str()) {
-            let s = r.captures(formula.as_str()).unwrap();
+        if r.is_match(description.as_str()) {
+            let s = r.captures(description.as_str()).unwrap();
             s.get(0).unwrap().as_str().to_string()
         } else {
-            formula
+            "".to_string()
         }
     }
 }
@@ -570,14 +575,7 @@ impl OutputAssocs {
         self.output_files
             .extend(new_outputs.output_files.iter().cloned());
         for (dir, ch) in new_outputs.children.iter() {
-            match self.children.entry(dir.clone()) {
-                Entry::Occupied(mut o) => {
-                    o.get_mut().extend(ch);
-                }
-                Entry::Vacant(v) => {
-                    v.insert(ch.clone());
-                }
-            }
+            self.children.entry(dir.clone()).or_insert_with(Vec::new).extend(ch.iter());
         }
         self.merge_parent_rules(&new_outputs.parent_rule, &new_outputs.output_files)
     }
@@ -625,23 +623,37 @@ impl OutputAssocs {
     }
 
     /// Discover outputs by their path descriptors
-    pub(crate) fn outputs_with_desc(&self, path_desc: &PathDescriptor, vs: &mut Vec<MatchingPath>) {
+    pub(crate) fn outputs_with_desc(&self, path_desc: &PathDescriptor, base_path_desc: &PathDescriptor,
+                                    vs: &mut Vec<MatchingPath>) {
         let mut hs = HashSet::new();
         hs.extend(vs.iter().map(|mp| mp.path_descriptor));
+        let mut found = false;
+        if let Some(children) = self.children.get(&base_path_desc) {
+            if children.contains(path_desc)
+            {
+                vs.push(MatchingPath::with_captures(*path_desc, None));
+                found = true;
+            }
+        }
         self.bins
             .iter()
             .map(|x| x.1)
             .chain(self.groups.iter().map(|x| x.1))
-            .chain(std::iter::once(&self.output_files))
-            .for_each(|v| {
-                if v.contains(path_desc) {
-                    {
-                        if hs.insert(*path_desc) {
-                            vs.push(MatchingPath::with_captures(*path_desc, None))
-                        }
-                    }
+            .filter(|v| v.contains(path_desc))
+            .next().map(|_| {
+                if hs.insert(*path_desc) {
+                    vs.push(MatchingPath::with_captures(*path_desc, None));
+                    found = true;
                 }
             });
+        if !found {
+            if log_enabled!(log::Level::Debug) {
+                debug!("missed finding !:{:?} in any of the outputs", path_desc);
+                for o in &self.output_files {
+                    debug!("{:?}", o);
+                }
+            }
+        }
     }
 
     /// discover outputs matching glob in the same tupfile
@@ -798,10 +810,14 @@ pub(crate) fn discover_inputs_from_glob(
     if !has_glob_pattern(np.as_path()) {
         let mut pes = Vec::new();
         let (path_desc, _) = bo.add_abs(to_match);
+        let np = bo.get_path(&path_desc);
+        debug!("looking for child {:?}", np);
+
         if to_match.is_file() {
             pes.push(MatchingPath::with_captures(path_desc, None));
         } else {
-            outputs.outputs_with_desc(&path_desc, &mut pes);
+            let base_path_desc = bo.get_parent_id(&path_desc);
+            base_path_desc.map(|bp| outputs.outputs_with_desc(&path_desc, &bp, &mut pes));
         }
         if log_enabled!(log::Level::Debug) {
             //    debug!("{:?}", pes);
@@ -1934,6 +1950,45 @@ impl ResolvedLink {
     pub fn get_rule_ref(&self) -> &RuleRef {
         &self.rule_ref
     }
+
+    fn resolve_unresolved(taginfo: &OutputAssocs, bo: &mut BufferObjects, p: &PathDescriptor, rule_ref: &RuleRef) -> Result<Vec<MatchingPath>, Error> {
+        let glob_path = bo.get_path(p);
+        debug!("need to resolve file:{:?}", glob_path);
+        let mut pes: Vec<MatchingPath> = Vec::new();
+        let mut to_match = glob_path.as_path();
+        let pbuf: PathBuf;
+        if !has_glob_pattern(to_match) {
+            let base_path_desc = bo.get_parent_id(p).unwrap();
+            taginfo.outputs_with_desc(p, &base_path_desc, &mut pes);
+            if pes.is_empty() {
+                debug!("Could not resolve :{:?}", bo.get_path(p));
+                 return Err(Error::UnResolvedFile(glob_path.as_path().to_string_lossy().to_string(),
+                                                  rule_ref.clone()));
+            }
+            //for pe in pes {
+            //   rlink.primary_sources.push(InputResolvedType::Deglob(pe))
+            //}
+        } else {
+            let (mut base_path, _) = get_non_pattern_prefix(to_match);
+            if base_path.eq(&PathBuf::new()) {
+                base_path = base_path.join(".");
+                pbuf = Path::new(".").join(glob_path.as_path());
+                to_match = &pbuf;
+            }
+            let slash_corrected_glob = to_match.to_string_lossy().replace('\\', "/");
+            let globs = MyGlob::new(slash_corrected_glob.as_str())?;
+            let (path_desc, added) = bo.add_abs(base_path.as_path());
+            if !added {
+                taginfo.outputs_matching_glob(bo, &path_desc, &globs, &mut pes);
+            }
+            if pes.is_empty() {
+                debug!("Could not resolve:{:?}", slash_corrected_glob);
+                return Err(Error::UnResolvedFile(slash_corrected_glob,
+                                                                rule_ref.clone()));
+            }
+        }
+        Ok(pes)
+    }
 }
 
 // update the groups/bins with the path to primary target and also add secondary targets
@@ -1972,18 +2027,13 @@ impl GatherOutputs for ResolvedLink {
                     .insert(*path_desc);
             };
             debug!(
-                "fetching  parent of path_desc:{:?}, {:?}",
+                "fetching parent of path_desc:{:?}, {:?}",
                 path_desc,
                 bo.get_path(path_desc)
             );
-            match oti.children.entry(bo.get_parent_id(path_desc).unwrap()) {
-                Entry::Occupied(mut o) => {
-                    o.get_mut().push(*path_desc);
-                }
-                Entry::Vacant(v) => {
-                    v.insert(vec![*path_desc]);
-                }
-            }
+            oti.children.entry(bo.get_parent_id(path_desc).unwrap())
+                .or_insert_with(Vec::new)
+                .push(*path_desc);
         }
         Ok(())
     }
@@ -2059,37 +2109,9 @@ impl ResolvePaths for ResolvedLink {
         for i in self.primary_sources.iter() {
             match i {
                 InputResolvedType::UnResolvedFile(p) => {
-                    let glob_path = bo.get_path(p);
-                    debug!("need to unresolve file:{:?}", glob_path);
-                    let mut pes: Vec<MatchingPath> = Vec::new();
-                    let mut to_match = glob_path.as_path();
-                    let pbuf: PathBuf;
-                    if !has_glob_pattern(to_match) {
-                        taginfo.outputs_with_desc(p, &mut pes);
-                        for pe in pes {
-                            rlink.primary_sources.push(InputResolvedType::Deglob(pe))
-                        }
-                    } else {
-                        let (mut base_path, _) = get_non_pattern_prefix(to_match);
-                        if base_path.eq(&PathBuf::new()) {
-                            base_path = base_path.join(".");
-                            pbuf = Path::new(".").join(glob_path.as_path());
-                            to_match = &pbuf;
-                        }
-                        let slash_corrected_glob = to_match.to_string_lossy().replace('\\', "/");
-                        let globs = MyGlob::new(slash_corrected_glob.as_str())?;
-                        let (path_desc, added) = bo.add_abs(base_path.as_path());
-                        if added {
-                            debug!("abort");
-                        }
-                        taginfo.outputs_matching_glob(bo, &path_desc, &globs, &mut pes);
-                        if pes.is_empty() {
-                            debug!("Abort");
-                        }
-                        for pe in pes {
-                            rlink.primary_sources.push(InputResolvedType::Deglob(pe))
-                        }
-                    }
+                    let pes = Self::resolve_unresolved(taginfo, bo, p, rlink.get_rule_ref())?;
+                    rlink.primary_sources.extend(pes.into_iter().map(InputResolvedType::Deglob));
+
                 }
                 InputResolvedType::UnResolvedGroupEntry(g) => {
                     if let Some(hs) = taginfo.groups.get(g) {
@@ -2111,6 +2133,10 @@ impl ResolvePaths for ResolvedLink {
 
         for i in self.secondary_sources.iter() {
             match i {
+                InputResolvedType::UnResolvedFile(p) => {
+                    let pes = Self::resolve_unresolved(taginfo, bo, p, rlink.get_rule_ref())?;
+                    rlink.secondary_sources.extend(pes.into_iter().map(InputResolvedType::Deglob));
+                }
                 InputResolvedType::UnResolvedGroupEntry(ref g) => {
                     if let Some(hs) = taginfo.groups.get(g) {
                         for pd in hs {

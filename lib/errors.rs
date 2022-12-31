@@ -56,6 +56,9 @@ pub enum Error {
     /// Tuprules file could not be located from current Tupfile
     #[error("Tup rules could not be located from {0}")]
     TupRulesNotFound(RuleRef),
+    /// input file could not be resolved
+    #[error("Error resolving an input")]
+    UnResolvedFile(String, RuleRef),
     /// Raw lua errors
     #[error(transparent)]
     LuaError(#[from] mlua::Error),
