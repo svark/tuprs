@@ -1,6 +1,5 @@
 # A
-SRCS = in*.txt \
-cin.txt
+SRCS = in*.txt
 
 : $(SRCS) |> echo %f > %o |>  outecho.txt
 : in1.txt |> cat %f & cp %f %o |> out0.txt ^.*FltMgrMsg ../<output0>

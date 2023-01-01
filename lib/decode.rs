@@ -1173,7 +1173,11 @@ impl BufferObjects {
         self.statement_cache.get(tup_desc)
     }
 }
-
+/*
+pub trait PathDiscovery {
+    fn discover_paths(tup_cwd: &Path, glob_path: &Path) -> Vec<PathDescriptor>;
+}
+*/
 /// Decode input paths from file globs, bins(buckets), and groups
 pub(crate) trait DecodeInputPaths {
     fn decode(
@@ -1995,10 +1999,7 @@ impl ResolvedLink {
 impl GatherOutputs for ResolvedLink {
     fn gather_outputs(&self, oti: &mut OutputAssocs, bo: &mut BufferObjects) -> Result<(), Err> {
         let rule_ref = &self.rule_ref;
-        for path_desc in self
-            .primary_targets
-            .iter()
-            .chain(self.secondary_targets.iter())
+        for path_desc in self.get_targets()
         {
             let e = oti.parent_rule.entry(*path_desc);
             match e {
