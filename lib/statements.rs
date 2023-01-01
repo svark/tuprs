@@ -118,8 +118,9 @@ impl Loc {
     }
 }
 
+/// Parsed statements and its location in a tupfile
 #[derive(PartialEq, Debug, Clone)]
-pub(crate) struct LocatedStatement {
+pub struct LocatedStatement {
     pub(crate) statement: Statement,
     pub(crate) loc: Loc,
 }
@@ -136,7 +137,7 @@ impl LocatedStatement {
     pub(crate) fn move_statement(self) -> Statement {
         self.statement
     }
-    pub fn getloc(&self) -> &Loc {
+    pub(crate) fn getloc(&self) -> &Loc {
         &self.loc
     }
 }

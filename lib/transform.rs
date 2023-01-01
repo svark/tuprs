@@ -149,7 +149,7 @@ impl ExpandRun for Statement {
     fn expand_run(
         &self,
         m: &mut ParseState,
-        bo: &mut BufferObjects,
+        ph: &mut impl PathHandler,
         loc: &Loc,
     ) -> Result<Vec<Statement>, crate::errors::Error> {
         let mut vs: Vec<Statement> = Vec::new();
@@ -159,7 +159,7 @@ impl ExpandRun for Statement {
                 let dir = v.cat();
                 let p = Path::new(dir.as_str());
 
-                let (dirid, _) = bo.add_path_from(p, m.get_tup_dir());
+                let (dirid, _) = ph.add_path_from(m.get_tup_dir(), p);
                 {
                     m.load_dirs.push(dirid);
                 }
@@ -183,23 +183,24 @@ impl ExpandRun for Statement {
                             let arg_path = Path::new(arg);
                             let outs = OutputAssocs::new();
                             {
-                                let matches = discover_inputs_from_glob(
-                                    &*bo.get_root_dir().join(m.get_tup_dir()),
-                                    arg_path,
-                                    &outs,
-                                    bo,
-                                )
-                                .unwrap_or_else(|_| panic!("error matching glob pattern {}", arg));
+                                let matches = ph
+                                    .discover_paths(m.get_tup_dir(), arg_path, &outs)
+                                    .unwrap_or_else(|_| {
+                                        panic!("error matching glob pattern {}", arg)
+                                    });
                                 debug!("expand_run num files from glob:{:?}", matches.len());
                                 for ofile in matches {
-                                    let p = diff_paths(ofile.as_path(bo.deref()), m.get_tup_dir())
-                                        .unwrap_or_else(|| {
-                                            panic!(
-                                                "Failed to diff path{:?} with base:{:?}",
-                                                ofile.as_path(bo.deref()),
-                                                m.get_tup_dir()
-                                            )
-                                        });
+                                    let p = diff_paths(
+                                        ph.get_path(ofile.path_descriptor()).as_path(),
+                                        m.get_tup_dir(),
+                                    )
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "Failed to diff path{:?} with base:{:?}",
+                                            ph.get_path(ofile.path_descriptor()).as_path(),
+                                            m.get_tup_dir()
+                                        )
+                                    });
                                     cmd.arg(
                                         p.to_string_lossy().to_string().as_str().replace('\\', "/"),
                                     );
@@ -209,8 +210,8 @@ impl ExpandRun for Statement {
                             cmd.arg(arg);
                         }
                     }
-                    let env = bo.get_env(&m.cur_env_desc);
-                    let dir = bo.get_root_dir().join(m.get_tup_dir());
+                    let env = ph.get_env(&m.cur_env_desc);
+                    let dir = ph.get_root_dir().join(m.get_tup_dir());
                     if cmd.get_args().len() != 0 {
                         cmd.envs(env.getenv()).current_dir(dir.as_path());
 
@@ -232,7 +233,9 @@ impl ExpandRun for Statement {
                         if !output.stderr.is_empty() {
                             return Err(crate::errors::Error::RunError(
                                 rule_ref,
-                                std::str::from_utf8(output.stderr.as_slice()).unwrap().to_string(),
+                                std::str::from_utf8(output.stderr.as_slice())
+                                    .unwrap()
+                                    .to_string(),
                             ));
                         }
                         debug!(
@@ -247,7 +250,7 @@ impl ExpandRun for Statement {
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
                             .expect("failed to parse output of tup run");
                         let mut lstmts = lstmts
-                            .subst(m, bo)
+                            .subst(m, ph)
                             .expect("subst failure in generated tup rules");
                         vs.extend(lstmts.drain(..).map(LocatedStatement::move_statement));
                     } else {
@@ -266,19 +269,18 @@ impl ExpandRun for Vec<LocatedStatement> {
     fn expand_run(
         &self,
         m: &mut ParseState,
-        bo: &mut BufferObjects,
+        ph: &mut impl PathHandler,
         _: &Loc,
     ) -> Result<Vec<Self>, crate::errors::Error>
     where
         Self: Sized,
     {
-        self
-            .iter()
+        self.iter()
             .map(|l| -> Result<Vec<LocatedStatement>, crate::errors::Error> {
                 let loc = l.getloc();
-                let stmts = l.get_statement()
-                    .expand_run(m, bo, loc)?;
-                Ok(stmts.iter()
+                let stmts = l.get_statement().expand_run(m, ph, loc)?;
+                Ok(stmts
+                    .iter()
                     .map(|s| LocatedStatement::new(s.clone(), *l.getloc()))
                     .collect())
             })
@@ -288,7 +290,7 @@ impl ExpandRun for Vec<LocatedStatement> {
 
 /// trait that a method to run variable substitution on different parts of tupfile
 pub(crate) trait Subst {
-    fn subst(&self, m: &mut ParseState, bo: &mut BufferObjects) -> Result<Self, Err>
+    fn subst(&self, m: &mut ParseState, bo: &mut impl PathHandler) -> Result<Self, Err>
     where
         Self: Sized;
 }
@@ -389,7 +391,7 @@ impl SubstPEs for Vec<PathExpr> {
 
 impl Subst for Source {
     /// call subst on each path expr and flatten/cleanup the input.
-    fn subst(&self, m: &mut ParseState, _bo: &mut BufferObjects) -> Result<Self, Err> {
+    fn subst(&self, m: &mut ParseState, _: &mut impl PathHandler) -> Result<Self, Err> {
         Ok(Source {
             primary: self.primary.subst_pe(m)?,
             for_each: self.for_each,
@@ -399,9 +401,9 @@ impl Subst for Source {
 }
 use bimap::hash::{Iter, RightValues};
 use decode::{
-    discover_inputs_from_glob, normalize_path, BufferObjects, ExpandRun, GroupPathDescriptor,
-    InputResolvedType, NormalPath, OutputAssocs, PathDescriptor, ResolvePaths, ResolvedLink,
-    RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
+    normalize_path, BufferObjects, ExpandRun, GroupPathDescriptor, InputResolvedType, NormalPath,
+    OutputAssocs, PathDescriptor, PathHandler, ResolvePaths, ResolvedLink, RuleDescriptor,
+    RuleFormulaUsage, RuleRef, TupPathDescriptor,
 };
 use errors::Error::RootNotFound;
 use log::debug;
@@ -453,7 +455,7 @@ fn takefirst(o: &Option<PathExpr>, m: &mut ParseState) -> Result<Option<PathExpr
 
 impl Subst for Target {
     /// run variable substitution on `Target'
-    fn subst(&self, m: &mut ParseState, _bo: &mut BufferObjects) -> Result<Self, Err> {
+    fn subst(&self, m: &mut ParseState, _: &mut impl PathHandler) -> Result<Self, Err> {
         Ok(Target {
             primary: self.primary.subst_pe(m)?,
             secondary: self.secondary.subst_pe(m)?,
@@ -465,7 +467,7 @@ impl Subst for Target {
 }
 impl Subst for RuleFormula {
     /// run variable substitution on `RuleFormula'
-    fn subst(&self, m: &mut ParseState, _b: &mut BufferObjects) -> Result<Self, Err> {
+    fn subst(&self, m: &mut ParseState, _: &mut impl PathHandler) -> Result<Self, Err> {
         Ok(RuleFormula {
             description: self.description.clone(), // todo : convert to rval and subst here as well,
             formula: self.formula.subst_pe(m)?,
@@ -591,7 +593,7 @@ pub fn load_conf_vars(
 }
 
 /// set the current TUP_CWD in expression map in ParseState as we switch to reading a included file
-pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut BufferObjects) -> PathBuf {
+pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut impl PathHandler) -> PathBuf {
     debug!("reading {:?}", filename);
     let cf = switch_to_reading(filename, m, bo);
     let tupdir = m.tup_base_path.parent().unwrap();
@@ -612,7 +614,7 @@ pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut BufferObject
 }
 
 /// update `ParseState' to point to newer file that is being read (like in include statement)
-fn switch_to_reading(filename: &Path, m: &mut ParseState, bo: &mut BufferObjects) -> PathBuf {
+fn switch_to_reading(filename: &Path, m: &mut ParseState, bo: &mut impl PathHandler) -> PathBuf {
     let cf = m.cur_file.clone();
     m.cur_file = filename.to_path_buf();
     let (d, _) = bo.add_tup(filename);
@@ -622,7 +624,7 @@ fn switch_to_reading(filename: &Path, m: &mut ParseState, bo: &mut BufferObjects
 
 impl Subst for Link {
     /// recursively substitute variables inside a link
-    fn subst(&self, m: &mut ParseState, bo: &mut BufferObjects) -> Result<Self, Err> {
+    fn subst(&self, m: &mut ParseState, bo: &mut impl PathHandler) -> Result<Self, Err> {
         Ok(Link {
             source: self.source.subst(m, bo)?,
             target: self.target.subst(m, bo)?,
@@ -636,7 +638,7 @@ impl Subst for Link {
 /// track of variables assigned so far and replaces variables occurrences in $(Var) or &(Var) or @(Var)
 impl Subst for Vec<LocatedStatement> {
     /// `subst' accumulates variable assignments in various maps in ParseState and replaces occurrences of them in subsequent statements
-    fn subst(&self, m: &mut ParseState, bo: &mut BufferObjects) -> Result<Self, Err> {
+    fn subst(&self, m: &mut ParseState, bo: &mut impl PathHandler) -> Result<Self, Err> {
         let mut newstats = Vec::new();
         for statement in self.iter() {
             let loc = statement.getloc();
@@ -832,17 +834,17 @@ impl Subst for Vec<LocatedStatement> {
 }
 
 fn get_or_insert_parsed_statement(
-    bo: &mut BufferObjects,
+    ph: &mut impl PathHandler,
     f: &Path,
 ) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
-    let (tup_desc, _) = bo.add_tup(f);
-    if !bo.is_cached(&tup_desc) {
+    let (tup_desc, _) = ph.add_tup(f);
+    if !ph.is_cached(&tup_desc) {
         let res = parse_tupfile(f)?;
-        bo.add_statements_to_cache(&tup_desc, res);
+        ph.add_statements_to_cache(&tup_desc, res);
     } else {
         debug!("Reusing cached statements for {:?}", f);
     }
-    let include_stmts = bo.get_statements(&tup_desc).cloned().unwrap_or_default();
+    let include_stmts = ph.get_statements(&tup_desc).cloned().unwrap_or_default();
     Ok(include_stmts)
 }
 
@@ -967,8 +969,8 @@ pub struct WriteBufferObjects<'a> {
 impl<'a> WriteBufferObjects<'a> {
     /// add a  path to parser's buffer and return its unique id.
     /// If it already exists in its buffers boolean returned will be false
-    pub fn add_path_from_root(&mut self, p: &Path) -> (PathDescriptor, bool) {
-        self.bo.add_path_from_root(p)
+    pub fn add_abs(&mut self, p: &Path) -> (PathDescriptor, bool) {
+        self.bo.add_abs(p)
     }
 }
 

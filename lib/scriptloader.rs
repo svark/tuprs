@@ -1,4 +1,4 @@
-use decode::{discover_inputs_from_glob, BufferObjects, OutputAssocs, ResolvePaths};
+use decode::{OutputAssocs, PathHandler, ResolvePaths};
 use errors::Error as Err;
 use log::Level::Debug;
 use log::{debug, log_enabled};
@@ -113,9 +113,9 @@ use statements::Statement::Rule;
 use statements::*;
 
 #[derive(Clone, Debug, Default)]
-pub struct TupScriptContext {
+pub struct TupScriptContext<P: PathHandler + Sized> {
     parse_state: ParseState,
-    bo: Rc<RefCell<BufferObjects>>,
+    bo: Rc<RefCell<P>>,
     arts: Artifacts,
 }
 #[derive(Debug, Default, Clone)]
@@ -312,8 +312,9 @@ impl ScriptRuleCommand {
         }
     }
 }
-impl TupScriptContext {
-    pub(crate) fn new(parse_state: ParseState, bo: Rc<RefCell<BufferObjects>>) -> TupScriptContext {
+
+impl<P: PathHandler> TupScriptContext<P> {
+    pub(crate) fn new(parse_state: ParseState, bo: Rc<RefCell<P>>) -> TupScriptContext<P> {
         TupScriptContext {
             arts: Artifacts::new(),
             parse_state: parse_state,
@@ -321,10 +322,10 @@ impl TupScriptContext {
         }
     }
 
-    pub(crate) fn bo_as_mut(&self) -> RefMut<'_, BufferObjects> {
+    pub(crate) fn bo_as_mut(&self) -> RefMut<'_, P> {
         self.bo.deref().borrow_mut()
     }
-    pub(crate) fn bo_as_ref(&self) -> std::cell::Ref<'_, BufferObjects> {
+    pub(crate) fn bo_as_ref(&self) -> std::cell::Ref<'_, P> {
         self.bo.deref().borrow()
     }
 
@@ -498,7 +499,7 @@ impl ConvToString for Lua {
     }
 }
 
-impl UserData for TupScriptContext {
+impl<P: PathHandler + 'static> UserData for TupScriptContext<P> {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_function("getconfig", |lua, var: (mlua::String,)| {
             let globals = lua.globals();
@@ -730,12 +731,12 @@ impl UserData for TupScriptContext {
                 let inps: Vec<_> = inps1
                     .iter()
                     .take(numinps)
-                    .filter_map(|x| TupScriptContext::convert_to_table(luactx, x).ok())
+                    .filter_map(|x| TupScriptContext::<P>::convert_to_table(luactx, x).ok())
                     .collect();
                 let outs: Vec<_> = inps1
                     .iter()
                     .skip(outindex)
-                    .filter_map(|x| TupScriptContext::convert_to_table(luactx, x).ok())
+                    .filter_map(|x| TupScriptContext::<P>::convert_to_table(luactx, x).ok())
                     .collect();
                 if let Some(Value::Table(t)) = inps.first() {
                     t.clone().pairs().for_each(|x| {
@@ -828,7 +829,7 @@ impl UserData for TupScriptContext {
                         .expect("line number missing lua registry");
                     //let globals = luactx.globals();
                     let tup_shared: AnyUserData = globals.get("tup")?;
-                    let mut scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+                    let mut scriptctx: RefMut<TupScriptContext<P>> = tup_shared.borrow_mut()?;
                     let paths = scriptctx.for_each_rule(i, inputs, rulcmd, outputs)?;
                     let t = luactx.create_table()?;
                     let mut cnt: usize = 1;
@@ -851,22 +852,26 @@ impl UserData for TupScriptContext {
             };
             let globals = luactx.globals();
             let tup_shared: AnyUserData = globals.get("tup")?;
-            let scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+            let scriptctx: RefMut<TupScriptContext<P>> = tup_shared.borrow_mut()?;
             let outputs = OutputAssocs::new_no_resolve_groups();
             let mut bo_as_mut = scriptctx.bo.as_ref().borrow_mut();
-            let matching_paths = discover_inputs_from_glob(
-                Path::new(scriptctx.get_cwd().as_str()),
-                Path::new(path),
-                &outputs,
-                bo_as_mut.deref_mut(),
-            )
-            .expect("Glob expansion failed");
+            let matching_paths = bo_as_mut
+                .discover_paths(
+                    Path::new(scriptctx.get_cwd().as_str()),
+                    Path::new(path),
+                    &outputs,
+                )
+                .expect("Glob expansion failed");
             let glob_out = luactx.create_table()?;
             let mut cnt = 1;
             for m in matching_paths {
                 glob_out.set(
                     cnt as mlua::Integer,
-                    m.as_path(scriptctx.bo_as_mut().deref())
+                    scriptctx
+                        .bo_as_mut()
+                        .get_path(m.path_descriptor())
+                        .as_path()
+                        //m.as_path(scriptctx.bo_as_mut().deref())
                         .to_string_lossy()
                         .to_string(),
                 )?;
@@ -910,9 +915,9 @@ impl UserData for TupScriptContext {
 }
 
 /// main entry point for parsing Tupfile.lua
-pub(crate) fn parse_script(
+pub(crate) fn parse_script<P: PathHandler + Default + 'static>(
     parse_state: ParseState,
-    bo: std::rc::Rc<std::cell::RefCell<BufferObjects>>,
+    bo: std::rc::Rc<std::cell::RefCell<P>>,
 ) -> Result<Artifacts, Err> {
     let lua = unsafe { mlua::Lua::unsafe_new() };
     let r = lua.scope(|scope| {
@@ -1003,7 +1008,7 @@ pub(crate) fn parse_script(
         file.read_to_end(&mut contents)?;
         lua.load(contents.as_bytes()).exec()?;
         let tup_shared: AnyUserData = globals.get("tup")?;
-        let mut scriptctx: RefMut<TupScriptContext> = tup_shared.borrow_mut()?;
+        let mut scriptctx: RefMut<TupScriptContext<P>> = tup_shared.borrow_mut()?;
         {
             let smut = std::mem::take(scriptctx.deref_mut());
             Ok(smut.arts)
