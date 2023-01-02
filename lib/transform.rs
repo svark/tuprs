@@ -406,9 +406,9 @@ impl SubstPEs for Vec<PathExpr> {
     }
 }
 
-impl Subst for Source {
+impl SubstPEs for Source {
     /// call subst on each path expr and flatten/cleanup the input.
-    fn subst(&self, m: &mut ParseState, _: &mut impl PathHandler) -> Result<Self, Err> {
+    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err> {
         Ok(Source {
             primary: self.primary.subst_pe(m)?,
             for_each: self.for_each,
@@ -470,9 +470,9 @@ fn takefirst(o: &Option<PathExpr>, m: &mut ParseState) -> Result<Option<PathExpr
     }
 }
 
-impl Subst for Target {
+impl SubstPEs for Target {
     /// run variable substitution on `Target'
-    fn subst(&self, m: &mut ParseState, _: &mut impl PathHandler) -> Result<Self, Err> {
+    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err> {
         Ok(Target {
             primary: self.primary.subst_pe(m)?,
             secondary: self.secondary.subst_pe(m)?,
@@ -482,9 +482,9 @@ impl Subst for Target {
         })
     }
 }
-impl Subst for RuleFormula {
+impl SubstPEs for RuleFormula {
     /// run variable substitution on `RuleFormula'
-    fn subst(&self, m: &mut ParseState, _: &mut impl PathHandler) -> Result<Self, Err> {
+    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err> {
         Ok(RuleFormula {
             description: self.description.clone(), // todo : convert to rval and subst here as well,
             formula: self.formula.subst_pe(m)?,
@@ -639,13 +639,13 @@ fn switch_to_reading(filename: &Path, parse_state: &mut ParseState, bo: &mut imp
     cf
 }
 
-impl Subst for Link {
+impl SubstPEs for Link {
     /// recursively substitute variables inside a link
-    fn subst(&self, m: &mut ParseState, bo: &mut impl PathHandler) -> Result<Self, Err> {
+    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err> {
         Ok(Link {
-            source: self.source.subst(m, bo)?,
-            target: self.target.subst(m, bo)?,
-            rule_formula: self.rule_formula.subst(m, bo)?,
+            source: self.source.subst_pe(m)?,
+            target: self.target.subst_pe(m)?,
+            rule_formula: self.rule_formula.subst_pe(m)?,
             pos: self.pos,
         })
     }
@@ -807,7 +807,7 @@ impl Subst for Vec<LocatedStatement> {
                     }
                     let env_desc = parse_state.cur_env_desc.clone();
                     newstats.push(LocatedStatement::new(
-                        Statement::Rule(l.subst(parse_state, bo)?, env_desc),
+                        Statement::Rule(l.subst_pe(parse_state)?, env_desc),
                         *loc,
                     ));
                 }
