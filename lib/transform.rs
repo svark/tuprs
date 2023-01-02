@@ -631,10 +631,10 @@ pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut impl PathHan
 }
 
 /// update `ParseState' to point to newer file that is being read (like in include statement)
-fn switch_to_reading(filename: &Path, parse_state: &mut ParseState, bo: &mut impl PathHandler) -> PathBuf {
+fn switch_to_reading(filename: &Path, parse_state: &mut ParseState, ph: &mut impl PathHandler) -> PathBuf {
     let cf = parse_state.cur_file.clone();
     parse_state.cur_file = filename.to_path_buf();
-    let (d, _) = bo.add_tup(filename);
+    let (d, _) = ph.add_tup(filename);
     parse_state.cur_file_desc = d;
     cf
 }
