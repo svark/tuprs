@@ -97,14 +97,7 @@ pub trait PathHandler {
     /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
     fn group_iter(&self) -> bimap::hash::Iter<'_, NormalPath, GroupPathDescriptor>;
 
-    /// Add statements to cache.
-    fn add_statements_to_cache(&mut self, tup_desc: &TupPathDescriptor, vs: Vec<LocatedStatement>);
 
-    /// Check if this path has its statements cached
-    fn is_cached(&self, tup_desc: &TupPathDescriptor) -> bool;
-
-    /// Get statement already in cache from the given tup file(or one of the included files)
-    fn get_statements(&self, tup_desc: &TupPathDescriptor) -> Option<&Vec<LocatedStatement>>;
 }
 
 /// Normal Path packages a PathBuf, giving relative paths wrt current tup directory
@@ -1069,7 +1062,6 @@ pub(crate) struct BufferObjects {
     tbo: TupPathBufferObject, //< tup paths by id
     ebo: EnvBufferObject,     //< environment variables by id
     rbo: RuleBufferObject,    //< Rules by id
-    statement_cache: HashMap<TupPathDescriptor, Vec<LocatedStatement>>, //< Cache of statements from previously read Tupfiles
 }
 // Accessors for BufferObjects
 impl BufferObjects {
@@ -1080,7 +1072,6 @@ impl BufferObjects {
             bbo: BinBufferObject::new(root.as_ref()),
             gbo: GroupBufferObject::new(root.as_ref()),
             tbo: TupPathBufferObject::new(root.as_ref()),
-            statement_cache: HashMap::new(),
             ..Default::default()
         }
     }
@@ -1240,18 +1231,6 @@ impl PathHandler for BufferObjects {
         self.gbo.group_iter()
     }
 
-    /// Add statements to cache.
-    fn add_statements_to_cache(&mut self, tup_desc: &TupPathDescriptor, vs: Vec<LocatedStatement>) {
-        self.statement_cache.insert(*tup_desc, vs);
-    }
-    fn is_cached(&self, tup_desc: &TupPathDescriptor) -> bool {
-        self.statement_cache.contains_key(tup_desc)
-    }
-
-    /// Get statement already in cache from the given tup file(or one of the included files)
-    fn get_statements(&self, tup_desc: &TupPathDescriptor) -> Option<&Vec<LocatedStatement>> {
-        self.statement_cache.get(tup_desc)
-    }
 }
 
 /// Decode input paths from file globs, bins(buckets), and groups
