@@ -96,8 +96,6 @@ pub trait PathHandler {
     /// Return an iterator over all the id-group path pairs.
     /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
     fn group_iter(&self) -> bimap::hash::Iter<'_, NormalPath, GroupPathDescriptor>;
-
-
 }
 
 /// Normal Path packages a PathBuf, giving relative paths wrt current tup directory
@@ -130,7 +128,7 @@ impl NormalPath {
             .skip_while(|x| Component::CurDir.eq(x))
             .collect();
         let p2: PathBuf = if tup_cwd.components().all(|ref x| Component::CurDir.eq(x)) {
-            p1
+            p1.parse_dot().unwrap_or_default().into()
         } else {
             tup_cwd
                 .join(p1.as_path())
@@ -1001,7 +999,6 @@ struct OutputType {
     pub path: NormalPath,
     pub pid: PathDescriptor,
 }
-
 impl OutputType {
     fn new(path: NormalPath, pid: PathDescriptor) -> Self {
         Self { path, pid }
@@ -1134,7 +1131,8 @@ impl PathHandler for BufferObjects {
         self.rbo.add_rule(r)
     }
     fn add_tup(&mut self, p: &Path) -> (TupPathDescriptor, bool) {
-        self.tbo.add(p)
+        let p1 = NormalPath::cleanup(p, Path::new("."));
+        self.tbo.add(p1.as_path())
     }
 
     fn add_env_var(&mut self, var: String, cur_env_desc: &EnvDescriptor) -> Option<EnvDescriptor> {
@@ -1154,7 +1152,12 @@ impl PathHandler for BufferObjects {
         glob_path: &Path,
         outs: &OutputAssocs,
     ) -> Result<Vec<MatchingPath>, Error> {
-        discover_inputs_from_glob(self.pbo.get_root_dir().join(tup_cwd).as_path(), glob_path, outs, self)
+        discover_inputs_from_glob(
+            self.pbo.get_root_dir().join(tup_cwd).as_path(),
+            glob_path,
+            outs,
+            self,
+        )
     }
 
     /// Get file name of the input path
@@ -1230,7 +1233,6 @@ impl PathHandler for BufferObjects {
     fn group_iter(&self) -> bimap::hash::Iter<'_, NormalPath, GroupPathDescriptor> {
         self.gbo.group_iter()
     }
-
 }
 
 /// Decode input paths from file globs, bins(buckets), and groups
@@ -1794,9 +1796,16 @@ fn normalized_path(tup_cwd: &Path, x: &PathExpr) -> PathBuf {
     let pbuf = PathBuf::new().join(x.cat_ref().replace('\\', "/").as_str());
     NormalPath::absolute_from(pbuf.as_path(), tup_cwd).to_path_buf()
 }
+fn excluded_patterns(tup_cwd: &Path, p: &[PathExpr], ph: &mut impl PathHandler) -> Vec<PathDescriptor> {
+    p.iter().filter_map(|x| if let PathExpr::ExcludePattern(pattern) = x {
+       let path = Path::new(pattern);
+        let (pid, _) = ph.add_path_from(tup_cwd, path);
+        Some(pid)
+    } else { None }).collect()
+}
 
 fn paths_from_exprs(tup_cwd: &Path, p: &[PathExpr], ph: &mut impl PathHandler) -> Vec<OutputType> {
-    p.split(|x| matches!(x, &PathExpr::Sp1))
+    p.split(|x| matches!(x, &PathExpr::Sp1) || matches!(x, &PathExpr::ExcludePattern(_)))
         .filter(|x| !x.is_empty())
         .map(|x| {
             let path = PathBuf::new().join(x.to_vec().cat());
@@ -1825,28 +1834,14 @@ impl DecodeInputPlaceHolders for Target {
         Ok(Target {
             primary: newprimary,
             secondary: newsecondary,
-            exclude_pattern: self.exclude_pattern.clone(),
-            bin: self.bin.clone(),
-            group: self.group.clone(),
-        })
-    }
-}
-impl DecodeOutputPlaceHolders for Target {
-    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Result<Self, Err> {
-        let newprimary = self.primary.clone();
-        let newsecondary = self.secondary.decode_output_place_holders(outputs)?;
-        Ok(Target {
-            primary: newprimary,
-            secondary: newsecondary,
-            exclude_pattern: self.exclude_pattern.clone(),
             bin: self.bin.clone(),
             group: self.group.clone(),
         })
     }
 }
 
-// reconstruct a rule formula that has placeholders filled up
 impl DecodeInputPlaceHolders for RuleFormula {
+    /// rebuild a rule formula with input placeholders filled up
     fn decode_input_place_holders(
         &self,
         inputs: &InputsAsPaths,
@@ -1863,8 +1858,8 @@ impl DecodeInputPlaceHolders for RuleFormula {
     }
 }
 
-// reconstruct rule by replacing output placeholders such as %o
 impl DecodeOutputPlaceHolders for RuleFormula {
+    /// rebuild rule by replacing output placeholders such as %o
     fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Result<Self, Err> {
         Ok(RuleFormula {
             description: self.description.decode_output_place_holders(outputs)?,
@@ -1873,17 +1868,18 @@ impl DecodeOutputPlaceHolders for RuleFormula {
     }
 }
 
+/// decode input and output placeholders to rebuild a rule
 fn get_deglobbed_rule(
-    resolver: &RuleInterimDat,
+    rule_ctx: &RuleContext,
     primary_deglobbed_inps: &[InputResolvedType],
     ph: &mut impl PathHandler,
     env: &EnvDescriptor,
 ) -> Result<ResolvedLink, Err> {
-    let r = resolver.rule_formula;
-    let rule_ref = resolver.rule_ref;
-    let t = resolver.target;
-    let tup_cwd = resolver.tup_cwd;
-    let secondary_deglobbed_inps = resolver.secondary_inp;
+    let r = rule_ctx.rule_formula;
+    let rule_ref = rule_ctx.rule_ref;
+    let t = rule_ctx.target;
+    let tup_cwd = rule_ctx.tup_cwd;
+    let secondary_deglobbed_inps = rule_ctx.secondary_inp;
     debug!("deglobbing tup at dir:{:?}, rule:{:?}", tup_cwd, r.cat());
 
     let input_as_paths = InputsAsPaths::new(tup_cwd, primary_deglobbed_inps, ph, rule_ref.clone());
@@ -1891,7 +1887,9 @@ fn get_deglobbed_rule(
         InputsAsPaths::new(tup_cwd, secondary_deglobbed_inps, ph, rule_ref.clone());
     let mut decoded_target =
         t.decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths)?;
+    let excluded_targets = excluded_patterns(tup_cwd, &decoded_target.primary, ph);
     let pp = paths_from_exprs(tup_cwd, &decoded_target.primary, ph);
+
     let df = |x: &OutputType| diff_paths(x.as_path(), tup_cwd).unwrap();
     let output_as_paths = OutputsAsPaths {
         outputs: pp.iter().map(df).collect(),
@@ -1926,6 +1924,7 @@ fn get_deglobbed_rule(
         rule_formula_desc,
         primary_targets: pp.into_iter().map(|x| x.get_id()).collect(),
         secondary_targets: sec_pp.into_iter().map(|x| x.get_id()).collect(),
+        excluded_targets,
         bin: bin_desc,
         group: group_desc,
         rule_ref: rule_ref.clone(),
@@ -1948,6 +1947,8 @@ pub struct ResolvedLink {
     primary_targets: Vec<PathDescriptor>,
     /// Other outputs written to by a rule
     secondary_targets: Vec<PathDescriptor>,
+    /// Exclusion patterns on targets
+    excluded_targets: Vec<PathDescriptor>,
     /// Optional Group that outputs go into.
     /// Groups are collectors of ouptuts that are accessible as inputs to other rules which may not be from
     /// the same tupfile as the rule that provides this group
@@ -1970,6 +1971,7 @@ impl ResolvedLink {
             rule_formula_desc: Default::default(),
             primary_targets: vec![],
             secondary_targets: vec![],
+            excluded_targets: vec![],
             group: None,
             bin: None,
             rule_ref: Default::default(),
@@ -2010,6 +2012,9 @@ impl ResolvedLink {
     pub fn get_rule_ref(&self) -> &RuleRef {
         &self.rule_ref
     }
+
+    /// returns ids of excluded patterns
+    pub fn get_excluded_targets(&self) -> &Vec<PathDescriptor> { &self.excluded_targets}
 
     fn resolve_unresolved(
         taginfo: &OutputAssocs,
@@ -2248,7 +2253,7 @@ impl ResolvePaths for ResolvedLink {
     }
 }
 
-struct RuleInterimDat<'a, 'b, 'c, 'd> {
+struct RuleContext<'a, 'b, 'c, 'd> {
     tup_cwd: &'d Path,
     rule_formula: &'a RuleFormula,
     rule_ref: &'b RuleRef,
@@ -2294,7 +2299,7 @@ impl ResolvePaths for LocatedStatement {
             let rule_ref = &RuleRef::new(tup_desc, loc);
             let inpdec = s.primary.decode(tup_cwd, taginfo, ph, rule_ref)?;
             let secondinpdec = s.secondary.decode(tup_cwd, taginfo, ph, rule_ref)?;
-            let resolver = RuleInterimDat {
+            let resolver = RuleContext {
                 tup_cwd,
                 rule_formula,
                 rule_ref,

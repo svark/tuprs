@@ -32,7 +32,6 @@ pub(crate) struct ParseState {
     pub(crate) cur_env_desc: EnvDescriptor,
     /// Cache of statements from previously read Tupfiles
     pub(crate) statement_cache: HashMap<TupPathDescriptor, Vec<LocatedStatement>>,
-
 }
 
 // Default Env to feed into every tupfile
@@ -476,7 +475,6 @@ impl SubstPEs for Target {
         Ok(Target {
             primary: self.primary.subst_pe(m)?,
             secondary: self.secondary.subst_pe(m)?,
-            exclude_pattern: self.exclude_pattern.clone(),
             group: takefirst(&self.group, m)?,
             bin: takefirst(&self.bin, m)?,
         })
@@ -631,7 +629,11 @@ pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut impl PathHan
 }
 
 /// update `ParseState' to point to newer file that is being read (like in include statement)
-fn switch_to_reading(filename: &Path, parse_state: &mut ParseState, ph: &mut impl PathHandler) -> PathBuf {
+fn switch_to_reading(
+    filename: &Path,
+    parse_state: &mut ParseState,
+    ph: &mut impl PathHandler,
+) -> PathBuf {
     let cf = parse_state.cur_file.clone();
     parse_state.cur_file = filename.to_path_buf();
     let (d, _) = ph.add_tup(filename);
@@ -733,8 +735,14 @@ impl Subst for Vec<LocatedStatement> {
                     else_statements,
                 } => {
                     let e = EqCond {
-                        lhs: eq.lhs.subst_pe(parse_state).expect("no errors expected in subst"),
-                        rhs: eq.rhs.subst_pe(parse_state).expect("no errors expected in subst"),
+                        lhs: eq
+                            .lhs
+                            .subst_pe(parse_state)
+                            .expect("no errors expected in subst"),
+                        rhs: eq
+                            .rhs
+                            .subst_pe(parse_state)
+                            .expect("no errors expected in subst"),
                         not_cond: eq.not_cond,
                     };
                     let (ts, es) = if e.not_cond {
@@ -763,12 +771,14 @@ impl Subst for Vec<LocatedStatement> {
 
                 Statement::IncludeRules => {
                     let parent = get_parent(parse_state.cur_file.as_path());
-                    debug!("attemping to file tuprules");
+                    debug!("attemping to read tuprules");
                     let mut found = false;
+                    // locate tupfiles up the heirarchy from the current Tupfile folder
                     for f in locate_tuprules(parent) {
                         debug!("reading tuprules {:?}", f);
                         let (tup_desc, _) = bo.add_tup(f.as_path());
-                        let include_stmts = get_or_insert_parsed_statement(parse_state, &tup_desc, &f)?;
+                        let include_stmts =
+                            get_or_insert_parsed_statement(parse_state, &tup_desc, &f)?;
                         let cf = set_cwd(f.as_path(), parse_state, bo);
                         newstats.append(&mut include_stmts.subst(parse_state, bo)?);
                         set_cwd(cf.as_path(), parse_state, bo);
@@ -794,7 +804,8 @@ impl Subst for Vec<LocatedStatement> {
                     };
                     if p.is_file() {
                         let (tup_desc, _) = bo.add_tup(p);
-                        let include_stmmts = get_or_insert_parsed_statement(parse_state, &tup_desc, p)?;
+                        let include_stmmts =
+                            get_or_insert_parsed_statement(parse_state, &tup_desc, p)?;
                         let cf = set_cwd(p, parse_state, bo);
                         newstats.append(&mut include_stmmts.subst(parse_state, bo)?);
                         set_cwd(cf.as_path(), parse_state, bo);
@@ -835,12 +846,19 @@ impl Subst for Vec<LocatedStatement> {
                 }
                 Statement::Import(var, envval) => {
                     if let Some(val) = envval.clone().or_else(|| std::env::var(var).ok()) {
-                        parse_state.expr_map.entry(String::from(var)).or_default().push(val);
+                        parse_state
+                            .expr_map
+                            .entry(String::from(var))
+                            .or_default()
+                            .push(val);
                     }
                     newstats.push(statement.clone());
                 }
                 Statement::Run(r) => {
-                    newstats.push(LocatedStatement::new(Statement::Run(r.subst_pe(parse_state)?), *loc));
+                    newstats.push(LocatedStatement::new(
+                        Statement::Run(r.subst_pe(parse_state)?),
+                        *loc,
+                    ));
                 }
                 Statement::Comment => {
                     // ignore
@@ -863,7 +881,10 @@ fn get_or_insert_parsed_statement(
     } else {
         debug!("Reusing cached statements for {:?}", f);
     }
-    let include_stmts = parse_state.get_statements(&tup_desc).cloned().unwrap_or_default();
+    let include_stmts = parse_state
+        .get_statements(&tup_desc)
+        .cloned()
+        .unwrap_or_default();
     Ok(include_stmts)
 }
 

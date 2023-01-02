@@ -64,12 +64,10 @@ pub(crate) struct Target {
     pub primary: Vec<PathExpr>,
     /// Extra outputs of rule not available for %o substition, and are written by the command that rule refers to
     pub secondary: Vec<PathExpr>,
-    /// Regex Patterns to avoid tracking some outputs written by this rule
-    pub exclude_pattern: Option<PathExpr>,
     ///  group that accumulates outputs of rule globbaly available for use in different tupfiles
     pub group: Option<PathExpr>, // this is Some(Group(_,_)) if not null
-    //  bin that accumulates outputs of a rule locally in a tupfile
-    pub bin: Option<PathExpr>, // this is  Some(Bucket(_)) is not null
+    ///  bin that accumulates outputs of a rule locally in a tupfile, this is Some(Bucket(_)) if not null
+    pub bin: Option<PathExpr>,
 }
 /// formula for a tup rule
 #[derive(PartialEq, Debug, Clone, Default, Hash, Eq)]

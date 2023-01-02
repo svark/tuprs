@@ -422,6 +422,8 @@ impl Tokens {
     }
 
     fn tokens_to_regex(options: &GlobOptions, tokens: &[Token], re: &mut String) {
+        let c = 'G' as u8;
+        let mut index: u8 = 0;
         for tok in tokens {
             match *tok {
                 Token::Literal(c) => {
@@ -429,7 +431,8 @@ impl Tokens {
                 }
                 Token::Any => {
                     if options.capture_globs {
-                        re.push_str("(?P<GM>(");
+                        re.push_str(format!("(?P<{}M>(", (c + index) as char).as_str());
+                        index = index + 1;
                     }
                     if options.literal_separator {
                         re.push_str("[^/]");
@@ -442,7 +445,8 @@ impl Tokens {
                 }
                 Token::ZeroOrMore => {
                     if options.capture_globs {
-                        re.push_str("(?P<GM>");
+                        re.push_str(format!("(?P<{}M>", (c + index) as char).as_str());
+                        index = index + 1;
                     }
                     if options.literal_separator {
                         re.push_str("[^/]*");
@@ -455,21 +459,24 @@ impl Tokens {
                 }
                 Token::RecursivePrefix => {
                     if options.capture_globs {
-                        re.push_str("(?P<GM>/?|.*/)");
+                        re.push_str(format!("(?P<{}M>/?|.*/", (c + index) as char).as_str());
+                        index = index + 1;
                     } else {
                         re.push_str("(?:/?|.*/)");
                     }
                 }
                 Token::RecursiveSuffix => {
                     if options.capture_globs {
-                        re.push_str("/(?P<GM>.*)");
+                        re.push_str(format!("/(?P<{}M>.*)", (c + index) as char).as_str());
+                        index = index + 1;
                     } else {
                         re.push_str("/.*");
                     }
                 }
                 Token::RecursiveZeroOrMore => {
                     if options.capture_globs {
-                        re.push_str("(?P<GM>/|/.*/)");
+                        re.push_str(format!("(?P<{}M>/|/.*/)", (c + index) as char).as_str());
+                        index = index + 1;
                     } else {
                         re.push_str("(?:/|/.*/)");
                     }
@@ -479,7 +486,8 @@ impl Tokens {
                     ref ranges,
                 } => {
                     if options.capture_globs {
-                        re.push_str("(?P<GM>");
+                        re.push_str(format!("(?P<{}M>", (c + index) as char).as_str());
+                        index = index + 1;
                     }
                     re.push('[');
                     if negated {

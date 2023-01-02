@@ -286,7 +286,6 @@ impl ScriptOutputBuilder {
         Target {
             primary: self.primary_outputs,
             secondary: self.secondary_outputs,
-            exclude_pattern: self.exclude_pattern,
             group: self.group,
             bin: self.bin,
         }

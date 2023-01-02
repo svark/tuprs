@@ -129,8 +129,7 @@ fn test_op() {
                     },
                     target: Target {
                         secondary: vec![Literal("command.pch".to_string())],
-                        primary: vec![],
-                        exclude_pattern: Some(ExcludePattern("exclude_pattern.*".to_string())),
+                        primary: vec![Sp1, ExcludePattern("exclude_pattern.*".to_string())],
                         group: None,
                         bin: Some(Bin("objs".to_string())),
                     },
@@ -162,7 +161,6 @@ fn test_op() {
                     target: Target {
                         primary: vec![],
                         secondary: vec![Literal("file.txt".to_string())],
-                        exclude_pattern: None,
                         group: None,
                         bin: None,
                     },
@@ -193,7 +191,6 @@ fn test_op() {
                     target: Target {
                         primary: vec![],
                         secondary: vec![],
-                        exclude_pattern: None,
                         group: None,
                         bin: None,
                     },
@@ -312,7 +309,6 @@ fn test_parse() {
             target: Target {
                 secondary: vec![Literal("command.pch".to_string())],
                 primary: vec![Literal("%B.o".to_string())],
-                exclude_pattern: None,
                 group: Some(Group(
                     vec![Literal("../".to_string())],
                     vec![Literal("grp3".to_string())],
@@ -370,13 +366,13 @@ fn test_parse() {
         )
     );
     use decode::*;
-    let taginfo = OutputAssocs::new();
+    let outputs = OutputAssocs::new();
     use decode::ResolvePaths;
     use statements::Loc;
     let mut bo = BufferObjects::new(Path::new("."));
     let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
     let decodedrule = LocatedStatement::new(rule, Loc::new(0, 0))
-        .resolve_paths(Path::new("./Tupfile"), &taginfo, &mut bo, &tup_desc)
+        .resolve_paths(Path::new("./Tupfile"), &outputs, &mut bo, &tup_desc)
         .unwrap();
     use statements::Cat;
     if let Some(deglobbed_link) = decodedrule.get_resolved_links().first() {
@@ -394,7 +390,7 @@ fn test_parse() {
     use std::io::Write;
     file.write_all("-".as_bytes()).expect("file write error");
     let decodedrule1 = LocatedStatement::new(rule1, Loc::new(0, 0))
-        .resolve_paths(Path::new("file.txt"), &taginfo, &mut bo, &tup_desc)
+        .resolve_paths(Path::new("file.txt"), &outputs, &mut bo, &tup_desc)
         .unwrap();
     if let Some(deglobbed_link) = decodedrule1.get_resolved_links().first() {
         let rf = bo.get_rule(&deglobbed_link.get_rule_desc());

@@ -39,7 +39,7 @@ lazy_static! {
     static ref BRKTOKS: &'static str = "\\\n$@&";
     static ref BRKTOKSWS: &'static str = "\\\n$@& ";
     static ref BRKTOKSIO: &'static str = "\\\n $@&^<{";
-    static ref BRKTAGSNOWS: &'static str = "<|{^";
+    static ref BRKTAGSNOWS: &'static str = "<|{";
     static ref BRKTAGS: &'static str = " <|{^";
 }
 
@@ -528,14 +528,13 @@ fn from_input(primary: Vec<PathExpr>, for_each: bool, secondary: Vec<PathExpr>) 
 fn from_output(
     primary: Vec<PathExpr>,
     secondary: Vec<PathExpr>,
-    exclude: Option<PathExpr>,
     group: Option<PathExpr>,
     bin: Option<PathExpr>,
 ) -> Target {
     Target {
         primary,
         secondary,
-        exclude_pattern: exclude,
+        //exclude_pattern: exclude,
         group,
         bin,
     }
@@ -584,15 +583,21 @@ fn parse_output_delim(i: Span) -> IResult<Span, Span> {
 
 fn parse_primary_output1(i: Span) -> IResult<Span, Vec<PathExpr>> {
     let (s, _) = tag("|")(i)?;
-    let pe = |i| parse_pathexpr_ws(i, "\r\n", &BRKTOKSIO);
-    let (s, v0) = many_till(pe, parse_output_delim)(s)?;
+    let pe = |i| parse_pathexpr_ws(i, "<{^\r\n", &BRKTOKSIO);
+    let (s, v0) = many_till(
+        alt((complete(parse_pathexpr_exclude_pattern), complete(pe))),
+        parse_output_delim,
+    )(s)?;
     Ok((s, v0.0))
 }
 
 fn parse_primary_output0(i: Span) -> IResult<Span, (Vec<PathExpr>, bool)> {
     let (s, _) = opt(sp1)(i)?;
     let pe = |i| parse_pathexpr_ws(i, "|<{^\r\n", &BRKTOKSIO);
-    let (s, v0) = many_till(pe, parse_output_delim)(s)?;
+    let (s, v0) = many_till(
+        alt((complete(parse_pathexpr_exclude_pattern), complete(pe))),
+        parse_output_delim,
+    )(s)?;
     //eprintln!("{}", v0.1.as_bytes().first().unwrap_or(&b' ').as_char());
     let has_more = v0.1.as_bytes().first().map(|&c| c == b'|').unwrap_or(false);
     Ok((s, (v0.0, has_more)))
@@ -622,7 +627,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = tag(">")(s)?;
     let (s, _) = opt(sp1)(s)?;
     // read until "|" or lineending
-    let (s, output0) = context("rule output", opt(parse_primary_output0))(s)?;
+    let (s, output0) = context("rule output maybe primary", opt(parse_primary_output0))(s)?;
     let has_more = output0.as_ref().map_or(false, |(_, has_more)| *has_more);
     let (s, output1) = if has_more {
         context("rule output", cut(parse_primary_output1))(s)?
@@ -635,7 +640,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     } else {
         (output0.unwrap_or((Vec::new(), false)).0, Vec::new())
     };
-    let (s, exclude_patterns) = opt(parse_pathexpr_exclude_pattern)(s)?;
+    //let (s, exclude_patterns) = opt(parse_pathexpr_exclude_pattern)(s)?;
     // let secondary_output = if hassecondary { output1.unwrap_or(Vec::new())} else { Vec::new() };
     let (s, _) = opt(sp1)(s)?;
     let (s, v1) = opt(parse_pathexpr_group)(s)?;
@@ -655,7 +660,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
                             .unwrap_or_else(|| (Vec::new(), default_inp()))
                             .0,
                     ),
-                    target: from_output(output, secondary_output, exclude_patterns, v1, v2),
+                    target: from_output(output, secondary_output, v1, v2),
                     rule_formula,
                     pos: (pos.location_line(), pos.get_column()),
                 },
@@ -706,11 +711,13 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     } else {
         (output0.unwrap_or((Vec::new(), false)).0, Vec::new())
     };
+    let macroname_str  = from_utf8(macroname).unwrap_or_default();
+    log::debug!("built macro:{}", macroname_str);
     Ok((
         s,
         (
             Statement::MacroAssignment(
-                from_utf8(macroname).unwrap_or_default(),
+                macroname_str,
                 Link {
                     source: from_input(
                         input.map(|(x, _)| x).unwrap_or_default(),
@@ -719,7 +726,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
                             .unwrap_or_else(|| (Vec::new(), default_inp()))
                             .0,
                     ),
-                    target: from_output(output, secondary_output, None, None, None),
+                    target: from_output(output, secondary_output, None, None),
                     rule_formula,
                     pos: (pos.location_line(), pos.get_column()),
                 },
