@@ -161,7 +161,7 @@ impl NormalPath {
 }
 
 pub(crate) fn normalize_path(p: &Path) -> String {
-    if p.as_os_str().len() == 0 {
+    if p.as_os_str().is_empty() {
         ".".to_string()
     } else {
         Candidate::new(p).path().to_str_lossy().to_string()
@@ -405,7 +405,7 @@ where
 
     /// Find id
     fn get_id(&self, np: &NormalPath) -> Option<T> {
-        self.descriptor.get_by_left(&np).cloned()
+        self.descriptor.get_by_left(np).cloned()
     }
 
     /// add a path with a automatically assigned id
@@ -636,7 +636,7 @@ impl OutputAssocs {
             .extend(new_outputs.output_files.iter().cloned());
         for (dir, ch) in new_outputs.children.iter() {
             self.children
-                .entry(dir.clone())
+                .entry(*dir)
                 .or_insert_with(Vec::new)
                 .extend(ch.iter());
         }
@@ -695,7 +695,7 @@ impl OutputAssocs {
         let mut hs = HashSet::new();
         hs.extend(vs.iter().map(|mp| mp.path_descriptor));
         let mut found = false;
-        if let Some(children) = self.children.get(&base_path_desc) {
+        if let Some(children) = self.children.get(base_path_desc) {
             if children.contains(path_desc) {
                 vs.push(MatchingPath::new(*path_desc));
                 found = true;
@@ -710,18 +710,16 @@ impl OutputAssocs {
                 .filter(|v| v.contains(path_desc));
             for _ in bins_groups {
                 if hs.insert(*path_desc) {
-                    vs.push(MatchingPath::new(*path_desc ));
+                    vs.push(MatchingPath::new(*path_desc));
                     found = true;
                     break;
                 }
             }
         }
-        if !found {
-            if log_enabled!(log::Level::Debug) {
-                debug!("missed finding !:{:?} in any of the outputs", path_desc);
-                for o in &self.output_files {
-                    debug!("{:?}", o);
-                }
+        if !found && log_enabled!(log::Level::Debug) {
+            debug!("missed finding !:{:?} in any of the outputs", path_desc);
+            for o in &self.output_files {
+                debug!("{:?}", o);
             }
         }
     }
@@ -742,7 +740,7 @@ impl OutputAssocs {
             base_path_desc,
             ph.get_path(base_path_desc)
         );
-        if let Some(children) = self.children.get(&base_path_desc) {
+        if let Some(children) = self.children.get(base_path_desc) {
             for pd in children.iter() {
                 if let Some(np) = ph.try_get_path(pd) {
                     let p: &Path = np.into();
@@ -870,7 +868,9 @@ impl MatchingPath {
     }
 
     /// Captured globs
-    fn get_captured_globs(&self) -> &Vec<String> { &self.captured_globs}
+    fn get_captured_globs(&self) -> &Vec<String> {
+        &self.captured_globs
+    }
 }
 /// This function runs the glob matcher to discover rule inputs by walking from given directory. The paths are returned as descriptors stored in [MatchingPatch]
 /// @tup_cwd is expected to be current tupfile directory under which a rule is found. @glob_path
@@ -892,12 +892,11 @@ pub(crate) fn discover_inputs_from_glob(
 
         if to_match.is_file() {
             pes.push(MatchingPath::new(path_desc));
-        } else {
-            let base_path_desc = ph.get_parent_id(&path_desc);
-            base_path_desc.map(|bp| outputs.outputs_with_desc(&path_desc, &bp, &mut pes));
+        } else if let Some(bp) = ph.get_parent_id(&path_desc) {
+            outputs.outputs_with_desc(&path_desc, &bp, &mut pes)
         }
+
         if log_enabled!(log::Level::Debug) {
-            //    debug!("{:?}", pes);
             for pe in pes.iter() {
                 debug!("mp:{:?}", pe);
             }
@@ -935,10 +934,7 @@ pub(crate) fn discover_inputs_from_glob(
     for matching in filtered_paths {
         let path = matching.path();
         let (path_desc, _) = ph.add_abs(path);
-        pes.push(MatchingPath::with_captures(
-            path_desc,
-            globs.group(path),
-        ));
+        pes.push(MatchingPath::with_captures(path_desc, globs.group(path)));
     }
     if log_enabled!(log::Level::Debug) {
         for pe in pes.iter() {
@@ -1664,8 +1660,7 @@ impl DecodeInputPlaceHolders for PathExpr {
             };
             let d = if d.contains("%g") {
                 let g = inp.get_glob().and_then(|x| x.first());
-                let g = g
-                    .ok_or_else(|| Err::StalePerc('g', rule_ref.clone()))?;
+                let g = g.ok_or_else(|| Err::StalePerc('g', rule_ref.clone()))?;
                 d.replace("%g", g.as_str())
             } else {
                 d
@@ -1692,8 +1687,10 @@ impl DecodeInputPlaceHolders for PathExpr {
                 d
             };
 
-              let d = if PERC_NUM_G_RE.captures(d.as_str()).is_some() {
-                let captures = inp.get_glob().ok_or( Err::StalePercNumberedRef('g', inp.rule_ref.clone()))?;
+            let d = if PERC_NUM_G_RE.captures(d.as_str()).is_some() {
+                let captures = inp
+                    .get_glob()
+                    .ok_or(Err::StalePercNumberedRef('g', inp.rule_ref.clone()))?;
                 replace_decoded_str(d.as_str(), captures, &PERC_NUM_G_RE, &inp.rule_ref, 'g')?
             } else {
                 d
@@ -1711,7 +1708,7 @@ impl DecodeInputPlaceHolders for PathExpr {
 
 fn replace_decoded_str(
     decoded_str: &str,
-    file_names: &Vec<String>,
+    file_names: &[String],
     perc_b_re: &'static Regex,
     rule_ref: &RuleRef,
     c: char,
@@ -1918,10 +1915,8 @@ fn get_deglobbed_rule(
     let input_as_paths = InputsAsPaths::new(tup_cwd, primary_deglobbed_inps, ph, rule_ref.clone());
     let secondary_inputs_as_paths =
         InputsAsPaths::new(tup_cwd, secondary_deglobbed_inps, ph, rule_ref.clone());
-    let  decoded_target =
-        t.decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths);
-    if decoded_target.is_err()
-    {
+    let decoded_target = t.decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths);
+    if decoded_target.is_err() {
         debug!("Failed to decode {:?}", t);
     }
     let mut decoded_target = decoded_target?;
@@ -2320,7 +2315,6 @@ impl ResolvePaths for LocatedStatement {
         } else {
             tupfile.parent().unwrap()
         };
-        let tup_cwd = &*tup_cwd;
         debug!("resolving  rule at dir:{:?} rule: {:?}", tup_cwd, &self);
         if let LocatedStatement {
             statement:

@@ -711,7 +711,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     } else {
         (output0.unwrap_or((Vec::new(), false)).0, Vec::new())
     };
-    let macroname_str  = from_utf8(macroname).unwrap_or_default();
+    let macroname_str = from_utf8(macroname).unwrap_or_default();
     log::debug!("built macro:{}", macroname_str);
     Ok((
         s,

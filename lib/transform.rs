@@ -187,7 +187,7 @@ impl ExpandRun for Statement {
                         || Path::new(script.cat_ref()).extension() == Some(OsStr::new("sh"))
                         || script.cat_ref() == "sh"
                     {
-                        acnt = if script.cat_ref() == "sh" { 1 } else { 0 };
+                        acnt = (script.cat_ref() == "sh").into();
                         std::process::Command::new("sh")
                     } else {
                         std::process::Command::new("cmd.exe")
@@ -256,11 +256,11 @@ impl ExpandRun for Statement {
                         }
                         debug!(
                             "contents: \n {}",
-                            String::from_utf8(contents.clone()).unwrap_or("".to_string())
+                            String::from_utf8(contents.clone()).unwrap_or_default()
                         );
                         debug!(
                             "cx: \n {}",
-                            String::from_utf8(output.stderr.clone()).unwrap_or("".to_string())
+                            String::from_utf8(output.stderr).unwrap_or_default()
                         );
 
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
@@ -551,7 +551,7 @@ pub(crate) fn get_parent(cur_file: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| panic!("unable to find parent folder for tup file:{:?}", cur_file))
         .to_path_buf();
-    if p.as_os_str().len() == 0 {
+    if p.as_os_str().is_empty() {
         PathBuf::from(".")
     } else {
         p
@@ -875,14 +875,14 @@ fn get_or_insert_parsed_statement(
     tup_desc: &TupPathDescriptor,
     f: &Path,
 ) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
-    if !parse_state.is_cached(&tup_desc) {
+    if !parse_state.is_cached(tup_desc) {
         let res = parse_tupfile(f)?;
-        parse_state.add_statements_to_cache(&tup_desc, res);
+        parse_state.add_statements_to_cache(tup_desc, res);
     } else {
         debug!("Reusing cached statements for {:?}", f);
     }
     let include_stmts = parse_state
-        .get_statements(&tup_desc)
+        .get_statements(tup_desc)
         .cloned()
         .unwrap_or_default();
     Ok(include_stmts)

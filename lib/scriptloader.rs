@@ -316,7 +316,7 @@ impl<P: PathHandler> TupScriptContext<P> {
     pub(crate) fn new(parse_state: ParseState, bo: Rc<RefCell<P>>) -> TupScriptContext<P> {
         TupScriptContext {
             arts: Artifacts::new(),
-            parse_state: parse_state,
+            parse_state,
             bo,
         }
     }
@@ -463,7 +463,7 @@ impl<P: PathHandler> TupScriptContext<P> {
             .to_string_lossy()
             .to_string()
     }
-    pub fn convert_to_table<'a>(lua: &'a mlua::Lua, v: &'a Value) -> mlua::Result<Value<'a>> {
+    pub fn convert_to_table<'a>(lua: &'a Lua, v: &'a Value) -> mlua::Result<Value<'a>> {
         let t = match v {
             Value::Table(t) => t.clone(),
             _ => {
@@ -916,14 +916,14 @@ impl<P: PathHandler + 'static> UserData for TupScriptContext<P> {
 /// main entry point for parsing Tupfile.lua
 pub(crate) fn parse_script<P: PathHandler + Default + 'static>(
     parse_state: ParseState,
-    bo: std::rc::Rc<std::cell::RefCell<P>>,
+    bo: Rc<RefCell<P>>,
 ) -> Result<Artifacts, Err> {
-    let lua = unsafe { mlua::Lua::unsafe_new() };
+    let lua = unsafe { Lua::unsafe_new() };
     let r = lua.scope(|scope| {
         let script_path = parse_state.get_cur_file().to_path_buf();
-        let tupscriptctx = TupScriptContext::new(parse_state, bo);
-        let root = tupscriptctx.get_root();
-        let tup_shared = scope.create_userdata(tupscriptctx)?;
+        let tup_script_ctx = TupScriptContext::new(parse_state, bo);
+        let root = tup_script_ctx.get_root();
+        let tup_shared = scope.create_userdata(tup_script_ctx)?;
         lua.load_from_std_lib(
             StdLib::DEBUG | StdLib::STRING | StdLib::UTF8 | StdLib::IO | StdLib::OS,
         )?;
@@ -931,7 +931,7 @@ pub(crate) fn parse_script<P: PathHandler + Default + 'static>(
         globals.set("tup", tup_shared)?;
         let cur_dir = script_path.parent().unwrap_or_else(|| {
             panic!(
-                "Could not find\
+                "Could not find \
              a parent folder for script:{:?}. Maybe missing a dot at the beginning",
                 script_path.as_path()
             )
@@ -1007,9 +1007,9 @@ pub(crate) fn parse_script<P: PathHandler + Default + 'static>(
         file.read_to_end(&mut contents)?;
         lua.load(contents.as_bytes()).exec()?;
         let tup_shared: AnyUserData = globals.get("tup")?;
-        let mut scriptctx: RefMut<TupScriptContext<P>> = tup_shared.borrow_mut()?;
+        let mut script_ctx: RefMut<TupScriptContext<P>> = tup_shared.borrow_mut()?;
         {
-            let smut = std::mem::take(scriptctx.deref_mut());
+            let smut = std::mem::take(script_ctx.deref_mut());
             Ok(smut.arts)
         }
     })?;
