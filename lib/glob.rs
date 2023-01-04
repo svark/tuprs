@@ -241,19 +241,19 @@ impl GlobMatcher {
         &self.re
     }
     /// get the i-the matching capturing group in path. Each glob pattern has corresponds to a capturing group
-    pub fn group<P: AsRef<Path>>(&self, path: P, name: &str) -> Option<String> {
-        //let lossy_str = path.as_ref().to_string_lossy();
+    pub fn group<P: AsRef<Path>>(&self, path: P) -> Vec<String> {
         let c = Candidate::new(path.as_ref());
         log::debug!("group regex: {:?}", self.re);
-        let res = self
+        let u : u8 = 'G' as u8;
+        self
             .re
             .captures_iter(c.path.as_ref())
+            .enumerate()
             .inspect(|c| log::debug!("{:?}", c))
-            .filter_map(|c| c.name(name))
+            .filter_map(|c| c.1.name( &*format!("{}M", (u + (c.0 as u8)) as char)))
             .filter_map(|m| str::from_utf8(m.as_bytes()).ok())
             .map(|s| s.to_string())
-            .next();
-        res
+            .collect()
     }
 }
 /// A builder for a pattern.

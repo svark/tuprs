@@ -11,4 +11,6 @@
 
 run sh  ./comp.sh patches*.txt
 
+: foreach out[1].txt |> !cp |> new_%1g.txt
+
 

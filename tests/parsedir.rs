@@ -13,7 +13,7 @@ mod tests {
         let statements = parse_dir(d.as_path()).expect("failed to parse!");
         //let statements0 = statements[0].get_statements();
         // println!("{:?}", statements);
-        assert_eq!(statements.len(), 11);
+        assert_eq!(statements.len(), 12);
     }
     #[test]
     fn test_script() {

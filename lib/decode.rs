@@ -697,7 +697,7 @@ impl OutputAssocs {
         let mut found = false;
         if let Some(children) = self.children.get(&base_path_desc) {
             if children.contains(path_desc) {
-                vs.push(MatchingPath::with_captures(*path_desc, None));
+                vs.push(MatchingPath::new(*path_desc));
                 found = true;
             }
         }
@@ -710,7 +710,7 @@ impl OutputAssocs {
                 .filter(|v| v.contains(path_desc));
             for _ in bins_groups {
                 if hs.insert(*path_desc) {
-                    vs.push(MatchingPath::with_captures(*path_desc, None));
+                    vs.push(MatchingPath::new(*path_desc ));
                     found = true;
                     break;
                 }
@@ -747,7 +747,7 @@ impl OutputAssocs {
                 if let Some(np) = ph.try_get_path(pd) {
                     let p: &Path = np.into();
                     if glob.is_match(p) && hs.insert(*pd) {
-                        vs.push(MatchingPath::with_captures(*pd, glob.group(p, "GM")))
+                        vs.push(MatchingPath::with_captures(*pd, glob.group(p)))
                     }
                 }
             }
@@ -763,7 +763,7 @@ impl OutputAssocs {
                     if let Some(np) = ph.try_get_path(pd) {
                         let p: &Path = np.into();
                         if glob.is_match(p) && hs.insert(*pd) {
-                            vs.push(MatchingPath::with_captures(*pd, glob.group(p, "GM")))
+                            vs.push(MatchingPath::with_captures(*pd, glob.group(p)))
                         }
                     }
                 }
@@ -774,7 +774,7 @@ impl OutputAssocs {
 #[derive(Debug, Default, Eq, PartialEq, Clone)]
 pub struct MatchingPath {
     path_descriptor: PathDescriptor, // path that matched a glob
-    first_group: Option<String>,     // first glob match in the above path
+    captured_globs: Vec<String>,     // first glob match in the above path
 }
 const GLOB_PATTERN_CHARACTERS: &str = "*?[";
 fn get_non_pattern_prefix(glob_path: &Path) -> (PathBuf, bool) {
@@ -840,8 +840,8 @@ impl MyGlob {
     }
 
     /// get ith capturing group from matched path
-    pub(crate) fn group<P: AsRef<Path>>(&self, path: P, name: &str) -> Option<String> {
-        self.matcher.group(path, name)
+    pub(crate) fn group<P: AsRef<Path>>(&self, path: P) -> Vec<String> {
+        self.matcher.group(path)
     }
 
     /// Get regex
@@ -851,16 +851,26 @@ impl MyGlob {
 }
 // matching path with first group
 impl MatchingPath {
-    pub(crate) fn with_captures(path: PathDescriptor, first_group: Option<String>) -> MatchingPath {
+    pub(crate) fn new(path: PathDescriptor) -> MatchingPath {
         MatchingPath {
             path_descriptor: path,
-            first_group,
+            captured_globs: vec![],
+        }
+    }
+
+    pub(crate) fn with_captures(path: PathDescriptor, captured_globs: Vec<String>) -> MatchingPath {
+        MatchingPath {
+            path_descriptor: path,
+            captured_globs,
         }
     }
     /// Get path represented by this entry
     pub fn path_descriptor(&self) -> &PathDescriptor {
         &self.path_descriptor
     }
+
+    /// Captured globs
+    fn get_captured_globs(&self) -> &Vec<String> { &self.captured_globs}
 }
 /// This function runs the glob matcher to discover rule inputs by walking from given directory. The paths are returned as descriptors stored in [MatchingPatch]
 /// @tup_cwd is expected to be current tupfile directory under which a rule is found. @glob_path
@@ -881,7 +891,7 @@ pub(crate) fn discover_inputs_from_glob(
         debug!("looking for child {:?}", np);
 
         if to_match.is_file() {
-            pes.push(MatchingPath::with_captures(path_desc, None));
+            pes.push(MatchingPath::new(path_desc));
         } else {
             let base_path_desc = ph.get_parent_id(&path_desc);
             base_path_desc.map(|bp| outputs.outputs_with_desc(&path_desc, &bp, &mut pes));
@@ -927,7 +937,7 @@ pub(crate) fn discover_inputs_from_glob(
         let (path_desc, _) = ph.add_abs(path);
         pes.push(MatchingPath::with_captures(
             path_desc,
-            globs.group(path, "GM"),
+            globs.group(path),
         ));
     }
     if log_enabled!(log::Level::Debug) {
@@ -1012,9 +1022,9 @@ impl OutputType {
 }
 
 /// Get matched glob in the input to a rule
-fn as_glob_match(inpg: &InputResolvedType) -> Option<String> {
+fn as_glob_match(inpg: &InputResolvedType) -> Option<&Vec<String>> {
     match inpg {
-        InputResolvedType::Deglob(e) => (e).first_group.as_ref().cloned(),
+        InputResolvedType::Deglob(e) => Some(e.get_captured_globs()),
         _ => None,
     }
 }
@@ -1459,7 +1469,7 @@ impl InputsAsPaths {
             .collect()
     }
 
-    pub(crate) fn get_glob(&self) -> Option<String> {
+    pub(crate) fn get_glob(&self) -> Option<&Vec<String>> {
         self.raw_inputs_glob_match.as_ref().and_then(as_glob_match)
     }
 
@@ -1508,10 +1518,12 @@ impl InputsAsPaths {
             .drain()
             .map(|(s, v)| (s, v.join(" ")))
             .collect();
+        let raw_inputs_glob_match = inp.first().cloned();
+        debug!("gl:{:?}", raw_inputs_glob_match);
         InputsAsPaths {
             raw_inputs: allnongroups,
             groups_by_name: namedgroupitems,
-            raw_inputs_glob_match: inp.first().cloned(),
+            raw_inputs_glob_match,
             rule_ref,
         }
     }
@@ -1524,6 +1536,8 @@ lazy_static! {
     static ref GRPRE: Regex = Regex::new(r"%<([^>]+)>").expect("regex compilation error"); //< pattern for matching a group
     static ref PER_CAP_B_RE: Regex =
         Regex::new(r"%([1-9][0-9]*)B").expect("regex compilation failure"); //< pattern for matching basename of input to a rule
+    static ref PERC_NUM_G_RE: Regex =
+        Regex::new(r"%([1-9][0-9]*)g").expect("regex compilation error"); //< pattern for matching outputs that appear on command line
     static ref PERC_NUM_O_RE: Regex =
         Regex::new(r"%([1-9][0-9]*)o").expect("regex compilation error"); //< pattern for matching outputs that appear on command line
     static ref PERC_NUM_CAP_O_RE: Regex =
@@ -1587,7 +1601,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if inputs.is_empty() {
                     return Err(Err::StalePerc('f', rule_ref.clone()));
                 }
-                replace_decoded_str(d.as_str(), inputs, &PERC_NUM_F_RE, rule_ref, 'f')?
+                replace_decoded_str(d.as_str(), &inputs, &PERC_NUM_F_RE, rule_ref, 'f')?
             } else {
                 d
             };
@@ -1607,7 +1621,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if fnames.is_empty() {
                     return Err(Err::StalePercNumberedRef('b', rule_ref.clone()));
                 }
-                replace_decoded_str(d.as_str(), fnames, &PERC_NUM_B_RE, rule_ref, 'b')?
+                replace_decoded_str(d.as_str(), &fnames, &PERC_NUM_B_RE, rule_ref, 'b')?
             } else {
                 d
             };
@@ -1627,7 +1641,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if stems.is_empty() {
                     return Err(Err::StalePercNumberedRef('B', rule_ref.clone()));
                 }
-                replace_decoded_str(d.as_str(), stems, &PER_CAP_B_RE, rule_ref, 'B')?
+                replace_decoded_str(d.as_str(), &stems, &PER_CAP_B_RE, rule_ref, 'B')?
             } else {
                 d
             };
@@ -1649,15 +1663,16 @@ impl DecodeInputPlaceHolders for PathExpr {
                 d
             };
             let d = if d.contains("%g") {
-                let glb = inp
-                    .get_glob()
+                let g = inp.get_glob().and_then(|x| x.first());
+                let g = g
                     .ok_or_else(|| Err::StalePerc('g', rule_ref.clone()))?;
-                d.replace("%g", glb.as_str())
+                d.replace("%g", g.as_str())
             } else {
                 d
             };
 
             let d = if d.contains("%i") {
+                // replace with secondary inputs (order only inputs)
                 let sinputsflat = sinp.get_paths();
                 if sinp.is_empty() {
                     return Err(Err::StalePerc('i', sinp.rule_ref.clone()));
@@ -1667,11 +1682,19 @@ impl DecodeInputPlaceHolders for PathExpr {
                 d
             };
             let d = if PERC_NUM_I.captures(d.as_str()).is_some() {
+                // replaced with numbered captures of order only inputs
                 if sinp.is_empty() {
                     return Err(Err::StalePercNumberedRef('i', sinp.rule_ref.clone()));
                 }
                 let sinputsflat = sinp.get_paths();
-                replace_decoded_str(d.as_str(), sinputsflat, &PERC_NUM_I, &sinp.rule_ref, 'i')?
+                replace_decoded_str(d.as_str(), &sinputsflat, &PERC_NUM_I, &sinp.rule_ref, 'i')?
+            } else {
+                d
+            };
+
+              let d = if PERC_NUM_G_RE.captures(d.as_str()).is_some() {
+                let captures = inp.get_glob().ok_or( Err::StalePercNumberedRef('g', inp.rule_ref.clone()))?;
+                replace_decoded_str(d.as_str(), captures, &PERC_NUM_G_RE, &inp.rule_ref, 'g')?
             } else {
                 d
             };
@@ -1688,7 +1711,7 @@ impl DecodeInputPlaceHolders for PathExpr {
 
 fn replace_decoded_str(
     decoded_str: &str,
-    file_names: Vec<String>,
+    file_names: &Vec<String>,
     perc_b_re: &'static Regex,
     rule_ref: &RuleRef,
     c: char,
@@ -1762,7 +1785,7 @@ impl DecodeOutputPlaceHolders for PathExpr {
             let d = if PERC_NUM_O_RE.captures(d.as_str()).is_some() {
                 replace_decoded_str(
                     d.as_str(),
-                    outputs.get_paths(),
+                    &outputs.get_paths(),
                     &PERC_NUM_O_RE,
                     &outputs.rule_ref,
                     'o',
@@ -1773,7 +1796,7 @@ impl DecodeOutputPlaceHolders for PathExpr {
             let d = if PERC_NUM_CAP_O_RE.captures(d.as_str()).is_some() {
                 replace_decoded_str(
                     d.as_str(),
-                    outputs.get_paths(),
+                    &outputs.get_paths(),
                     &PERC_NUM_CAP_O_RE,
                     &outputs.rule_ref,
                     'O',
@@ -1796,12 +1819,22 @@ fn normalized_path(tup_cwd: &Path, x: &PathExpr) -> PathBuf {
     let pbuf = PathBuf::new().join(x.cat_ref().replace('\\', "/").as_str());
     NormalPath::absolute_from(pbuf.as_path(), tup_cwd).to_path_buf()
 }
-fn excluded_patterns(tup_cwd: &Path, p: &[PathExpr], ph: &mut impl PathHandler) -> Vec<PathDescriptor> {
-    p.iter().filter_map(|x| if let PathExpr::ExcludePattern(pattern) = x {
-       let path = Path::new(pattern);
-        let (pid, _) = ph.add_path_from(tup_cwd, path);
-        Some(pid)
-    } else { None }).collect()
+fn excluded_patterns(
+    tup_cwd: &Path,
+    p: &[PathExpr],
+    ph: &mut impl PathHandler,
+) -> Vec<PathDescriptor> {
+    p.iter()
+        .filter_map(|x| {
+            if let PathExpr::ExcludePattern(pattern) = x {
+                let path = Path::new(pattern);
+                let (pid, _) = ph.add_path_from(tup_cwd, path);
+                Some(pid)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn paths_from_exprs(tup_cwd: &Path, p: &[PathExpr], ph: &mut impl PathHandler) -> Vec<OutputType> {
@@ -1885,8 +1918,13 @@ fn get_deglobbed_rule(
     let input_as_paths = InputsAsPaths::new(tup_cwd, primary_deglobbed_inps, ph, rule_ref.clone());
     let secondary_inputs_as_paths =
         InputsAsPaths::new(tup_cwd, secondary_deglobbed_inps, ph, rule_ref.clone());
-    let mut decoded_target =
-        t.decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths)?;
+    let  decoded_target =
+        t.decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths);
+    if decoded_target.is_err()
+    {
+        debug!("Failed to decode {:?}", t);
+    }
+    let mut decoded_target = decoded_target?;
     let excluded_targets = excluded_patterns(tup_cwd, &decoded_target.primary, ph);
     let pp = paths_from_exprs(tup_cwd, &decoded_target.primary, ph);
 
@@ -2014,7 +2052,9 @@ impl ResolvedLink {
     }
 
     /// returns ids of excluded patterns
-    pub fn get_excluded_targets(&self) -> &Vec<PathDescriptor> { &self.excluded_targets}
+    pub fn get_excluded_targets(&self) -> &Vec<PathDescriptor> {
+        &self.excluded_targets
+    }
 
     fn resolve_unresolved(
         taginfo: &OutputAssocs,
