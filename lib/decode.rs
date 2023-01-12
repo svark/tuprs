@@ -1,32 +1,71 @@
 //! This module handles decoding and de-globbing of rules
 use std::borrow::{Borrow, Cow};
-use std::collections::hash_map::Entry;
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
+use std::collections::hash_map::Entry;
+use std::ffi::{OsStr, OsString};
 use std::fmt::Formatter;
 use std::hash::Hash;
-use std::iter::Chain;
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
-use std::slice::Iter;
+use std::rc::Rc;
 
-use glob::{Candidate, GlobBuilder, GlobMatcher};
+use bimap::BiMap;
+use bimap::hash::RightValues;
+use bstr::ByteSlice;
+use daggy::Dag;
+use log::{debug, log_enabled};
 use path_dedot::ParseDot;
+use pathdiff::diff_paths;
+use petgraph::graph::NodeIndex;
 use regex::{Captures, Regex};
 use walkdir::WalkDir;
 
-use bimap::hash::RightValues;
-use bimap::BiMap;
-use bstr::ByteSlice;
-use daggy::Dag;
 use errors::{Error as Err, Error};
+use glob::{Candidate, GlobBuilder, GlobMatcher};
 use glob;
-use log::{debug, log_enabled};
-use pathdiff::diff_paths;
-use petgraph::graph::NodeIndex;
 use statements::*;
-use transform::{get_parent, Artifacts, ParseState, TupParser};
+use transform::{Artifacts, get_parent, get_path_str, ParseState, TupParser};
+
+pub(crate) fn without_curdir_prefix(p: &Path) -> PathBuf {
+    let p = if p
+        .components()
+        .take_while(|x| Component::CurDir.eq(x))
+        .count()
+        > 0
+    {
+        let p: PathBuf = p
+            .components()
+            .skip_while(|x| Component::CurDir.eq(x))
+            .collect();
+        debug_assert!(!p
+            .components()
+            .any(|ref c| Component::ParentDir.eq(c) || Component::CurDir.eq(c)));
+        p
+    } else {
+        p.into()
+    };
+    p
+}
+
+/// Trait to discover paths from an external source (such as a database)
+pub trait PathSearcher {
+    /// Discover paths from glob string
+    fn discover_paths(
+        &self,
+        ph: &mut impl PathBuffers,
+        glob_path: &GlobPath,
+    ) -> Result<Vec<MatchingPath>, Error>;
+
+    /// Find Outputs
+    fn get_outs(&self) -> &OutputHolder;
+
+    /// Acquire children and group paths from another searcher
+    fn acquire(&mut self, t: &impl PathSearcher);
+}
+
 /// Methods to store and retrieve paths, groups, bins, rules in buffers
-pub trait PathHandler {
+pub trait PathBuffers {
     /// Add path of bin. Folder is the one where  Tupfile declaring the bin. name is bin name
     fn add_bin_path_expr(&mut self, tup_cwd: &Path, pe: &str) -> (BinDescriptor, bool);
 
@@ -50,18 +89,13 @@ pub trait PathHandler {
     /// add env vars and fetch an id for them
     fn add_env_var(&mut self, var: String, cur_env_desc: &EnvDescriptor) -> Option<EnvDescriptor>;
 
-    /// Discover paths from glob string
-    fn discover_paths(
-        &mut self,
-        tup_cwd: &Path,
-        glob_path: &Path,
-        outs: &OutputAssocs,
-    ) -> Result<Vec<MatchingPath>, Error>;
-
     /// Return input path from resolved input
     fn get_input_path_str(&self, i: &InputResolvedType) -> String;
     /// Return parent folder id from input path descriptor
     fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor>;
+    /// get id stored against input path
+    fn get_id(&self, np: &NormalPath) -> Option<PathDescriptor>;
+
     /// return path from its descriptor
     fn get_path(&self, pd: &PathDescriptor) -> &NormalPath;
     /// Return Rule from its descriptor
@@ -529,6 +563,30 @@ impl GenEnvBufferObject {
     }
 }
 
+/// Wrapper over outputs
+#[derive(Default, Debug, Clone)]
+pub struct OutputHolder(Rc<RefCell<OutputAssocs>>);
+
+impl OutputHolder {
+    /// construct from
+    pub fn from(outs: OutputAssocs) -> OutputHolder {
+        OutputHolder(Rc::new(RefCell::new(outs)))
+    }
+    /// Create an empty output holder
+    pub fn new() -> OutputHolder {
+        OutputHolder(Rc::new(RefCell::new(OutputAssocs::new())))
+    }
+
+    /// Fetch OutputAssocs for read
+    pub(crate) fn get(&self) -> Ref<'_, OutputAssocs> {
+        self.0.deref().borrow()
+    }
+    /// Fetch Output Assocs for write
+    pub(crate) fn get_mut(&self) -> RefMut<'_, OutputAssocs> {
+        self.0.deref().borrow_mut()
+    }
+}
+
 /// Dump yard for outputs from rules, containing output_files, maps to paths corresponding to bin names, or group names
 /// Also keeps track of parent rules that generated them.
 /// Currently resolution of rule inputs formula and outputs happens in two stages.
@@ -548,9 +606,9 @@ pub struct OutputAssocs {
     groups: HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>,
     /// track the parent rule that generates a output file
     parent_rule: HashMap<PathDescriptor, RuleRef>,
-    ///  Should group references be resolved in inputs and rules?
-    resolve_groups: bool,
 }
+
+impl OutputAssocs {}
 
 impl OutputAssocs {
     pub(crate) fn acquire_groups(
@@ -565,124 +623,9 @@ impl OutputAssocs {
 }
 
 impl OutputAssocs {
-    /// Get all the output files from rules accumulated so far
-    pub fn get_output_files(&self) -> &HashSet<PathDescriptor> {
-        &self.output_files
-    }
-
-    /// Get all the groups with collected rule outputs
-    pub fn get_groups(&self) -> &HashMap<GroupPathDescriptor, HashSet<PathDescriptor>> {
-        &self.groups
-    }
-
-    /// Get parent dir -> children map
-    pub fn get_children(&self) -> &HashMap<PathDescriptor, Vec<PathDescriptor>> {
-        &self.children
-    }
-    ///
-    /// Get a mutable references all the groups with collected rule outputs.
-    /// This can be used to to fill path references from a database.
-    pub fn get_mut_groups(&mut self) -> &mut HashMap<GroupPathDescriptor, HashSet<PathDescriptor>> {
-        &mut self.groups
-    }
-
-    /// Add an entry to the collector that holds paths of a group
-    pub fn add_group_entry(&mut self, group_desc: &GroupPathDescriptor, pd: PathDescriptor) {
-        self.get_mut_groups()
-            .entry(*group_desc)
-            .or_default()
-            .extend(std::iter::once(pd));
-    }
-    /// the parent rule that generates a output file
-    pub fn get_parent_rule(&self, o: &PathDescriptor) -> Option<&RuleRef> {
-        self.parent_rule.get(o)
-    }
-
-    /// Merge paths of different groups from new_outputs into current group path container
-    fn merge_group_tags(&mut self, new_outputs: &OutputAssocs) -> Result<(), Err> {
-        for (k, new_paths) in new_outputs.groups.iter() {
-            self.groups
-                .entry(*k)
-                .or_insert_with(HashSet::new)
-                .extend(new_paths.iter().cloned());
-            self.merge_parent_rules(&new_outputs.parent_rule, new_paths)?;
-        }
-        Ok(())
-    }
-
-    /// Merge bins from its new outputs
-    fn merge_bin_tags(&mut self, other: &OutputAssocs) -> Result<(), Err> {
-        for (k, new_paths) in other.bins.iter() {
-            self.bins
-                .entry(*k)
-                .or_insert_with(HashSet::new)
-                .extend(new_paths.iter().cloned());
-            self.merge_parent_rules(&other.parent_rule, new_paths)?;
-        }
-        Ok(())
-    }
-
-    /// merge groups , outputs and bins from other OutputAssocs
-    ///  erorr-ing out if unique parent rule
-    /// of an output is not found
-    pub fn merge(&mut self, out: &OutputAssocs) -> Result<(), Err> {
-        self.merge_group_tags(out)?;
-        self.merge_output_files(out)?;
-        self.merge_bin_tags(out)
-    }
-
-    fn merge_output_files(&mut self, new_outputs: &OutputAssocs) -> Result<(), Err> {
-        self.output_files
-            .extend(new_outputs.output_files.iter().cloned());
-        for (dir, ch) in new_outputs.children.iter() {
-            self.children
-                .entry(*dir)
-                .or_insert_with(Vec::new)
-                .extend(ch.iter());
-        }
-        self.merge_parent_rules(&new_outputs.parent_rule, &new_outputs.output_files)
-    }
-
-    /// Track parent rules of outputs, error-ing out if unique parent rule
-    /// of an output is not found
-    fn merge_parent_rules(
-        &mut self,
-        new_parent_rule: &HashMap<PathDescriptor, RuleRef>,
-        new_path_descs: &HashSet<PathDescriptor>,
-    ) -> Result<(), Err> {
-        for new_path_desc in new_path_descs.iter() {
-            let newparent = new_parent_rule
-                .get(new_path_desc)
-                .expect("parent rule not found");
-            match self.parent_rule.entry(*new_path_desc) {
-                Entry::Occupied(pe) => {
-                    if pe.get() != newparent {
-                        return Err(Err::MultipleRulesToSameOutput(
-                            *new_path_desc,
-                            pe.get().clone(),
-                            newparent.clone(),
-                        ));
-                    }
-                }
-                Entry::Vacant(pe) => {
-                    pe.insert(newparent.clone());
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Construct [OutputAssocs] with resolve_groups set to false
     pub fn new() -> OutputAssocs {
-        OutputAssocs {
-            resolve_groups: true,
-            ..Default::default()
-        }
-    }
-
-    /// Construct [OutputAssocs] default values
-    pub fn new_no_resolve_groups() -> OutputAssocs {
-        Default::default()
+          OutputAssocs::default()
     }
 
     /// Discover outputs by their path descriptors
@@ -693,7 +636,7 @@ impl OutputAssocs {
         vs: &mut Vec<MatchingPath>,
     ) {
         let mut hs = HashSet::new();
-        hs.extend(vs.iter().map(|mp| mp.path_descriptor));
+        hs.extend(vs.iter().map(|mp| mp.path_descriptor()));
         let mut found = false;
         if let Some(children) = self.children.get(base_path_desc) {
             if children.contains(path_desc) {
@@ -727,25 +670,25 @@ impl OutputAssocs {
     /// discover outputs matching glob in the same tupfile
     pub(crate) fn outputs_matching_glob(
         &self,
-        ph: &mut impl PathHandler,
-        base_path_desc: &PathDescriptor,
-        glob: &MyGlob,
+        ph: &mut impl PathBuffers,
+        glob_path: &GlobPath,
         vs: &mut Vec<MatchingPath>,
     ) {
         let mut hs = HashSet::new();
+        let base_path_desc = glob_path.get_base_desc();
         hs.extend(vs.iter().map(|mp| mp.path_descriptor));
-        debug!("looking for globmatches:{:?}", glob);
+        debug!("looking for globmatches:{:?}", glob_path.get_path());
         debug!(
             "in dir id {:?}, {:?}",
             base_path_desc,
-            ph.get_path(base_path_desc)
+            ph.get_path(&base_path_desc)
         );
-        if let Some(children) = self.children.get(base_path_desc) {
+        if let Some(children) = self.children.get(&base_path_desc) {
             for pd in children.iter() {
                 if let Some(np) = ph.try_get_path(pd) {
                     let p: &Path = np.into();
-                    if glob.is_match(p) && hs.insert(*pd) {
-                        vs.push(MatchingPath::with_captures(*pd, glob.group(p)))
+                    if glob_path.is_match(p) && hs.insert(*pd) {
+                        vs.push(MatchingPath::with_captures(*pd, glob_path.group(p)))
                     }
                 }
             }
@@ -760,15 +703,274 @@ impl OutputAssocs {
                 for pd in v.iter() {
                     if let Some(np) = ph.try_get_path(pd) {
                         let p: &Path = np.into();
-                        if glob.is_match(p) && hs.insert(*pd) {
-                            vs.push(MatchingPath::with_captures(*pd, glob.group(p)))
+                        if glob_path.is_match(p) && hs.insert(*pd) {
+                            vs.push(MatchingPath::with_captures(*pd, glob_path.group(p)))
                         }
                     }
                 }
             });
     }
 }
-/// A Matching Path discovered using glob matcher.
+
+impl OutputAssocs {
+    /// Get all the output files from rules accumulated so far
+    fn get_output_files(&self) -> &HashSet<PathDescriptor> {
+        &self.output_files
+    }
+    /// Get all the groups with collected rule outputs
+    fn get_groups(&self) -> &HashMap<GroupPathDescriptor, HashSet<PathDescriptor>> {
+        &self.groups
+    }
+    /// Get paths stored against a bin
+    fn get_bins(&self) -> &HashMap<BinDescriptor, HashSet<PathDescriptor>> {
+        &self.bins
+    }
+    /// Get paths stored against a group
+    fn get_group(&self, group_desc: &GroupPathDescriptor) -> Option<&HashSet<PathDescriptor>> {
+        self.groups.get(group_desc)
+    }
+    /// Get paths stored against each bin
+    fn get_bin(&self, bin_desc: &BinDescriptor) -> Option<&HashSet<PathDescriptor>> {
+        self.bins.get(bin_desc)
+    }
+    /// Get parent dir -> children map
+    fn get_children(&self) -> &HashMap<PathDescriptor, Vec<PathDescriptor>> {
+        &self.children
+    }
+    /// Get a mutable references all the groups with collected rule outputs.
+    /// This can be used to to fill path references from a database.
+    fn get_mut_groups(&mut self) -> &mut HashMap<GroupPathDescriptor, HashSet<PathDescriptor>> {
+        &mut self.groups
+    }
+    /// Add an entry to the collector that holds paths of a group
+    fn add_group_entry(&mut self, group_desc: &GroupPathDescriptor, pd: PathDescriptor) {
+        self.get_mut_groups()
+            .entry(*group_desc)
+            .or_default()
+            .extend(std::iter::once(pd));
+    }
+    /// the parent rule that generates a output file
+    pub(crate) fn get_parent_rule(&self, o: &PathDescriptor) -> Option<&RuleRef> {
+        self.parent_rule.get(o)
+    }
+    /// Merge paths of different groups from new_outputs into current group path container
+    fn merge_group_tags(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err> {
+        for (k, new_paths) in new_outputs.get_groups().iter() {
+            self.groups
+                .entry(*k)
+                .or_insert_with(HashSet::new)
+                .extend(new_paths.iter().cloned());
+            self.merge_parent_rules(&new_outputs.get_parent_rules(), new_paths)?;
+        }
+        Ok(())
+    }
+    /// Merge bins from its new outputs
+    fn merge_bin_tags(&mut self, other: &impl OutputHandler) -> Result<(), Err> {
+        for (k, new_paths) in other.get_bins().iter() {
+            self.bins
+                .entry(*k)
+                .or_insert_with(HashSet::new)
+                .extend(new_paths.iter().cloned());
+            self.merge_parent_rules(&other.get_parent_rules(), new_paths)?;
+        }
+        Ok(())
+    }
+    /// merge groups , outputs and bins from other OutputAssocs
+    ///  erorr-ing out if unique parent rule
+    /// of an output is not found
+    fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err> {
+        self.merge_group_tags(out)?;
+        self.merge_output_files(out)?;
+        self.merge_bin_tags(out)
+    }
+    fn merge_output_files(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err> {
+        self.output_files
+            .extend(new_outputs.get_output_files().iter().cloned());
+        for (dir, ch) in new_outputs.get_children().iter() {
+            self.children
+                .entry(*dir)
+                .or_insert_with(Vec::new)
+                .extend(ch.iter());
+        }
+        self.merge_parent_rules(
+            &new_outputs.get_parent_rules(),
+            &new_outputs.get_output_files(),
+        )
+    }
+    /// Track parent rules of outputs, error-ing out if unique parent rule
+    /// of an output is not found
+    fn merge_parent_rules(
+        &mut self,
+        new_parent_rule: &HashMap<PathDescriptor, RuleRef>,
+        new_path_descs: &HashSet<PathDescriptor>,
+    ) -> Result<(), Err> {
+        for new_path_desc in new_path_descs.iter() {
+            let newparent = new_parent_rule
+                .get(new_path_desc)
+                .expect("parent rule not found");
+            match self.parent_rule.entry(*new_path_desc) {
+                Entry::Occupied(pe) => {
+                    if pe.get() != newparent {
+                        return Err(Err::MultipleRulesToSameOutput(
+                            *new_path_desc,
+                            pe.get().clone(),
+                            newparent.clone(),
+                        ));
+                    }
+                }
+                Entry::Vacant(pe) => {
+                    pe.insert(newparent.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn get_parent_rules(&self) -> &HashMap<PathDescriptor, RuleRef> {
+        &self.parent_rule
+    }
+}
+
+/// List of functions that add and read outputs read from parsed tupfiles.
+pub trait OutputHandler {
+    /// Get all the output files from rules accumulated so far
+    fn get_output_files(&self) -> Ref<'_, HashSet<PathDescriptor>>;
+    /// Get all the groups with collected rule outputs
+    fn get_groups(&self) -> Ref<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>>;
+    /// Get paths stored against a bin
+    fn get_bins(&self) -> Ref<'_, HashMap<BinDescriptor, HashSet<PathDescriptor>>>;
+    /// Get parent dir -> children map
+    fn get_children(&self) -> Ref<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>>;
+    /// Get a mutable references all the groups with collected rule outputs.
+    /// This can be used to to fill path references from a database.
+    fn get_mut_groups(
+        &mut self,
+    ) -> RefMut<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>>;
+    /// the parent rule that generates a output file
+    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<Ref<'_, RuleRef>>;
+    /// parent rule of each output path
+    fn get_parent_rules(&self) -> Ref<'_, HashMap<PathDescriptor, RuleRef>>;
+
+    /// Add an entry to the collector that holds paths of a group
+    fn add_group_entry(&mut self, group_desc: &GroupPathDescriptor, pd: PathDescriptor);
+    /// Merge paths of different groups from new_outputs into current group path container
+    fn merge_group_tags(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err>;
+    /// Merge bins from its new outputs
+    fn merge_bin_tags(&mut self, other: &impl OutputHandler) -> Result<(), Err>;
+    /// merge groups , outputs and bins from other OutputAssocs
+    ///  erorr-ing out if unique parent rule
+    /// of an output is not found
+    fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err>;
+    /// Merge outputfiles from other outputs read.
+    fn merge_output_files(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err>;
+    /// Track parent rules of outputs, error-ing out if unique parent rule
+    /// of an output is not found
+    fn merge_parent_rules(
+        &mut self,
+        new_parent_rule: &HashMap<PathDescriptor, RuleRef>,
+        new_path_descs: &HashSet<PathDescriptor>,
+    ) -> Result<(), Err>;
+}
+
+impl PathSearcher for OutputHolder {
+    fn discover_paths(
+        &self,
+        ph: &mut impl PathBuffers,
+        glob_path: &GlobPath,
+    ) -> Result<Vec<MatchingPath>, Error> {
+        let mut vs = Vec::new();
+        if !glob_path.has_glob_pattern() {
+            self.0.deref().borrow().outputs_with_desc(
+                glob_path.get_path_desc(),
+                glob_path.get_base_desc(),
+                &mut vs,
+            );
+        } else {
+            self.0
+                .deref()
+                .borrow()
+                .outputs_matching_glob(ph, &glob_path, &mut vs);
+        }
+        Ok(vs)
+    }
+
+    fn get_outs(&self) -> &OutputHolder {
+        &self
+    }
+
+    fn acquire(&mut self, t: &impl PathSearcher) {
+        self.get_mut()
+            .acquire_groups(t.get_outs().get_groups().clone());
+        self.get_mut()
+            .acquire_children(t.get_outs().get_children().clone());
+    }
+}
+impl OutputHandler for OutputHolder {
+    fn get_output_files(&self) -> Ref<'_, HashSet<PathDescriptor>> {
+        Ref::map(self.get(), |x| x.get_output_files())
+    }
+
+    fn get_groups(&self) -> Ref<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>> {
+        Ref::map(self.get(), |x| x.get_groups())
+    }
+
+    fn get_bins(&self) -> Ref<'_, HashMap<BinDescriptor, HashSet<PathDescriptor>>> {
+        Ref::map(self.get(), |x| x.get_bins())
+    }
+
+    fn get_children(&self) -> Ref<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>> {
+        Ref::map(self.get(), |x| x.get_children())
+    }
+    fn get_mut_groups(
+        &mut self,
+    ) -> RefMut<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>> {
+        RefMut::map(self.get_mut(), |x| x.get_mut_groups())
+    }
+
+    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
+        let r = self.get();
+        if r.get_parent_rule(o).is_some() {
+            Some(Ref::map(self.get(), |x| x.get_parent_rule(o).unwrap()))
+        } else {
+            None
+        }
+    }
+
+    fn get_parent_rules(&self) -> Ref<'_, HashMap<PathDescriptor, RuleRef>> {
+        Ref::map(self.get(), |x| x.get_parent_rules())
+    }
+
+    fn add_group_entry(&mut self, group_desc: &GroupPathDescriptor, pd: PathDescriptor) {
+        self.get_mut().add_group_entry(group_desc, pd)
+    }
+
+    fn merge_group_tags(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err> {
+        self.get_mut().merge_group_tags(new_outputs)
+    }
+
+    fn merge_bin_tags(&mut self, other: &impl OutputHandler) -> Result<(), Err> {
+        self.get_mut().merge_bin_tags(other)
+    }
+
+    fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err> {
+        self.get_mut().merge(out)
+    }
+
+    fn merge_output_files(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err> {
+        self.get_mut().merge_output_files(new_outputs)
+    }
+
+    fn merge_parent_rules(
+        &mut self,
+        new_parent_rule: &HashMap<PathDescriptor, RuleRef>,
+        new_path_descs: &HashSet<PathDescriptor>,
+    ) -> Result<(), Err> {
+        self.get_mut()
+            .merge_parent_rules(new_parent_rule, new_path_descs)
+    }
+}
+
+/// A Matching path id discovered using glob matcher along with captured groups
 #[derive(Debug, Default, Eq, PartialEq, Clone)]
 pub struct MatchingPath {
     path_descriptor: PathDescriptor, // path that matched a glob
@@ -847,16 +1049,17 @@ impl MyGlob {
         self.matcher.re()
     }
 }
-// matching path with first group
 impl MatchingPath {
-    pub(crate) fn new(path: PathDescriptor) -> MatchingPath {
+    ///Create a bare matching path with no captured groups
+    pub fn new(path: PathDescriptor) -> MatchingPath {
         MatchingPath {
             path_descriptor: path,
             captured_globs: vec![],
         }
     }
 
-    pub(crate) fn with_captures(path: PathDescriptor, captured_globs: Vec<String>) -> MatchingPath {
+    /// Create a `MatchingPath` with captured glob strings.
+    pub fn with_captures(path: PathDescriptor, captured_globs: Vec<String>) -> MatchingPath {
         MatchingPath {
             path_descriptor: path,
             captured_globs,
@@ -871,83 +1074,6 @@ impl MatchingPath {
     fn get_captured_globs(&self) -> &Vec<String> {
         &self.captured_globs
     }
-}
-/// This function runs the glob matcher to discover rule inputs by walking from given directory. The paths are returned as descriptors stored in [MatchingPatch]
-/// @tup_cwd is expected to be current tupfile directory under which a rule is found. @glob_path
-pub(crate) fn discover_inputs_from_glob(
-    tup_cwd: &Path,
-    glob_path: &Path,
-    outputs: &OutputAssocs,
-    ph: &mut impl PathHandler,
-) -> Result<Vec<MatchingPath>, Error> {
-    let np = NormalPath::absolute_from(glob_path, tup_cwd);
-    let (mut base_path, recurse) = get_non_pattern_prefix(np.as_path());
-    let mut to_match = np.as_path();
-    debug!("bp:{:?}, to_match:{:?}", base_path, to_match);
-    if !has_glob_pattern(np.as_path()) {
-        let mut pes = Vec::new();
-        let (path_desc, _) = ph.add_abs(to_match);
-        let np = ph.get_path(&path_desc);
-        debug!("looking for child {:?}", np);
-
-        if to_match.is_file() {
-            pes.push(MatchingPath::new(path_desc));
-        } else if let Some(bp) = ph.get_parent_id(&path_desc) {
-            outputs.outputs_with_desc(&path_desc, &bp, &mut pes)
-        }
-
-        if log_enabled!(log::Level::Debug) {
-            for pe in pes.iter() {
-                debug!("mp:{:?}", pe);
-            }
-        }
-        //let (path_desc, _) = bo.add_path_from(base_path.as_path(), tup_cwd);
-        // discover inputs from previous outputs
-        return Ok(pes);
-    }
-    let pbuf: PathBuf;
-    if base_path.eq(&PathBuf::new()) {
-        base_path = base_path.join(".");
-        pbuf = Path::new(".").join(glob_path);
-        to_match = &pbuf;
-    }
-    let slash_corrected_glob = to_match.to_string_lossy().replace('\\', "/");
-    let globs = MyGlob::new(slash_corrected_glob.as_str())?;
-    debug!("glob regex used for finding matches {}", globs.re());
-    debug!(
-        "base path for files matching glob: {:?}",
-        base_path.as_path()
-    );
-    let mut walkdir = WalkDir::new(base_path.as_path());
-    if !recurse {
-        walkdir = walkdir.max_depth(1);
-    }
-    let filtered_paths = walkdir
-        .min_depth(1)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|entry| {
-            let match_path = normalize_path(entry.path());
-            globs.is_match(match_path)
-        });
-    let mut pes = Vec::new();
-    for matching in filtered_paths {
-        let path = matching.path();
-        let (path_desc, _) = ph.add_abs(path);
-        pes.push(MatchingPath::with_captures(path_desc, globs.group(path)));
-    }
-    if log_enabled!(log::Level::Debug) {
-        for pe in pes.iter() {
-            debug!("mp_glob:{:?}", pe);
-        }
-    }
-
-    // discover inputs from previous outputs
-    if pes.is_empty() {
-        let (path_desc, _) = ph.add_abs(base_path.as_path());
-        outputs.outputs_matching_glob(ph, &path_desc, &globs, &mut pes);
-    }
-    Ok(pes)
 }
 
 /// Types of decoded input to rules which includes
@@ -1029,14 +1155,14 @@ pub(crate) trait ExcludeInputPaths {
     fn exclude(
         &self,
         deglobbed: Vec<InputResolvedType>,
-        ph: &impl PathHandler,
+        ph: &impl PathBuffers,
     ) -> Vec<InputResolvedType>;
 }
 impl ExcludeInputPaths for PathExpr {
     fn exclude(
         &self,
         deglobbed: Vec<InputResolvedType>,
-        ph: &impl PathHandler,
+        ph: &impl PathBuffers,
     ) -> Vec<InputResolvedType> {
         match self {
             PathExpr::ExcludePattern(patt) => {
@@ -1055,10 +1181,35 @@ impl ExcludeInputPaths for PathExpr {
         }
     }
 }
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct IdedPath {
+    p: NormalPath,
+    id: PathDescriptor,
+}
+impl IdedPath {
+    pub fn new(p: NormalPath, id: PathDescriptor) -> Self {
+        IdedPath { p, id }
+    }
+    pub fn as_path(&self) -> &Path {
+        self.p.as_path()
+    }
+    pub fn as_desc(&self) -> &PathDescriptor {
+        &self.id
+    }
+    pub fn from_rel_path(tup_cwd: &Path, p: &Path, ph: &mut impl PathBuffers) -> Self {
+        let tup_cwd = ph.get_root_dir().join(tup_cwd);
+        let np = NormalPath::absolute_from(p, tup_cwd.as_path());
+        let id = ph.add_abs(np.as_path()).0;
+        Self::new(np, id)
+    }
+}
+
+
 /// Buffers to store files, groups, bins, env with its id.
 /// Each sub-buffer is a bimap from names to a unique id which simplifies storing references.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct BufferObjects {
+pub struct BufferObjects {
     pbo: PathBufferObject,    //< paths by id
     gbo: GroupBufferObject,   //< groups by id
     bbo: BinBufferObject,     //< bins by id
@@ -1066,7 +1217,7 @@ pub(crate) struct BufferObjects {
     ebo: EnvBufferObject,     //< environment variables by id
     rbo: RuleBufferObject,    //< Rules by id
 }
-// Accessors for BufferObjects
+/// Accessors and modifiers for BufferObjects
 impl BufferObjects {
     /// Construct Buffer object using tup (most) root directory where Tupfile.ini is found
     pub fn new<P: AsRef<Path>>(root: P) -> BufferObjects {
@@ -1078,20 +1229,185 @@ impl BufferObjects {
             ..Default::default()
         }
     }
-    /// Returns id for the path
-    fn get_id(&self, np: &NormalPath) -> Option<PathDescriptor> {
-        self.pbo.get_id(np)
+}
+
+/// Id, Path pairs corresponding to glob path and its parent folder. Also stores a glob pattern regexp for matching.
+#[derive(Debug, Clone)]
+pub struct GlobPath {
+    glob_path: IdedPath,
+    base_path: IdedPath,
+    glob: MyGlob,
+}
+
+impl GlobPath {
+    /// tup_cwd should include root (it is not relative to root but includes root)
+    pub fn new(tup_cwd: &Path, glob_path: &Path, ph: &mut impl PathBuffers) -> Self {
+        let ided_path = IdedPath::from_rel_path(tup_cwd, glob_path, ph);
+        Self::build_from(ph, ided_path)
     }
-    /// Add path of bin. Folder is the one where  Tupfile declaring the bin. name is bin name
-    fn add_bin(&mut self, tup_cwd: &Path, p: &Path) -> (BinDescriptor, bool) {
-        self.bbo.add_relative_bin(p, tup_cwd)
+
+    fn build_from(ph: &mut impl PathBuffers, ided_path: IdedPath) -> GlobPath {
+        let (mut base_path, _) = get_non_pattern_prefix(ided_path.as_path());
+        if base_path.eq(&PathBuf::new()) {
+            base_path = base_path.join(".");
+        }
+        let (base_desc, _) = ph.add_abs(base_path.as_path());
+        let base_path = ph.get_path(&base_desc).clone();
+        let glob = MyGlob::new(normalize_path(ided_path.as_path()).as_str()).unwrap();
+        GlobPath {
+            base_path: IdedPath::new(base_path, base_desc),
+            glob_path: ided_path,
+            glob,
+        }
+    }
+
+    /// Construct from id to path
+    pub fn from_path_desc(ph: &mut impl PathBuffers, p: PathDescriptor) -> Self {
+        let np = ph.get_path(&p).clone();
+        let ided_path = IdedPath::new(np, p);
+        Self::build_from(ph, ided_path)
+    }
+
+    /// Id to Glob path
+    pub fn get_path_desc(&self) -> &PathDescriptor {
+        self.glob_path.as_desc()
+    }
+    /// Glob path as [Path]
+    pub fn get_path(&self) -> &Path {
+        self.glob_path.as_path()
+    }
+    /// Glob path as a string
+    pub fn get_path_str(&self) -> &OsStr {
+        self.glob_path.as_path().as_os_str()
+    }
+
+    /// Id of the parent folder corresponding to glob path
+    pub fn get_base_desc(&self) -> &PathDescriptor {
+        self.base_path.as_desc()
+    }
+
+    /// parent folder corresponding to glob path
+    pub fn get_base_path(&self) -> &Path {
+        self.base_path.as_path()
+    }
+
+    pub(crate) fn get_slash_corrected(&self) -> String {
+        let slash_corrected_glob = get_path_str(self.get_path());
+        slash_corrected_glob
+    }
+
+    /// Check if the pattern for matching has glob pattern chars such as "*[]"
+    pub fn has_glob_pattern(&self) -> bool {
+        has_glob_pattern(self.get_path())
+    }
+
+
+    /// Regexp string corresponding to glob
+    pub fn re(&self) -> String {
+        self.glob.re().to_string()
+    }
+
+    /// Checks if the path is a match with the glob we have
+    pub fn is_match(&self, p: &Path) -> bool {
+        self.glob.is_match(p)
+    }
+
+    /// List of all glob captures in a path
+    pub fn group<P:AsRef<Path>>(&self, p: P) -> Vec<String> {
+        self.glob.group(p)
     }
 }
-impl PathHandler for BufferObjects {
+
+/// Searcher of paths in directory tree and those stored in [OutputHolder]
+#[derive(Debug, Default, Clone)]
+pub struct DirSearcher {
+    psx: OutputHolder,
+}
+
+impl DirSearcher {
+    ///  Constructs a blank `DirSearcher`
+    pub fn new() -> DirSearcher {
+        DirSearcher {
+            psx: OutputHolder::new(),
+        }
+    }
+}
+impl PathSearcher for DirSearcher {
+    /// scan folder tree for paths
+    /// This function runs the glob matcher to discover rule inputs by walking from given directory. The paths are returned as descriptors stored in [MatchingPatch]
+    /// @tup_cwd is expected to be current tupfile directory under which a rule is found. @glob_path
+    /// Also calls the next in chain of searchers
+    fn discover_paths(
+        &self,
+        ph: &mut impl PathBuffers,
+        glob_path: &GlobPath,
+    ) -> Result<Vec<MatchingPath>, Error> {
+        let to_match = glob_path.get_path();
+        debug!(
+            "bp:{:?}, to_match:{:?}",
+            glob_path.get_base_path(),
+            to_match
+        );
+        if !glob_path.has_glob_pattern() {
+            let mut pes = Vec::new();
+            let path_desc = glob_path.get_path_desc();
+            debug!("looking for child {:?}", to_match);
+            if to_match.is_file() {
+                pes.push(MatchingPath::new(*path_desc));
+            } else {
+                // discover inputs from previous outputs
+                pes.extend(self.psx.discover_paths(ph, glob_path)?);
+            }
+
+            if log_enabled!(log::Level::Debug) {
+                for pe in pes.iter() {
+                    debug!("mp:{:?}", pe);
+                }
+            }
+            return Ok(pes);
+        }
+
+        let globs = MyGlob::new(glob_path.get_slash_corrected().as_str())?;
+        let base_path = glob_path.get_base_path();
+        debug!("glob regex used for finding matches {}", globs.re());
+        debug!("base path for files matching glob: {:?}", base_path);
+        let mut walkdir = WalkDir::new(base_path);
+        walkdir = walkdir.max_depth(1);
+        let filtered_paths = walkdir
+            .min_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|entry| {
+                let match_path = normalize_path(entry.path());
+                globs.is_match(match_path)
+            });
+        let mut pes = Vec::new();
+        for matching in filtered_paths {
+            let path = matching.path();
+            let (path_desc, _) = ph.add_abs(path);
+            pes.push(MatchingPath::with_captures(path_desc, globs.group(path)));
+        }
+        if log_enabled!(log::Level::Debug) {
+            for pe in pes.iter() {
+                debug!("mp_glob:{:?}", pe);
+            }
+        }
+        pes.extend(self.psx.discover_paths(ph, glob_path)?);
+        Ok(pes)
+    }
+
+    fn get_outs(&self) -> &OutputHolder {
+        self.psx.get_outs()
+    }
+    fn acquire(&mut self, t: &impl PathSearcher) {
+        self.psx.acquire(t);
+    }
+}
+
+impl PathBuffers for BufferObjects {
     /// Add path of bin. Folder is the one where  Tupfile declaring the bin. name is bin name
-    fn add_bin_path_expr(&mut self, tup_cwd: &Path, b: &str) -> (BinDescriptor, bool) {
-        let p = Path::new(b);
-        self.add_bin(tup_cwd, p)
+    fn add_bin_path_expr(&mut self, tup_cwd: &Path, pe: &str) -> (BinDescriptor, bool) {
+        self.bbo.add_relative_bin(pe.as_ref(), tup_cwd)
     }
 
     fn add_env(&mut self, e: Cow<Env>) -> (EnvDescriptor, bool) {
@@ -1110,22 +1426,8 @@ impl PathHandler for BufferObjects {
     /// Add a path to buffer and return its unique id in the buffer
     /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
     fn add_abs(&mut self, p: &Path) -> (PathDescriptor, bool) {
-        if p.components()
-            .take_while(|x| Component::CurDir.eq(x))
-            .count()
-            > 0
-        {
-            let p: PathBuf = p
-                .components()
-                .skip_while(|x| Component::CurDir.eq(x))
-                .collect();
-            debug_assert!(!p
-                .components()
-                .any(|ref c| Component::ParentDir.eq(c) || Component::CurDir.eq(c)));
-            self.pbo.add(p)
-        } else {
-            self.pbo.add(p)
-        }
+        let p = without_curdir_prefix(p);
+        self.pbo.add(p)
     }
 
     /// Add a path to buffer and return its unique id in the buffer
@@ -1152,20 +1454,6 @@ impl PathHandler for BufferObjects {
         }
     }
 
-    fn discover_paths(
-        &mut self,
-        tup_cwd: &Path,
-        glob_path: &Path,
-        outs: &OutputAssocs,
-    ) -> Result<Vec<MatchingPath>, Error> {
-        discover_inputs_from_glob(
-            self.pbo.get_root_dir().join(tup_cwd).as_path(),
-            glob_path,
-            outs,
-            self,
-        )
-    }
-
     /// Get file name of the input path
     fn get_input_path_str(&self, i: &InputResolvedType) -> String {
         get_resolved_name(i, &self.pbo, &self.gbo, &self.bbo)
@@ -1178,18 +1466,23 @@ impl PathHandler for BufferObjects {
         self.get_id(&np)
     }
 
+    /// Returns id for the path
+    fn get_id(&self, np: &NormalPath) -> Option<PathDescriptor> {
+        self.pbo.get_id(np)
+    }
+
     /// Returns path corresponding to an path descriptor. This panics if there is no match
     fn get_path(&self, id: &PathDescriptor) -> &NormalPath {
         self.pbo.get(id)
     }
 
-    /// Returns rule correponding to a rule descrtor. Panics if none is found
+    /// Returns rule corresponding to a rule descriptor. Panics if none is found
     fn get_rule(&self, id: &RuleDescriptor) -> &RuleFormulaUsage {
         self.rbo
             .get_rule(id)
             .unwrap_or_else(|| panic!("unable to fetch rule formula for id:{}", id))
     }
-    /// Returns env correponding to a envdescriptor. Panics if none is found
+    /// Returns env corresponding to a env descriptor. Panics if none is found
     fn get_env(&self, id: &EnvDescriptor) -> &Env {
         self.ebo.get(id)
     }
@@ -1203,7 +1496,7 @@ impl PathHandler for BufferObjects {
         self.pbo.try_get(id)
     }
 
-    /// Try get  a bin path entry by its descriptor.
+    /// Try get a bin path entry by its descriptor.
     fn try_get_group_path(&self, gd: &GroupPathDescriptor) -> Option<&NormalPath> {
         self.gbo.try_get(gd)
     }
@@ -1217,21 +1510,25 @@ impl PathHandler for BufferObjects {
         self.pbo.get_root_dir()
     }
 
+    /// Get group name stored against its id
     fn get_group_name(&self, gd: &GroupPathDescriptor) -> String {
         self.gbo.get_group_name(gd)
     }
 
+    /// Get path of a maybe resolved input
     fn get_path_from(&self, input_glob: &InputResolvedType) -> &Path {
         get_resolved_path(input_glob, &self.pbo)
     }
 
+    /// Get Path stored against its id
     fn get_path_str(&self, p: &PathDescriptor) -> String {
         let p = self.pbo.get(p).as_path();
         p.to_string_lossy().to_string()
     }
 
-    fn has_env(&self, id: &str) -> bool {
-        self.ebo.has_env(id)
+    /// check if env var exists in our stored buffers
+    fn has_env(&self, var: &str) -> bool {
+        self.ebo.has_env(var)
     }
 
     /// Return an iterator over all the id-group path pairs.
@@ -1246,8 +1543,8 @@ pub(crate) trait DecodeInputPaths {
     fn decode(
         &self,
         tup_cwd: &Path,
-        tag_info: &OutputAssocs,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         rule_ref: &RuleRef,
     ) -> Result<Vec<InputResolvedType>, Err>;
 }
@@ -1258,8 +1555,8 @@ impl DecodeInputPaths for PathExpr {
     fn decode(
         &self,
         tup_cwd: &Path,
-        tag_info: &OutputAssocs,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         rule_ref: &RuleRef,
     ) -> Result<Vec<InputResolvedType>, Err> {
         let mut vs = Vec::new();
@@ -1267,15 +1564,13 @@ impl DecodeInputPaths for PathExpr {
 
         match self {
             PathExpr::Literal(_) => {
-                let np = normalized_path(tup_cwd, self);
-                let path_buf = diff_paths(np.as_path(), tup_cwd).unwrap_or_else(|| {
-                    panic!("unable to diff with {:?} from {:?}", tup_cwd, np.as_path())
-                });
-                debug!("glob str: {:?}", path_buf.as_path());
-                //let root = bo.get_root_dir();
-                let pes = ph.discover_paths(tup_cwd, path_buf.as_path(), tag_info)?;
+                let pbuf = normalized_path(self);
+                let glob_path = GlobPath::new(tup_cwd, pbuf.as_path(), ph);
+
+                debug!("glob str: {:?}", glob_path.get_path());
+                let pes = psx.discover_paths(ph, &glob_path)?;
                 if pes.is_empty() {
-                    let (pd, _) = ph.add_path_from(tup_cwd, path_buf.as_path());
+                    let (pd, _) = ph.add_path_from(tup_cwd, glob_path.get_path());
                     vs.push(InputResolvedType::UnResolvedFile(pd));
                 } else {
                     vs.extend(pes.into_iter().map(InputResolvedType::Deglob));
@@ -1283,10 +1578,11 @@ impl DecodeInputPaths for PathExpr {
             }
             PathExpr::Group(_, _) => {
                 let (ref grp_desc, _) = ph.add_group_pathexpr(tup_cwd, self.cat().as_str());
-                if tag_info.resolve_groups {
-                    if let Some(paths) = tag_info.groups.get(grp_desc) {
+                {
+                    if let Some(paths) = psx.get_outs().get().get_group(grp_desc) {
                         vs.extend(
                             paths
+                                .deref()
                                 .iter()
                                 .map(|x| InputResolvedType::GroupEntry(*grp_desc, *x)),
                         )
@@ -1294,14 +1590,12 @@ impl DecodeInputPaths for PathExpr {
                         //let (, _) = bo.add_path(Path::new(&*p.cat()), tup_cwd);
                         vs.push(InputResolvedType::UnResolvedGroupEntry(*grp_desc));
                     }
-                } else {
-                    vs.push(InputResolvedType::UnResolvedGroupEntry(*grp_desc));
                 }
             }
             PathExpr::Bin(b) => {
                 let (ref bin_desc, _) = ph.add_bin_path_expr(tup_cwd, b.as_ref());
-                if let Some(paths) = tag_info.bins.get(bin_desc) {
-                    for p in paths {
+                if let Some(paths) = psx.get_outs().get().get_bin(bin_desc) {
+                    for p in paths.deref() {
                         vs.push(InputResolvedType::BinEntry(*bin_desc, *p))
                     }
                 } else {
@@ -1318,8 +1612,8 @@ impl DecodeInputPaths for Vec<PathExpr> {
     fn decode(
         &self,
         tup_cwd: &Path,
-        tag_info: &OutputAssocs,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         rule_ref: &RuleRef,
     ) -> Result<Vec<InputResolvedType>, Err> {
         // gather locations where exclude patterns show up
@@ -1335,7 +1629,7 @@ impl DecodeInputPaths for Vec<PathExpr> {
         let decoded: Result<Vec<_>, _> = self
             .iter()
             .inspect(|x| debug!("before decode {:?}", x))
-            .map(|x| x.decode(tup_cwd, tag_info, ph, rule_ref))
+            .map(|x| x.decode(tup_cwd, psx, ph, rule_ref))
             .inspect(|x| debug!("after {:?}", x))
             .collect();
         let filter_out_excludes =
@@ -1364,7 +1658,7 @@ impl DecodeInputPaths for Vec<PathExpr> {
 // decode input paths
 
 trait GatherOutputs {
-    fn gather_outputs(&self, oti: &mut OutputAssocs, ph: &mut impl PathHandler) -> Result<(), Err>;
+    fn gather_outputs(&self, oti: &mut OutputAssocs, ph: &mut impl PathBuffers) -> Result<(), Err>;
 }
 
 trait DecodeInputPlaceHolders {
@@ -1405,7 +1699,7 @@ trait DecodeOutputPlaceHolders {
         Self: Sized;
 }
 
-/// `InputsAsPaths' represents resolved inputs to pass to a rule
+/// `InputsAsPaths' represents resolved inputs to pass to a rule.
 /// Bins are converted to raw paths, groups paths are expanded into a space separated path list
 pub struct InputsAsPaths {
     raw_inputs: Vec<PathBuf>,
@@ -1414,8 +1708,8 @@ pub struct InputsAsPaths {
     rule_ref: RuleRef,
 }
 impl InputsAsPaths {
-    /// return all paths  (space separated) stored in given group name
-    /// This is used for group name substitions in rule formulas that appear as %<group_name>
+    /// Returns all paths  (space separated) associated with a given group name
+    /// This is used for group name substitutions in rule formulas that appear as %<group_name>
     pub(crate) fn get_group_paths(&self, grp_name: &str) -> Option<&String> {
         if grp_name.starts_with('<') {
             self.groups_by_name.get(grp_name)
@@ -1424,7 +1718,7 @@ impl InputsAsPaths {
         }
     }
 
-    /// returns all paths as strings in a vector
+    /// Returns all paths as strings in a vector
     pub(crate) fn get_file_names(&self) -> Vec<String> {
         self.raw_inputs
             .iter()
@@ -1477,7 +1771,7 @@ impl InputsAsPaths {
     pub(crate) fn new(
         tup_cwd: &Path,
         inp: &[InputResolvedType],
-        ph: &mut impl PathHandler,
+        ph: &mut impl PathBuffers,
         rule_ref: RuleRef,
     ) -> InputsAsPaths {
         let isnotgrp = |x: &InputResolvedType| {
@@ -1811,20 +2105,21 @@ impl DecodeOutputPlaceHolders for PathExpr {
     }
 }
 
-fn normalized_path(tup_cwd: &Path, x: &PathExpr) -> PathBuf {
+fn normalized_path(x: &PathExpr) -> PathBuf {
     //  backslashes with forward slashes
     let pbuf = PathBuf::new().join(x.cat_ref().replace('\\', "/").as_str());
-    NormalPath::absolute_from(pbuf.as_path(), tup_cwd).to_path_buf()
+    pbuf
+    //NormalPath::absolute_from(pbuf.as_path(), tup_cwd).to_path_buf()
 }
 fn excluded_patterns(
     tup_cwd: &Path,
     p: &[PathExpr],
-    ph: &mut impl PathHandler,
+    ph: &mut impl PathBuffers,
 ) -> Vec<PathDescriptor> {
     p.iter()
         .filter_map(|x| {
             if let PathExpr::ExcludePattern(pattern) = x {
-                let path = Path::new(pattern);
+                let path = Path::new(pattern.as_str());
                 let (pid, _) = ph.add_path_from(tup_cwd, path);
                 Some(pid)
             } else {
@@ -1834,7 +2129,7 @@ fn excluded_patterns(
         .collect()
 }
 
-fn paths_from_exprs(tup_cwd: &Path, p: &[PathExpr], ph: &mut impl PathHandler) -> Vec<OutputType> {
+fn paths_from_exprs(tup_cwd: &Path, p: &[PathExpr], ph: &mut impl PathBuffers) -> Vec<OutputType> {
     p.split(|x| matches!(x, &PathExpr::Sp1) || matches!(x, &PathExpr::ExcludePattern(_)))
         .filter(|x| !x.is_empty())
         .map(|x| {
@@ -1902,7 +2197,7 @@ impl DecodeOutputPlaceHolders for RuleFormula {
 fn get_deglobbed_rule(
     rule_ctx: &RuleContext,
     primary_deglobbed_inps: &[InputResolvedType],
-    ph: &mut impl PathHandler,
+    ph: &mut impl PathBuffers,
     env: &EnvDescriptor,
 ) -> Result<ResolvedLink, Err> {
     let r = rule_ctx.rule_formula;
@@ -2013,13 +2308,21 @@ impl ResolvedLink {
     }
 
     /// iterator over all the sources (primary and secondary) in this link
-    pub fn get_sources(&self) -> Chain<Iter<'_, InputResolvedType>, Iter<'_, InputResolvedType>> {
+    pub fn get_sources(
+        &self,
+    ) -> std::iter::Chain<
+        std::slice::Iter<'_, InputResolvedType>,
+        std::slice::Iter<'_, InputResolvedType>,
+    > {
         self.primary_sources
             .iter()
             .chain(self.secondary_sources.iter())
     }
     ///  iterator over all the targets  (primary and secondary) in this link
-    pub fn get_targets(&self) -> Chain<Iter<'_, PathDescriptor>, Iter<'_, PathDescriptor>> {
+    pub fn get_targets(
+        &self,
+    ) -> std::iter::Chain<std::slice::Iter<'_, PathDescriptor>, std::slice::Iter<'_, PathDescriptor>>
+    {
         self.primary_targets
             .iter()
             .chain(self.secondary_targets.iter())
@@ -2052,49 +2355,20 @@ impl ResolvedLink {
     }
 
     fn resolve_unresolved(
-        taginfo: &OutputAssocs,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         p: &PathDescriptor,
         rule_ref: &RuleRef,
     ) -> Result<Vec<MatchingPath>, Error> {
-        let glob_path = ph.get_path(p);
-        debug!("need to resolve file:{:?}", glob_path);
-        let mut pes: Vec<MatchingPath> = Vec::new();
-        let mut to_match = glob_path.as_path();
-        let pbuf: PathBuf;
-        if !has_glob_pattern(to_match) {
-            let base_path_desc = ph.get_parent_id(p).unwrap();
-            taginfo.outputs_with_desc(p, &base_path_desc, &mut pes);
-            if pes.is_empty() {
-                debug!("Could not resolve :{:?}", ph.get_path(p));
-                return Err(Error::UnResolvedFile(
-                    glob_path.as_path().to_string_lossy().to_string(),
-                    rule_ref.clone(),
-                ));
-            }
-            //for pe in pes {
-            //   rlink.primary_sources.push(InputResolvedType::Deglob(pe))
-            //}
-        } else {
-            let (mut base_path, _) = get_non_pattern_prefix(to_match);
-            if base_path.eq(&PathBuf::new()) {
-                base_path = base_path.join(".");
-                pbuf = Path::new(".").join(glob_path.as_path());
-                to_match = &pbuf;
-            }
-            let slash_corrected_glob = to_match.to_string_lossy().replace('\\', "/");
-            let globs = MyGlob::new(slash_corrected_glob.as_str())?;
-            let (path_desc, added) = ph.add_abs(base_path.as_path());
-            if !added {
-                taginfo.outputs_matching_glob(ph, &path_desc, &globs, &mut pes);
-            }
-            if pes.is_empty() {
-                debug!("Could not resolve:{:?}", slash_corrected_glob);
-                return Err(Error::UnResolvedFile(
-                    slash_corrected_glob,
-                    rule_ref.clone(),
-                ));
-            }
+        let glob_path = GlobPath::from_path_desc(ph, *p);
+        debug!("need to resolve file:{:?}", glob_path.get_path());
+        let  pes: Vec<MatchingPath> = psx.discover_paths(ph, &glob_path)?;
+        if pes.is_empty() {
+            debug!("Could not resolve :{:?}", ph.get_path(p));
+            return Err(Error::UnResolvedFile(
+                glob_path.get_path().to_string_lossy().to_string(),
+                rule_ref.clone(),
+            ));
         }
         Ok(pes)
     }
@@ -2102,7 +2376,7 @@ impl ResolvedLink {
 
 // update the groups/bins with the path to primary target and also add secondary targets
 impl GatherOutputs for ResolvedLink {
-    fn gather_outputs(&self, oti: &mut OutputAssocs, ph: &mut impl PathHandler) -> Result<(), Err> {
+    fn gather_outputs(&self, oti: &mut OutputAssocs, ph: &mut impl PathBuffers) -> Result<(), Err> {
         let rule_ref = &self.rule_ref;
         for path_desc in self.get_targets() {
             let e = oti.parent_rule.entry(*path_desc);
@@ -2151,8 +2425,8 @@ pub(crate) trait ResolvePaths {
     fn resolve_paths(
         &self,
         tupfile: &Path,
-        taginfo: &OutputAssocs,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         tup_desc: &TupPathDescriptor,
     ) -> Result<Artifacts, Err>;
 }
@@ -2161,7 +2435,8 @@ pub(crate) trait ExpandRun {
     fn expand_run(
         &self,
         m: &mut ParseState,
-        bo: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        bo: &mut impl PathBuffers,
         loc: &Loc,
     ) -> Result<Vec<Self>, Error>
     where
@@ -2171,27 +2446,27 @@ impl ResolvePaths for Vec<ResolvedLink> {
     fn resolve_paths(
         &self,
         _tupfile: &Path,
-        taginfo: &OutputAssocs,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         _tup_desc: &TupPathDescriptor,
     ) -> Result<Artifacts, Err> {
         let mut resolved_artifacts = Artifacts::new();
-        resolved_artifacts.acquire_groups(taginfo);
+        resolved_artifacts.acquire(psx);
         let mut last_tup_desc = TupPathDescriptor(usize::MAX);
         let last_pbuf = PathBuf::new();
-        for statement in self.iter() {
-            let cur_tup_desc = statement.get_rule_ref().get_tupfile_desc();
+        for resolved_link in self.iter() {
+            let cur_tup_desc = resolved_link.get_rule_ref().get_tupfile_desc();
             let tup_cwd = if last_tup_desc.eq(cur_tup_desc) {
                 last_pbuf.clone()
             } else {
                 ph.get_tup_path(cur_tup_desc).to_path_buf()
             };
 
-            let art = statement.resolve_paths(
+            let art = resolved_link.resolve_paths(
                 tup_cwd.as_path(),
-                resolved_artifacts.get_outs(),
+                resolved_artifacts.get_psx(),
                 ph,
-                statement.get_rule_ref().get_tupfile_desc(),
+                resolved_link.get_rule_ref().get_tupfile_desc(),
             )?;
             /*for f in art.output_files.iter() {
                 out.parent_rule.remove(f); // to avoid conflicts with the same undecoded rule as we  merge
@@ -2209,8 +2484,8 @@ impl ResolvePaths for ResolvedLink {
     fn resolve_paths(
         &self,
         tupfile: &Path,
-        taginfo: &OutputAssocs,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         _tup_desc: &TupPathDescriptor,
     ) -> Result<Artifacts, Err> {
         let mut rlink: ResolvedLink = self.clone();
@@ -2219,14 +2494,14 @@ impl ResolvePaths for ResolvedLink {
         for i in self.primary_sources.iter() {
             match i {
                 InputResolvedType::UnResolvedFile(p) => {
-                    let pes = Self::resolve_unresolved(taginfo, ph, p, rlink.get_rule_ref())?;
+                    let pes = Self::resolve_unresolved(psx, ph, &p, rlink.get_rule_ref())?;
                     rlink
                         .primary_sources
                         .extend(pes.into_iter().map(InputResolvedType::Deglob));
                 }
                 InputResolvedType::UnResolvedGroupEntry(g) => {
-                    if let Some(hs) = taginfo.groups.get(g) {
-                        for pd in hs {
+                    if let Some(hs) = psx.get_outs().get().get_group(&g) {
+                        for pd in hs.deref() {
                             rlink
                                 .primary_sources
                                 .push(InputResolvedType::GroupEntry(*g, *pd));
@@ -2245,14 +2520,14 @@ impl ResolvePaths for ResolvedLink {
         for i in self.secondary_sources.iter() {
             match i {
                 InputResolvedType::UnResolvedFile(p) => {
-                    let pes = Self::resolve_unresolved(taginfo, ph, p, rlink.get_rule_ref())?;
+                    let pes = Self::resolve_unresolved(psx, ph, &p, rlink.get_rule_ref())?;
                     rlink
                         .secondary_sources
                         .extend(pes.into_iter().map(InputResolvedType::Deglob));
                 }
                 InputResolvedType::UnResolvedGroupEntry(ref g) => {
-                    if let Some(hs) = taginfo.groups.get(g) {
-                        for pd in hs {
+                    if let Some(hs) = psx.get_outs().get().get_group(g) {
+                        for pd in hs.deref() {
                             rlink
                                 .secondary_sources
                                 .push(InputResolvedType::GroupEntry(*g, *pd))
@@ -2300,16 +2575,13 @@ impl ResolvePaths for LocatedStatement {
     fn resolve_paths(
         &self,
         tupfile: &Path,
-        taginfo: &OutputAssocs,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         tup_desc: &TupPathDescriptor,
     ) -> Result<Artifacts, Err> {
         let mut deglobbed = Vec::new();
         // use same resolve_groups as input
-        let mut output: OutputAssocs = OutputAssocs {
-            resolve_groups: taginfo.resolve_groups,
-            ..Default::default()
-        };
+        let mut output = OutputAssocs::new();
         let tup_cwd = if tupfile.is_dir() {
             tupfile
         } else {
@@ -2331,8 +2603,8 @@ impl ResolvePaths for LocatedStatement {
         } = self
         {
             let rule_ref = &RuleRef::new(tup_desc, loc);
-            let inpdec = s.primary.decode(tup_cwd, taginfo, ph, rule_ref)?;
-            let secondinpdec = s.secondary.decode(tup_cwd, taginfo, ph, rule_ref)?;
+            let inpdec = s.primary.decode(tup_cwd, psx, ph, rule_ref)?;
+            let secondinpdec = s.secondary.decode(tup_cwd, psx, ph, rule_ref)?;
             let resolver = RuleContext {
                 tup_cwd,
                 rule_formula,
@@ -2362,15 +2634,14 @@ impl ResolvePaths for Vec<LocatedStatement> {
     fn resolve_paths(
         &self,
         tupfile: &Path,
-        taginfo: &OutputAssocs,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         tup_desc: &TupPathDescriptor,
     ) -> Result<Artifacts, Err> {
-        let mut alltaginfos = taginfo.clone();
-        alltaginfos.resolve_groups = taginfo.resolve_groups;
-        let mut merged_arts = Artifacts::from(Vec::new(), alltaginfos);
+        let mut merged_arts = Artifacts::new();
+        merged_arts.acquire(psx);
         for stmt in self.iter() {
-            let art = stmt.resolve_paths(tupfile, merged_arts.get_outs(), ph, tup_desc)?;
+            let art = stmt.resolve_paths(tupfile, merged_arts.get_psx(), ph, tup_desc)?;
             debug!("{:?}", art);
             merged_arts.merge(art)?;
         }
@@ -2394,19 +2665,22 @@ pub fn parse_dir(root: &Path) -> Result<Artifacts, Error> {
         }
     }
     let mut artifacts_all = Artifacts::new();
-    let mut parser = TupParser::try_new_from(root)?;
+    let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new())?;
     for tup_file_path in tupfiles.iter() {
         let artifacts = parser.parse(tup_file_path)?;
         artifacts_all.merge(artifacts)?;
     }
 
-    let _ = dag_check_artifacts(&mut parser, &mut artifacts_all)?;
+    {
+        let ph = parser.borrow_ref();
+        let _ = dag_check_artifacts(ph.deref(), &mut artifacts_all)?;
+    }
     parser.reresolve(artifacts_all)
 }
 
 /// checks for cycles in dependency graph between inputs and outputs
 pub fn dag_check_artifacts(
-    parser: &mut TupParser,
+    bo: &impl PathBuffers,
     artifacts_all: &mut Artifacts,
 ) -> Result<Vec<NodeIndex>, Error> {
     let statement_from_id = |i: NodeIndex| artifacts_all.get_resolved_link(i.index());
@@ -2433,7 +2707,6 @@ pub fn dag_check_artifacts(
                             {
                                 let stmt = statement_from_id(*pnodeid);
                                 let tup_desc = stmt.get_rule_ref().get_tupfile_desc();
-                                let bo = parser.borrow_ref();
                                 let tupfile = bo.get_tup_path(tup_desc);
                                 format!(
                                     "tupfile at {:?}, and rule at line:{}",
@@ -2444,7 +2717,6 @@ pub fn dag_check_artifacts(
                             {
                                 let stmt = statement_from_id(*nodeid);
                                 let tup_desc = stmt.get_rule_ref().get_tupfile_desc();
-                                let bo = parser.borrow_ref();
                                 let tupfile = bo.get_tup_path(tup_desc);
                                 format!(
                                     "tupfile at {:?}, and rule at line:{}",
@@ -2458,8 +2730,7 @@ pub fn dag_check_artifacts(
             }
         } else if !nodeids.is_empty() {
             let stmt = statement_from_id(*nodeids.first().unwrap());
-            let boref = parser.borrow_ref();
-            let p = boref.try_get_group_path(group).unwrap();
+            let p = bo.try_get_group_path(group).unwrap();
             return Err(Error::StaleGroupRef(
                 p.as_path().to_string_lossy().to_string(),
                 stmt.get_rule_ref().clone(),
@@ -2482,8 +2753,7 @@ pub fn dag_check_artifacts(
         Error::DependencyCycle("".to_string(), {
             let stmt = statement_from_id(e.node_id());
             let tup_file_desc = stmt.get_rule_ref().get_tupfile_desc();
-            let bo_ref = parser.borrow_ref();
-            let tupfile = bo_ref.get_tup_path(tup_file_desc);
+            let tupfile = bo.get_tup_path(tup_file_desc);
             format!(
                 "tupfile:{}, and rule at line:{}",
                 tupfile.to_string_lossy(),

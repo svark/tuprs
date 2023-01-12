@@ -57,9 +57,23 @@ pub enum Error {
     #[error("Tup rules could not be located from {0}")]
     TupRulesNotFound(RuleRef),
     /// input file could not be resolved
-    #[error("Error resolving an input")]
+    #[error("Error resolving an input: {0} at {1}")]
     UnResolvedFile(String, RuleRef),
+    /// Path search error
+    #[error("Path search error: {0}")]
+    PathSearchError(String),
+    /// Path search error with context
+    #[error("Path search error: {0} at {1}")]
+    PathSearchErrorCtx(String, RuleRef),
     /// Raw lua errors
     #[error(transparent)]
     LuaError(#[from] mlua::Error),
+}
+
+impl Error {
+    /// Create an error from outside this library to allow traits of this library
+    /// to have  have fallible implementations outside of this library
+    pub fn new_path_search_error(error_str: &str, _rule_ref: RuleRef) -> Error {
+        Error::PathSearchError(error_str.to_string())
+    }
 }

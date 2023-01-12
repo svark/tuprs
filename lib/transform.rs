@@ -1,14 +1,32 @@
 //! This module has datastructures and methods to transform Statements to Statements with substitutions and expansions
-use errors::Error as Err;
-use parser::locate_tuprules;
-use parser::{parse_statements_until_eof, parse_tupfile, Span};
-use platform::*;
-use statements::*;
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
+use std::ops::{AddAssign, Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::rc::Rc;
+use std::vec::Drain;
+
+use log::debug;
+use nom::AsBytes;
+use pathdiff::diff_paths;
+
+use decode::{
+    BufferObjects, ExpandRun, GlobPath, GroupPathDescriptor, InputResolvedType, normalize_path,
+    NormalPath, OutputAssocs, OutputHandler, OutputHolder, PathBuffers, PathDescriptor,
+    PathSearcher, ResolvedLink, ResolvePaths, RuleDescriptor, RuleFormulaUsage, RuleRef,
+    TupPathDescriptor,
+};
+use errors::Error as Err;
+use errors::Error::RootNotFound;
+use parser::{parse_statements_until_eof, parse_tupfile, Span};
+use parser::locate_tuprules;
+use platform::*;
+use scriptloader::parse_script;
+use statements::*;
+
 /// ParseState holds maps tracking current state of variable replacements as we read a tupfile
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ParseState {
@@ -165,7 +183,8 @@ impl ExpandRun for Statement {
     fn expand_run(
         &self,
         m: &mut ParseState,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         loc: &Loc,
     ) -> Result<Vec<Statement>, crate::errors::Error> {
         let mut vs: Vec<Statement> = Vec::new();
@@ -197,11 +216,11 @@ impl ExpandRun for Statement {
                         let arg = arg.trim();
                         if arg.contains('*') {
                             let arg_path = Path::new(arg);
-                            let outs = OutputAssocs::new();
+                            //let outs = OutputAssocs::new();
                             {
-                                let matches = ph
-                                    .discover_paths(m.get_tup_dir(), arg_path, &outs)
-                                    .unwrap_or_else(|_| {
+                                let ref glob_path = GlobPath::new(m.get_tup_dir(), arg_path, ph);
+                                let matches =
+                                    psx.discover_paths(ph, glob_path).unwrap_or_else(|_| {
                                         panic!("error matching glob pattern {}", arg)
                                     });
                                 debug!("expand_run num files from glob:{:?}", matches.len());
@@ -285,7 +304,8 @@ impl ExpandRun for Vec<LocatedStatement> {
     fn expand_run(
         &self,
         m: &mut ParseState,
-        ph: &mut impl PathHandler,
+        psx: &impl PathSearcher,
+        ph: &mut impl PathBuffers,
         _: &Loc,
     ) -> Result<Vec<Self>, crate::errors::Error>
     where
@@ -294,7 +314,7 @@ impl ExpandRun for Vec<LocatedStatement> {
         self.iter()
             .map(|l| -> Result<Vec<LocatedStatement>, crate::errors::Error> {
                 let loc = l.getloc();
-                let stmts = l.get_statement().expand_run(m, ph, loc)?;
+                let stmts = l.get_statement().expand_run(m, psx, ph, loc)?;
                 Ok(stmts
                     .iter()
                     .map(|s| LocatedStatement::new(s.clone(), *l.getloc()))
@@ -306,7 +326,7 @@ impl ExpandRun for Vec<LocatedStatement> {
 
 /// trait that a method to run variable substitution on different parts of tupfile
 pub(crate) trait Subst {
-    fn subst(&self, m: &mut ParseState, bo: &mut impl PathHandler) -> Result<Self, Err>
+    fn subst(&self, m: &mut ParseState, bo: &mut impl PathBuffers) -> Result<Self, Err>
     where
         Self: Sized;
 }
@@ -415,21 +435,6 @@ impl SubstPEs for Source {
         })
     }
 }
-use bimap::hash::{Iter, RightValues};
-use decode::{
-    normalize_path, BufferObjects, ExpandRun, GroupPathDescriptor, InputResolvedType, NormalPath,
-    OutputAssocs, PathDescriptor, PathHandler, ResolvePaths, ResolvedLink, RuleDescriptor,
-    RuleFormulaUsage, RuleRef, TupPathDescriptor,
-};
-use errors::Error::RootNotFound;
-use log::debug;
-use nom::AsBytes;
-use pathdiff::diff_paths;
-use scriptloader::parse_script;
-use std::ops::{AddAssign, Deref, DerefMut};
-use std::process::Stdio;
-use std::rc::Rc;
-use std::vec::Drain;
 
 impl AddAssign for Source {
     /// append more sources
@@ -586,7 +591,7 @@ pub fn load_conf_vars(
                 for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
                     if let Statement::LetExpr { left, right, .. } = statement {
                         if let Some(rest) = left.name.strip_prefix("CONFIG_") {
-                            conf_vars.insert(rest.to_string(), tovecstring(right));
+                            conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
                         }
                     }
                 }
@@ -608,7 +613,7 @@ pub fn load_conf_vars(
 }
 
 /// set the current TUP_CWD in expression map in ParseState as we switch to reading a included file
-pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut impl PathHandler) -> PathBuf {
+pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut impl PathBuffers) -> PathBuf {
     debug!("reading {:?}", filename);
     let cf = switch_to_reading(filename, m, bo);
     let tupdir = m.tup_base_path.parent().unwrap();
@@ -632,7 +637,7 @@ pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut impl PathHan
 fn switch_to_reading(
     filename: &Path,
     parse_state: &mut ParseState,
-    ph: &mut impl PathHandler,
+    ph: &mut impl PathBuffers,
 ) -> PathBuf {
     let cf = parse_state.cur_file.clone();
     parse_state.cur_file = filename.to_path_buf();
@@ -657,7 +662,7 @@ impl SubstPEs for Link {
 /// track of variables assigned so far and replaces variables occurrences in $(Var) or &(Var) or @(Var)
 impl Subst for Vec<LocatedStatement> {
     /// `subst' accumulates variable assignments in various maps in ParseState and replaces occurrences of them in subsequent statements
-    fn subst(&self, parse_state: &mut ParseState, bo: &mut impl PathHandler) -> Result<Self, Err> {
+    fn subst(&self, parse_state: &mut ParseState, bo: &mut impl PathBuffers) -> Result<Self, Err> {
         let mut newstats = Vec::new();
         for statement in self.iter() {
             let loc = statement.getloc();
@@ -848,7 +853,7 @@ impl Subst for Vec<LocatedStatement> {
                     if let Some(val) = envval.clone().or_else(|| std::env::var(var).ok()) {
                         parse_state
                             .expr_map
-                            .entry(String::from(var))
+                            .entry(String::from(var.as_str()))
                             .or_default()
                             .push(val);
                     }
@@ -893,8 +898,9 @@ fn get_or_insert_parsed_statement(
 /// The parser returns  resolved rules,  outputs of rules packaged in OutputTagInfo and updated buffer objects.
 
 #[derive(Debug, Clone, Default)]
-pub struct TupParser {
+pub struct TupParser<Q: PathSearcher + Sized + 'static> {
     bo: Rc<RefCell<BufferObjects>>,
+    psx: Rc<RefCell<Q>>,
     config_vars: HashMap<String, Vec<String>>,
 }
 
@@ -902,7 +908,7 @@ pub struct TupParser {
 #[derive(Debug, Clone, Default)]
 pub struct Artifacts {
     resolved_links: Vec<ResolvedLink>,
-    outs: OutputAssocs,
+    outs: OutputHolder,
 }
 
 impl Artifacts {
@@ -914,7 +920,7 @@ impl Artifacts {
     pub fn from(resolved_links: Vec<ResolvedLink>, outs: OutputAssocs) -> Artifacts {
         Artifacts {
             resolved_links,
-            outs,
+            outs: OutputHolder::from(outs),
         }
     }
 
@@ -931,7 +937,7 @@ impl Artifacts {
     /// Merges outputs from parsing one tupfile  with the next. All the new links will be extended.
     /// Merging operation fails with an error if it finds if any of the outputs it finds in `artifacts` have a previous owner
     pub fn merge(&mut self, mut artifacts: Artifacts) -> Result<(), crate::errors::Error> {
-        self.outs.merge(&artifacts.outs)?;
+        self.get_mut_outs().merge(artifacts.get_outs())?;
         self.resolved_links.extend(artifacts.drain_resolved_links());
         Ok(())
     }
@@ -947,16 +953,21 @@ impl Artifacts {
         &self.resolved_links
     }
 
-    pub(crate) fn acquire_groups(&mut self, outs: &OutputAssocs) {
-        self.outs.acquire_groups(outs.get_groups().clone());
-        self.outs.acquire_children(outs.get_children().clone());
+    pub(crate) fn acquire(&mut self, outs: &impl PathSearcher) {
+        self.outs.acquire(outs);
     }
 
-    pub(crate) fn get_outs(&self) -> &OutputAssocs {
+    pub(crate) fn get_psx(&self) -> &impl PathSearcher {
         &self.outs
     }
+    pub(crate) fn get_outs(&self) -> &impl OutputHandler {
+        &self.outs
+    }
+    pub(crate) fn get_mut_outs(&mut self) -> &mut impl OutputHandler {
+        &mut self.outs
+    }
     /// Returns the output files from all the rules found after current parsing sesssion
-    pub fn get_output_files(&self) -> &HashSet<PathDescriptor> {
+    pub fn get_output_files(&self) -> Ref<'_, HashSet<PathDescriptor>> {
         self.outs.get_output_files()
     }
 
@@ -986,7 +997,7 @@ impl Artifacts {
         return self.resolved_links.as_slice();
     }
     /// get parent rule that generated an output file with given id.
-    pub fn get_parent_rule(&self, p0: &PathDescriptor) -> Option<&RuleRef> {
+    pub fn get_parent_rule(&self, p0: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
         self.outs.get_parent_rule(p0)
     }
     /// Add a new path entry against a group with `group_desc`
@@ -997,97 +1008,98 @@ impl Artifacts {
 
 /// Represents an opens  buffer that is ready to be read for all data that stored with an id during parsing.
 /// such as (rules, paths, groups, bins) stored during parsing.
-pub struct ReadBufferObjects<'a> {
-    bo: Ref<'a, BufferObjects>,
+/// It is also available for writing some data in the parser's buffers
+pub struct ReadWriteBufferObjects {
+    bo: Rc<RefCell<BufferObjects>>,
 }
 
-/// Represents an open buffer ready to write in the parser's buffers
-pub struct WriteBufferObjects<'a> {
-    bo: RefMut<'a, BufferObjects>,
-}
-
-impl<'a> WriteBufferObjects<'a> {
+impl ReadWriteBufferObjects {
+    /// Constructor
+    pub fn new(bo: Rc<RefCell<BufferObjects>>) -> ReadWriteBufferObjects {
+        ReadWriteBufferObjects { bo }
+    }
     /// add a  path to parser's buffer and return its unique id.
     /// If it already exists in its buffers boolean returned will be false
     pub fn add_abs(&mut self, p: &Path) -> (PathDescriptor, bool) {
-        self.bo.add_abs(p)
+        self.bo.deref().borrow_mut().add_abs(p)
     }
-}
-
-impl ReadBufferObjects<'_> {
-    /// Returns an iterator over all the (grouppath, groupid) pairs stored in buffers during parsing
-    pub fn get_group_iter(&self) -> Iter<'_, NormalPath, GroupPathDescriptor> {
-        self.bo.group_iter()
+    /// iterate over all the (grouppath, groupid) pairs stored in buffers during parsing
+    pub fn for_each_group<F>(&self, f: F)
+    where
+        F: FnMut((&NormalPath, &GroupPathDescriptor)),
+    {
+        let r = self.bo.deref().borrow();
+        r.group_iter().for_each(f);
+    }
+    /// Iterate over group ids
+    pub fn map_group_desc<F>(&self,  f: F) -> Vec<(GroupPathDescriptor, i64)>
+    where
+        F: FnMut(&GroupPathDescriptor) -> (GroupPathDescriptor, i64),
+    {
+        self.bo.deref().borrow().get_group_descs().map(f).collect()
     }
 
     /// returns the rule corresponding to `RuleDescriptor`
-    pub fn get_rule(&self, rd: &RuleDescriptor) -> &RuleFormulaUsage {
-        self.bo.get_rule(rd)
+    pub fn get_rule(&self, rd: &RuleDescriptor) -> Ref<'_, RuleFormulaUsage> {
+        let r = self.bo.deref().borrow();
+        Ref::map(r, |x| x.get_rule(rd))
     }
     /// Return resolved input type in the string form.
     pub fn get_input_path_str(&self, i: &InputResolvedType) -> String {
-        self.bo.get_input_path_str(i)
+        self.bo.deref().borrow_mut().get_input_path_str(i)
     }
     /// Return the file path corresponding to its id
-    pub fn get_path(&self, p0: &PathDescriptor) -> &NormalPath {
-        self.bo.get_path(p0)
+    pub fn get_path(&self, p0: &PathDescriptor) -> NormalPath {
+        self.bo.deref().borrow().get_path(p0).clone()
     }
     /// Returns the tup file path corresponding to its id
-    pub fn get_tup_path(&self, p0: &TupPathDescriptor) -> &Path {
-        self.bo.get_tup_path(p0)
-    }
-    /// Iterator over all the group ids
-    pub fn get_group_descriptors(&self) -> RightValues<'_, NormalPath, GroupPathDescriptor> {
-        self.bo.get_group_descs()
+    pub fn get_tup_path(&self, p0: &TupPathDescriptor) -> Ref<'_, Path> {
+        let r = self.bo.deref().borrow();
+        Ref::map(r, |x| x.get_tup_path(p0))
     }
 }
-impl TupParser {
-    /// Constructor a empty new Tupfile parser with no root.
-    pub fn new() -> TupParser {
-        TupParser {
-            bo: Rc::new(RefCell::from(BufferObjects::default())),
-            config_vars: HashMap::new(),
-        }
-    }
+
+impl<Q: PathSearcher + Sized> TupParser<Q> {
     /// Fallible constructor that attempts to setup a parser after looking from the current folder,
     /// a root folder where Tupfile.ini exists. If found, it also attempts to load config vars from
     /// tup.config files it can successfully locate in the root folder.
-    pub fn try_new_from<P: AsRef<Path>>(cur_folder: P) -> Result<TupParser, crate::errors::Error> {
+    pub fn try_new_from<P: AsRef<Path>>(
+        cur_folder: P,
+        psx: Q,
+    ) -> Result<TupParser<Q>, crate::errors::Error> {
         let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(RootNotFound)?;
 
         let root = tup_ini.parent().ok_or(RootNotFound)?;
         let conf_vars = load_conf_vars(root)?;
-        Ok(TupParser::new_from(root, conf_vars))
+        Ok(TupParser::new_from(
+            root,
+            conf_vars,
+            Rc::new(RefCell::new(psx)),
+        ))
     }
 
     /// Construct at the given rootdir and using config vars
     pub fn new_from<P: AsRef<Path>>(
         root_dir: P,
         config_vars: HashMap<String, Vec<String>>,
-    ) -> TupParser {
+        psx: Rc<RefCell<Q>>,
+    ) -> TupParser<Q> {
         TupParser {
             bo: Rc::new(RefCell::from(BufferObjects::new(root_dir))),
+            psx,
             config_vars,
         }
     }
 
-    /// Fetch the parser's read buffer for reading in id-ed data that it holds
-    pub fn read_buf(&self) -> ReadBufferObjects {
-        ReadBufferObjects {
-            bo: self.borrow_ref(),
-        }
-    }
-
-    /// Fetch the parsers's write buffer for writing id-object pairs
-    pub fn write_buf(&self) -> WriteBufferObjects {
-        WriteBufferObjects {
-            bo: self.borrow_mut_ref(),
-        }
+    /// Fetch the parser's read/write buffer for reading and writing in id-ed data that it holds
+    pub fn read_write_buffers(&self) -> ReadWriteBufferObjects {
+        ReadWriteBufferObjects::new(self.bo.clone())
     }
 
     pub(crate) fn borrow_ref(&self) -> Ref<BufferObjects> {
         return self.bo.deref().borrow();
     }
+
     pub(crate) fn borrow_mut_ref(&self) -> RefMut<BufferObjects> {
         return self.bo.deref().borrow_mut();
     }
@@ -1117,16 +1129,21 @@ impl TupParser {
         );
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
-            parse_script(m, self.bo.clone())
+            let c = self.psx.clone();
+            parse_script(m, self.bo.clone(), c)
         } else {
             //let tup_file_path = m.get_cur_file().to_path_buf();
             let stmts = parse_tupfile(tup_file_path)?;
             let mut bo_ref_mut = self.borrow_mut_ref();
             let stmts = stmts.subst(&mut m, bo_ref_mut.deref_mut())?;
-            let output_tag_info = OutputAssocs::new_no_resolve_groups();
             debug!("num stmts:{:?}", stmts.len());
             let stmts = stmts
-                .expand_run(&mut m, bo_ref_mut.deref_mut(), &Loc::new(0, 0))?
+                .expand_run(
+                    &mut m,
+                    self.get_path_searcher().deref(),
+                    bo_ref_mut.deref_mut(),
+                    &Loc::new(0, 0),
+                )?
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>();
@@ -1137,7 +1154,7 @@ impl TupParser {
             );
             stmts.resolve_paths(
                 m.get_cur_file(),
-                &output_tag_info,
+                self.psx.deref().borrow().deref(),
                 bo_ref_mut.deref_mut(),
                 &tup_desc,
             )
@@ -1151,10 +1168,13 @@ impl TupParser {
         let mut boref = self.borrow_mut_ref();
         arts.get_resolved_links().resolve_paths(
             pbuf.as_path(),
-            arts.get_outs(),
+            self.psx.deref().borrow().deref(),
             boref.deref_mut(),
             &TupPathDescriptor::new(0),
         )
+    }
+    fn get_path_searcher(&self) -> Ref<'_, Q> {
+        self.psx.deref().borrow()
     }
 }
 

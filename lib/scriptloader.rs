@@ -1,13 +1,4 @@
-use decode::{OutputAssocs, PathHandler, ResolvePaths};
-use errors::Error as Err;
-use log::Level::Debug;
-use log::{debug, log_enabled};
-use mlua::Error::SyntaxError;
-use mlua::{AnyUserData, HookTriggers, Lua, MultiValue, StdLib, ToLua, Value, Variadic};
-use mlua::{UserData, UserDataMethods};
-use nom::{AsBytes, InputTake};
-use parser::locate_tuprules;
-use statements::{Link, RuleFormula, Source, Target};
+use std::borrow::BorrowMut;
 use std::cell::RefCell;
 use std::cell::RefMut;
 use std::fs::File;
@@ -16,6 +7,21 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
+
+use log::{debug, log_enabled};
+use log::Level::Debug;
+use mlua::{AnyUserData, HookTriggers, Lua, MultiValue, StdLib, ToLua, Value, Variadic};
+use mlua::{UserData, UserDataMethods};
+use mlua::Error::SyntaxError;
+use nom::{AsBytes, InputTake};
+
+use decode::{GlobPath, PathBuffers, PathSearcher, ResolvePaths};
+use errors::Error as Err;
+use parser::locate_tuprules;
+use statements::{Link, RuleFormula, Source, Target};
+use statements::*;
+//use mlua::{Function, Lua, MetaMethod, Result, UserData, UserDataMethods, Variadic};
+use statements::Statement::Rule;
 use transform::{Artifacts, ParseState};
 
 lazy_static! {
@@ -108,14 +114,11 @@ tup.ext(filename)
 Returns: string
 Returns the extension in the filename filename (excluding the .) or the empty string if there is no extension.
  */
-//use mlua::{Function, Lua, MetaMethod, Result, UserData, UserDataMethods, Variadic};
-use statements::Statement::Rule;
-use statements::*;
-
 #[derive(Clone, Debug, Default)]
-pub struct TupScriptContext<P: PathHandler + Sized> {
+pub struct TupScriptContext<P: PathBuffers + Sized, Q: PathSearcher + Sized> {
     parse_state: ParseState,
     bo: Rc<RefCell<P>>,
+    psx: Rc<RefCell<Q>>,
     arts: Artifacts,
 }
 #[derive(Debug, Default, Clone)]
@@ -312,12 +315,17 @@ impl ScriptRuleCommand {
     }
 }
 
-impl<P: PathHandler> TupScriptContext<P> {
-    pub(crate) fn new(parse_state: ParseState, bo: Rc<RefCell<P>>) -> TupScriptContext<P> {
+impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
+    pub(crate) fn new(
+        parse_state: ParseState,
+        bo: Rc<RefCell<P>>,
+        psx: Rc<RefCell<Q>>,
+    ) -> TupScriptContext<P, Q> {
         TupScriptContext {
             arts: Artifacts::new(),
             parse_state,
             bo,
+            psx,
         }
     }
 
@@ -357,7 +365,7 @@ impl<P: PathHandler> TupScriptContext<P> {
         let arts = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
-                self.arts.get_outs(),
+                self.psx.deref().borrow_mut().deref(),
                 self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
             )
@@ -405,13 +413,13 @@ impl<P: PathHandler> TupScriptContext<P> {
         let arts = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
-                self.arts.get_outs(),
+                self.psx.deref().borrow().deref(),
                 self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
             )
             .expect("unable to resolve paths");
         let mut paths = Vec::new();
-        for i in arts.get_output_files() {
+        for i in arts.get_output_files().iter() {
             let path = self.bo_as_mut().get_path_str(i);
             paths.push(path);
         }
@@ -498,7 +506,9 @@ impl ConvToString for Lua {
     }
 }
 
-impl<P: PathHandler + 'static> UserData for TupScriptContext<P> {
+impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
+    for TupScriptContext<P, Q>
+{
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_function("getconfig", |lua, var: (mlua::String,)| {
             let globals = lua.globals();
@@ -730,12 +740,12 @@ impl<P: PathHandler + 'static> UserData for TupScriptContext<P> {
                 let inps: Vec<_> = inps1
                     .iter()
                     .take(numinps)
-                    .filter_map(|x| TupScriptContext::<P>::convert_to_table(luactx, x).ok())
+                    .filter_map(|x| TupScriptContext::<P, Q>::convert_to_table(luactx, x).ok())
                     .collect();
                 let outs: Vec<_> = inps1
                     .iter()
                     .skip(outindex)
-                    .filter_map(|x| TupScriptContext::<P>::convert_to_table(luactx, x).ok())
+                    .filter_map(|x| TupScriptContext::<P, Q>::convert_to_table(luactx, x).ok())
                     .collect();
                 if let Some(Value::Table(t)) = inps.first() {
                     t.clone().pairs().for_each(|x| {
@@ -828,7 +838,7 @@ impl<P: PathHandler + 'static> UserData for TupScriptContext<P> {
                         .expect("line number missing lua registry");
                     //let globals = luactx.globals();
                     let tup_shared: AnyUserData = globals.get("tup")?;
-                    let mut scriptctx: RefMut<TupScriptContext<P>> = tup_shared.borrow_mut()?;
+                    let mut scriptctx: RefMut<TupScriptContext<P, Q>> = tup_shared.borrow_mut()?;
                     let paths = scriptctx.for_each_rule(i, inputs, rulcmd, outputs)?;
                     let t = luactx.create_table()?;
                     let mut cnt: usize = 1;
@@ -851,15 +861,17 @@ impl<P: PathHandler + 'static> UserData for TupScriptContext<P> {
             };
             let globals = luactx.globals();
             let tup_shared: AnyUserData = globals.get("tup")?;
-            let scriptctx: RefMut<TupScriptContext<P>> = tup_shared.borrow_mut()?;
-            let outputs = OutputAssocs::new_no_resolve_groups();
-            let mut bo_as_mut = scriptctx.bo.as_ref().borrow_mut();
-            let matching_paths = bo_as_mut
-                .discover_paths(
-                    Path::new(scriptctx.get_cwd().as_str()),
-                    Path::new(path),
-                    &outputs,
-                )
+            let scriptctx: RefMut<TupScriptContext<P, Q>> = tup_shared.borrow_mut()?;
+            //let outputs = OutputAssocs::new_no_resolve_groups();
+            let psx = scriptctx.psx.as_ref().borrow();
+            let glob_path = &GlobPath::new(
+                Path::new(scriptctx.get_cwd().as_str()),
+                Path::new(path),
+                scriptctx.bo_as_mut().deref_mut(),
+            );
+
+            let matching_paths = psx
+                .discover_paths(scriptctx.bo_as_mut().deref_mut(), glob_path)
                 .expect("Glob expansion failed");
             let glob_out = luactx.create_table()?;
             let mut cnt = 1;
@@ -914,14 +926,15 @@ impl<P: PathHandler + 'static> UserData for TupScriptContext<P> {
 }
 
 /// main entry point for parsing Tupfile.lua
-pub(crate) fn parse_script<P: PathHandler + Default + 'static>(
+pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static>(
     parse_state: ParseState,
     bo: Rc<RefCell<P>>,
+    psx: Rc<RefCell<Q>>,
 ) -> Result<Artifacts, Err> {
     let lua = unsafe { Lua::unsafe_new() };
     let r = lua.scope(|scope| {
         let script_path = parse_state.get_cur_file().to_path_buf();
-        let tup_script_ctx = TupScriptContext::new(parse_state, bo);
+        let tup_script_ctx = TupScriptContext::new(parse_state, bo, psx);
         let root = tup_script_ctx.get_root();
         let tup_shared = scope.create_userdata(tup_script_ctx)?;
         lua.load_from_std_lib(
@@ -1007,10 +1020,11 @@ pub(crate) fn parse_script<P: PathHandler + Default + 'static>(
         file.read_to_end(&mut contents)?;
         lua.load(contents.as_bytes()).exec()?;
         let tup_shared: AnyUserData = globals.get("tup")?;
-        let mut script_ctx: RefMut<TupScriptContext<P>> = tup_shared.borrow_mut()?;
+        let script_ctx: RefMut<TupScriptContext<P, Q>> = tup_shared.borrow_mut()?;
         {
-            let smut = std::mem::take(script_ctx.deref_mut());
-            Ok(smut.arts)
+            let mut arts = RefMut::map(script_ctx, |x| &mut x.arts);
+            let arts = std::mem::take(arts.borrow_mut().deref_mut());
+            Ok(arts)
         }
     })?;
     Ok(r)

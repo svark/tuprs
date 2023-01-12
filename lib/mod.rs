@@ -37,9 +37,8 @@ pub use decode::TupPathDescriptor;
 pub use transform::load_conf_vars;
 pub use transform::locate_file;
 pub use transform::Artifacts;
-pub use transform::ReadBufferObjects;
+pub use transform::ReadWriteBufferObjects;
 pub use transform::TupParser;
-pub use transform::WriteBufferObjects;
 #[test]
 fn test_op() {
     use statements::CleanupPaths;
@@ -365,14 +364,14 @@ fn test_parse() {
             EnvDescriptor::default()
         )
     );
-    use decode::*;
-    let outputs = OutputAssocs::new();
     use decode::ResolvePaths;
+    use decode::*;
     use statements::Loc;
     let mut bo = BufferObjects::new(Path::new("."));
+    let dirSearcher = DirSearcher::new();
     let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
     let decodedrule = LocatedStatement::new(rule, Loc::new(0, 0))
-        .resolve_paths(Path::new("./Tupfile"), &outputs, &mut bo, &tup_desc)
+        .resolve_paths(Path::new("./Tupfile"), &dirSearcher, &mut bo, &tup_desc)
         .unwrap();
     use statements::Cat;
     if let Some(deglobbed_link) = decodedrule.get_resolved_links().first() {
@@ -389,8 +388,9 @@ fn test_parse() {
     let mut file = std::fs::File::create("file.txt").expect("cannot open file");
     use std::io::Write;
     file.write_all("-".as_bytes()).expect("file write error");
+    let dir = DirSearcher::new();
     let decodedrule1 = LocatedStatement::new(rule1, Loc::new(0, 0))
-        .resolve_paths(Path::new("file.txt"), &outputs, &mut bo, &tup_desc)
+        .resolve_paths(Path::new("file.txt"), &dir, &mut bo, &tup_desc)
         .unwrap();
     if let Some(deglobbed_link) = decodedrule1.get_resolved_links().first() {
         let rf = bo.get_rule(&deglobbed_link.get_rule_desc());
