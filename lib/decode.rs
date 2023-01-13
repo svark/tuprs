@@ -101,6 +101,8 @@ pub trait PathBuffers {
 
     /// return path from its descriptor
     fn get_path(&self, pd: &PathDescriptor) -> &NormalPath;
+    /// return path from its descriptor
+    fn get_rel_path(&self, pd: &PathDescriptor, vd: &PathDescriptor) -> NormalPath;
     /// Return Rule from its descriptor
     fn get_rule(&self, rd: &RuleDescriptor) -> &RuleFormulaUsage;
     /// return Env from its descriptor
@@ -1341,11 +1343,11 @@ impl GlobPath {
         self.base_path.as_path()
     }
 
-    pub(crate) fn get_slash_corrected(&self) -> String {
+    /// fix path string to regularize the path with forward slashes
+    pub fn get_slash_corrected(&self) -> String {
         let slash_corrected_glob = get_path_str(self.get_abs_path());
         slash_corrected_glob
     }
-
     /// Check if the pattern for matching has glob pattern chars such as "*[]"
     pub fn has_glob_pattern(&self) -> bool {
         has_glob_pattern(self.get_abs_path())
@@ -1529,6 +1531,12 @@ impl PathBuffers for BufferObjects {
     /// Returns path corresponding to an path descriptor. This panics if there is no match
     fn get_path(&self, id: &PathDescriptor) -> &NormalPath {
         self.pbo.get(id)
+    }
+
+    fn get_rel_path(&self, pd: &PathDescriptor, vd: &PathDescriptor) -> NormalPath {
+        let np1 = self.get_path(pd);
+        let np2 = self.get_path(vd);
+        NormalPath::new(diff_paths(np1.as_path(), np2.as_path()).unwrap())
     }
 
     /// Returns rule corresponding to a rule descriptor. Panics if none is found
