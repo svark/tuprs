@@ -15,7 +15,7 @@ use pathdiff::diff_paths;
 
 use decode::{
     BufferObjects, ExpandRun, GlobPath, GroupPathDescriptor, InputResolvedType, normalize_path,
-    NormalPath, OutputAssocs, OutputHandler, OutputHolder, PathBuffers, PathDescriptor,
+    NormalPath, OutputHandler, OutputHolder, PathBuffers, PathDescriptor,
     PathSearcher, ResolvedLink, ResolvePaths, RuleDescriptor, RuleFormulaUsage, RuleRef,
     TupPathDescriptor,
 };
@@ -917,10 +917,10 @@ impl Artifacts {
         Artifacts::default()
     }
     /// Builds Artifacts from  [ResolvedLink]s [OutputAssocs]
-    pub fn from(resolved_links: Vec<ResolvedLink>, outs: OutputAssocs) -> Artifacts {
+    pub fn from(resolved_links: Vec<ResolvedLink>, outs: OutputHolder) -> Artifacts {
         Artifacts {
             resolved_links,
-            outs: OutputHolder::from(outs),
+            outs,
         }
     }
 
@@ -934,12 +934,14 @@ impl Artifacts {
         self.resolved_links.is_empty()
     }
 
-    /// Merges outputs from parsing one tupfile  with the next. All the new links will be extended.
-    /// Merging operation fails with an error if it finds if any of the outputs it finds in `artifacts` have a previous owner
-    pub fn merge(&mut self, mut artifacts: Artifacts) -> Result<(), crate::errors::Error> {
-        self.get_mut_outs().merge(artifacts.get_outs())?;
+    /// extend links in `artifacts` with those in self
+    pub fn extend(&mut self, mut artifacts: Artifacts) -> Result<(), crate::errors::Error> {
         self.resolved_links.extend(artifacts.drain_resolved_links());
         Ok(())
+    }
+    /// add a single link
+    pub fn add_link(&mut self, rlink: ResolvedLink) {
+        self.resolved_links.push(rlink)
     }
     pub(crate) fn get_resolved_link(&self, i: usize) -> &ResolvedLink {
         &self.resolved_links[i]
@@ -952,20 +954,13 @@ impl Artifacts {
     pub fn get_resolved_links(&self) -> &Vec<ResolvedLink> {
         &self.resolved_links
     }
+    /*
+        pub(crate) fn acquire(&mut self, outs: &impl PathSearcher) {
+            self.outs.acquire(outs);
+        }
 
-    pub(crate) fn acquire(&mut self, outs: &impl PathSearcher) {
-        self.outs.acquire(outs);
-    }
+     */
 
-    pub(crate) fn get_psx(&self) -> &impl PathSearcher {
-        &self.outs
-    }
-    pub(crate) fn get_outs(&self) -> &impl OutputHandler {
-        &self.outs
-    }
-    pub(crate) fn get_mut_outs(&mut self) -> &mut impl OutputHandler {
-        &mut self.outs
-    }
     /// Returns the output files from all the rules found after current parsing sesssion
     pub fn get_output_files(&self) -> Ref<'_, HashSet<PathDescriptor>> {
         self.outs.get_output_files()
@@ -996,6 +991,7 @@ impl Artifacts {
     pub fn get_rules(&self) -> &[ResolvedLink] {
         return self.resolved_links.as_slice();
     }
+
     /// get parent rule that generated an output file with given id.
     pub fn get_parent_rule(&self, p0: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
         self.outs.get_parent_rule(p0)
@@ -1078,6 +1074,11 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
         ))
     }
 
+    /// return outputs gathered by this parser and the relationships to its rule, directory etc
+    pub fn get_outs(&self) -> OutputHolder {
+        self.psx.deref().borrow().get_outs().clone()
+    }
+
     /// Construct at the given rootdir and using config vars
     pub fn new_from<P: AsRef<Path>>(
         root_dir: P,
@@ -1154,7 +1155,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
             );
             stmts.resolve_paths(
                 m.get_cur_file(),
-                self.psx.deref().borrow().deref(),
+                self.psx.deref().borrow_mut().deref_mut(),
                 bo_ref_mut.deref_mut(),
                 &tup_desc,
             )
@@ -1166,9 +1167,10 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
     pub fn reresolve(&mut self, arts: Artifacts) -> Result<Artifacts, crate::errors::Error> {
         let pbuf = PathBuf::new();
         let mut boref = self.borrow_mut_ref();
+        let mut psx = self.psx.deref().borrow_mut();
         arts.get_resolved_links().resolve_paths(
             pbuf.as_path(),
-            self.psx.deref().borrow().deref(),
+            psx.deref_mut(),
             boref.deref_mut(),
             &TupPathDescriptor::new(0),
         )

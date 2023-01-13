@@ -365,11 +365,12 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         let arts = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
-                self.psx.deref().borrow_mut().deref(),
+                self.psx.deref().borrow_mut().deref_mut(),
                 self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
             )
             .expect("unable to resolve paths");
+        //self.psx.deref().borrow_mut().merge(arts.get_outs()).unwrap();
         //self.resolved_links = rlinks.drain(..).map(|l| (l, env.clone())).collect();
 
         let mut paths = Vec::new();
@@ -383,7 +384,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             );
         }
         self.arts
-            .merge(arts)
+            .extend(arts)
             .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
         Ok(paths)
     }
@@ -413,7 +414,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         let arts = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
-                self.psx.deref().borrow().deref(),
+                self.psx.deref().borrow_mut().deref_mut(),
                 self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
             )
@@ -424,7 +425,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             paths.push(path);
         }
         self.arts
-            .merge(arts)
+            .extend(arts)
             .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
         Ok(paths)
     }

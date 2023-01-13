@@ -1,13 +1,13 @@
 extern crate tupparser;
-//extern crate env_logger;
+extern crate env_logger;
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    //use env_logger;
+    use env_logger;
     use tupparser::decode::parse_dir;
     #[test]
     pub fn test_parsedir() {
-        //env_logger::init();
+        env_logger::init();
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("tests/tuptest");
         let statements = parse_dir(d.as_path()).expect("failed to parse!");
