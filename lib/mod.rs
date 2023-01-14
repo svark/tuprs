@@ -1,30 +1,22 @@
 //#![feature(slice_group_by)]
 //! Crate for parsing a tupfile and thereafter de-globbing and decoding variables in a Tupfile
 #![warn(missing_docs)]
-#[macro_use]
-extern crate nom;
-#[macro_use]
-extern crate lazy_static;
-extern crate daggy;
-extern crate nom_locate;
-extern crate petgraph;
-extern crate regex;
-extern crate walkdir;
-pub mod decode;
-pub mod errors;
-mod glob;
-pub mod parser;
-mod platform;
-mod scriptloader;
-pub mod statements;
-pub mod transform;
 extern crate bimap;
 extern crate bstr;
+extern crate daggy;
+#[macro_use]
+extern crate lazy_static;
 extern crate log;
 extern crate mlua;
+#[macro_use]
+extern crate nom;
+extern crate nom_locate;
 extern crate path_dedot;
 extern crate pathdiff;
+extern crate petgraph;
+extern crate regex;
 extern crate thiserror;
+extern crate walkdir;
 
 pub use decode::BinDescriptor;
 pub use decode::GroupPathDescriptor;
@@ -34,11 +26,21 @@ pub use decode::PathDescriptor;
 pub use decode::ResolvedLink;
 pub use decode::RuleDescriptor;
 pub use decode::TupPathDescriptor;
+pub use transform::Artifacts;
 pub use transform::load_conf_vars;
 pub use transform::locate_file;
-pub use transform::Artifacts;
 pub use transform::ReadWriteBufferObjects;
 pub use transform::TupParser;
+
+pub mod decode;
+pub mod errors;
+mod glob;
+pub mod parser;
+mod platform;
+mod scriptloader;
+pub mod statements;
+pub mod transform;
+
 #[test]
 fn test_op() {
     use statements::CleanupPaths;
@@ -364,13 +366,12 @@ fn test_parse() {
             EnvDescriptor::default()
         )
     );
-    use decode::ResolvePaths;
     use decode::*;
     use statements::Loc;
     let mut bo = BufferObjects::new(Path::new("."));
     let mut dir_searcher = DirSearcher::new();
     let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
-    let decodedrule = LocatedStatement::new(rule, Loc::new(0, 0))
+    let (decodedrule, _outs) = LocatedStatement::new(rule, Loc::new(0, 0))
         .resolve_paths(Path::new("./Tupfile"), &mut dir_searcher, &mut bo, &tup_desc)
         .unwrap();
     use statements::Cat;
@@ -389,7 +390,7 @@ fn test_parse() {
     use std::io::Write;
     file.write_all("-".as_bytes()).expect("file write error");
     let mut dir = DirSearcher::new();
-    let decodedrule1 = LocatedStatement::new(rule1, Loc::new(0, 0))
+    let (decodedrule1, _outs) = LocatedStatement::new(rule1, Loc::new(0, 0))
         .resolve_paths(Path::new("file.txt"), &mut dir, &mut bo, &tup_desc)
         .unwrap();
     if let Some(deglobbed_link) = decodedrule1.get_resolved_links().first() {

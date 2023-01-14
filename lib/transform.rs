@@ -1,7 +1,7 @@
-//! This module has datastructures and methods to transform Statements to Statements with substitutions and expansions
+//! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ops::{AddAssign, Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use pathdiff::diff_paths;
 
 use decode::{
     BufferObjects, ExpandRun, GlobPath, GroupPathDescriptor, InputResolvedType, normalize_path,
-    NormalPath, OutputHandler, OutputHolder, PathBuffers, PathDescriptor,
+    NormalPath, OutputHolder, PathBuffers, PathDescriptor,
     PathSearcher, ResolvedLink, ResolvePaths, RuleDescriptor, RuleFormulaUsage, RuleRef,
     TupPathDescriptor,
 };
@@ -908,7 +908,7 @@ pub struct TupParser<Q: PathSearcher + Sized + 'static> {
 #[derive(Debug, Clone, Default)]
 pub struct Artifacts {
     resolved_links: Vec<ResolvedLink>,
-    outs: OutputHolder,
+    //outs: OutputHolder,
 }
 
 impl Artifacts {
@@ -917,10 +917,10 @@ impl Artifacts {
         Artifacts::default()
     }
     /// Builds Artifacts from  [ResolvedLink]s [OutputAssocs]
-    pub fn from(resolved_links: Vec<ResolvedLink>, outs: OutputHolder) -> Artifacts {
+    pub fn from(resolved_links: Vec<ResolvedLink>) -> Artifacts {
         Artifacts {
             resolved_links,
-            outs,
+            // outs,
         }
     }
 
@@ -959,12 +959,11 @@ impl Artifacts {
             self.outs.acquire(outs);
         }
 
-     */
 
     /// Returns the output files from all the rules found after current parsing sesssion
     pub fn get_output_files(&self) -> Ref<'_, HashSet<PathDescriptor>> {
         self.outs.get_output_files()
-    }
+    } */
 
     /// Returns a vector over slices of resolved links grouped by the tupfile that generated them
     pub fn rules_by_tup(&self) -> Vec<&'_ [ResolvedLink]> {
@@ -991,15 +990,15 @@ impl Artifacts {
     pub fn get_rules(&self) -> &[ResolvedLink] {
         return self.resolved_links.as_slice();
     }
-
-    /// get parent rule that generated an output file with given id.
-    pub fn get_parent_rule(&self, p0: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
-        self.outs.get_parent_rule(p0)
-    }
-    /// Add a new path entry against a group with `group_desc`
-    pub fn add_group_entry(&mut self, group_desc: &GroupPathDescriptor, pd: PathDescriptor) {
-        self.outs.add_group_entry(group_desc, pd)
-    }
+    /*
+        /// get parent rule that generated an output file with given id.
+        pub fn get_parent_rule(&self, p0: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
+            self.outs.get_parent_rule(p0)
+        }
+        /// Add a new path entry against a group with `group_desc`
+        pub fn add_group_entry(&mut self, group_desc: &GroupPathDescriptor, pd: PathDescriptor) {
+            self.outs.add_group_entry(group_desc, pd)
+        } */
 }
 
 /// Represents an opens  buffer that is ready to be read for all data that stored with an id during parsing.

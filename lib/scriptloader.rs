@@ -15,12 +15,10 @@ use mlua::{UserData, UserDataMethods};
 use mlua::Error::SyntaxError;
 use nom::{AsBytes, InputTake};
 
-use decode::{GlobPath, PathBuffers, PathSearcher, ResolvePaths};
+use decode::{GlobPath, OutputHandler, PathBuffers, PathSearcher};
 use errors::Error as Err;
 use parser::locate_tuprules;
-use statements::{Link, RuleFormula, Source, Target};
 use statements::*;
-//use mlua::{Function, Lua, MetaMethod, Result, UserData, UserDataMethods, Variadic};
 use statements::Statement::Rule;
 use transform::{Artifacts, ParseState};
 
@@ -362,7 +360,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             statement: Rule(l, env),
             loc: Loc::new(lineno, 0),
         };
-        let arts = statement
+        let (arts, outs) = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
                 self.psx.deref().borrow_mut().deref_mut(),
@@ -374,7 +372,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         //self.resolved_links = rlinks.drain(..).map(|l| (l, env.clone())).collect();
 
         let mut paths = Vec::new();
-        for i in arts.get_output_files().iter() {
+        for i in outs.get_output_files().iter() {
             paths.push(
                 self.bo_as_ref()
                     .get_path(i)
@@ -411,7 +409,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             statement: Rule(l, env),
             loc: Loc::new(lineno, 0),
         };
-        let arts = statement
+        let (arts, outs) = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
                 self.psx.deref().borrow_mut().deref_mut(),
@@ -420,7 +418,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             )
             .expect("unable to resolve paths");
         let mut paths = Vec::new();
-        for i in arts.get_output_files().iter() {
+        for i in outs.get_output_files().iter() {
             let path = self.bo_as_mut().get_path_str(i);
             paths.push(path);
         }

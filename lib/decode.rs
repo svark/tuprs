@@ -2549,10 +2549,6 @@ impl ResolvePaths for Vec<ResolvedLink> {
                     ph,
                     resolved_link.get_rule_ref().get_tupfile_desc(),
                 )?;
-                /*for f in art.output_files.iter() {
-                out.parent_rule.remove(f); // to avoid conflicts with the same undecoded rule as we  merge
-            }*/
-                //psx.merge(art.get_outs())?;
                 resolved_artifacts.extend(art)?;
             } else {
                 resolved_artifacts.add_link(resolved_link.clone())
@@ -2646,7 +2642,7 @@ impl ResolvePaths for ResolvedLink {
         let mut out = OutputHolder::new();
         self.gather_outputs(&mut out, ph)?;
         psx.merge(&mut out)?;
-        Ok(Artifacts::from(vec![rlink], out))
+        Ok(Artifacts::from(vec![rlink]))
     }
 }
 
@@ -2657,15 +2653,16 @@ struct RuleContext<'a, 'b, 'c, 'd> {
     target: &'a Target,
     secondary_inp: &'c [InputResolvedType],
 }
+
 /// deglob rule statement into multiple deglobbed rules, gather deglobbed targets to put in bins/groups
-impl ResolvePaths for LocatedStatement {
-    fn resolve_paths(
+impl LocatedStatement {
+    pub(crate) fn resolve_paths(
         &self,
         tupfile: &Path,
         psx: &mut impl PathSearcher,
         ph: &mut impl PathBuffers,
         tup_desc: &TupPathDescriptor,
-    ) -> Result<Artifacts, Err> {
+    ) -> Result<(Artifacts, OutputHolder), Err> {
         let mut deglobbed = Vec::new();
         // use same resolve_groups as input
         let mut output = OutputHolder::new();
@@ -2714,7 +2711,7 @@ impl ResolvePaths for LocatedStatement {
             }
             psx.merge(&mut output)?;
         }
-        Ok(Artifacts::from(deglobbed, output))
+        Ok((Artifacts::from(deglobbed), output))
     }
 }
 
@@ -2729,7 +2726,7 @@ impl ResolvePaths for Vec<LocatedStatement> {
         let mut merged_arts = Artifacts::new();
         //merged_arts.acquire(psx);
         for stmt in self.iter() {
-            let art = stmt.resolve_paths(tupfile, psx, ph, tup_desc)?;
+            let (art, _) = stmt.resolve_paths(tupfile, psx, ph, tup_desc)?;
             debug!("{:?}", art);
             //psx.merge(art.get_outs())?;
             merged_arts.extend(art)?;
