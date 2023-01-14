@@ -1044,8 +1044,9 @@ impl ReadWriteBufferObjects {
         self.bo.deref().borrow_mut().get_input_path_str(i)
     }
     /// Return the file path corresponding to its id
-    pub fn get_path(&self, p0: &PathDescriptor) -> NormalPath {
-        self.bo.deref().borrow().get_path(p0).clone()
+    pub fn get_path(&self, p0: &PathDescriptor) -> Ref<'_, NormalPath> {
+        let r = self.bo.deref().borrow();
+        Ref::map(r, |x| x.get_path(p0))
     }
     /// Returns the tup file path corresponding to its id
     pub fn get_tup_path(&self, p0: &TupPathDescriptor) -> Ref<'_, Path> {
@@ -1077,6 +1078,17 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
     pub fn get_outs(&self) -> OutputHolder {
         self.psx.deref().borrow().get_outs().clone()
     }
+
+    /// returned a reference to path searcher
+    pub fn get_searcher(&self) -> Ref<'_, Q> {
+        self.psx.deref().borrow()
+    }
+
+    /// returned a reference to path searcher
+    pub fn get_mut_searcher(&self) -> RefMut<'_, Q> {
+        self.psx.deref().borrow_mut()
+    }
+
 
     /// Construct at the given rootdir and using config vars
     pub fn new_from<P: AsRef<Path>>(
@@ -1129,8 +1141,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
         );
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
-            let c = self.psx.clone();
-            parse_script(m, self.bo.clone(), c)
+            parse_script(m, self.bo.clone(), self.psx.clone())
         } else {
             //let tup_file_path = m.get_cur_file().to_path_buf();
             let stmts = parse_tupfile(tup_file_path)?;
@@ -1154,7 +1165,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
             );
             stmts.resolve_paths(
                 m.get_cur_file(),
-                self.psx.deref().borrow_mut().deref_mut(),
+                self.get_mut_searcher().deref_mut(),
                 bo_ref_mut.deref_mut(),
                 &tup_desc,
             )

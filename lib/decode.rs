@@ -1841,7 +1841,10 @@ impl InputsAsPaths {
             !matches!(x, &InputResolvedType::GroupEntry(_, _))
                 && !matches!(x, &InputResolvedType::UnResolvedGroupEntry(_))
         };
-        let relpath = |x| {
+        if !inp.is_empty() {
+            debug!("processing inputs at {:?} first of which is {:?}", tup_cwd, inp[0]);
+        }
+        let relpath = |x: &Path| {
             diff_paths(x, tup_cwd)
                 .unwrap_or_else(|| panic!("path diff failure {:?} with base:{:?}", x, tup_cwd))
         };
