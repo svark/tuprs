@@ -97,7 +97,7 @@ pub trait PathBuffers {
     /// Return parent folder id from input path descriptor
     fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor>;
     /// get id stored against input path
-    fn get_id(&self, np: &NormalPath) -> Option<PathDescriptor>;
+    fn get_id(&self, np: &NormalPath) -> Option<&PathDescriptor>;
 
     /// return path from its descriptor
     fn get_path(&self, pd: &PathDescriptor) -> &NormalPath;
@@ -116,6 +116,8 @@ pub trait PathBuffers {
     fn try_get_group_path(&self, gd: &GroupPathDescriptor) -> Option<&NormalPath>;
     /// Get group ids as an iter
     fn get_group_descs(&self) -> RightValues<'_, NormalPath, GroupPathDescriptor>;
+    /// Get tup id corresponding to its path
+    fn get_tup_id(&self, p: &Path) -> &TupPathDescriptor;
 
     /// Return root folder where tup was initialized
     fn get_root_dir(&self) -> &Path;
@@ -444,8 +446,8 @@ where
     }
 
     /// Find id
-    fn get_id(&self, np: &NormalPath) -> Option<T> {
-        self.descriptor.get_by_left(np).cloned()
+    fn get_id(&self, np: &NormalPath) -> Option<&T> {
+        self.descriptor.get_by_left(np)
     }
 
     /// add a path with a automatically assigned id
@@ -1155,6 +1157,19 @@ fn get_resolved_path<'a, 'b>(
     }
 }
 
+/// Fetch path descriptor of path stored in the Input path
+pub fn get_resolved_path_desc(
+    input_glob: &InputResolvedType,
+) -> Option<&PathDescriptor> {
+    match input_glob {
+        InputResolvedType::Deglob(e) => Some(e.path_descriptor()),
+        InputResolvedType::GroupEntry(_, p) => Some(p),
+        InputResolvedType::BinEntry(_, p) => Some(p),
+        InputResolvedType::UnResolvedGroupEntry(_) => None,
+        InputResolvedType::UnResolvedFile(_) => None,
+    }
+}
+
 /// Resolved name of the given Input,
 /// For Group(or UnResolvedGroup) entries, group name is returned
 /// For Bin entries, bin name is returned
@@ -1520,11 +1535,11 @@ impl PathBuffers for BufferObjects {
     fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor> {
         let p = self.pbo.try_get(pd)?;
         let np = NormalPath::new(get_parent(p.as_path()));
-        self.get_id(&np)
+        self.get_id(&np).copied()
     }
 
     /// Returns id for the path
-    fn get_id(&self, np: &NormalPath) -> Option<PathDescriptor> {
+    fn get_id(&self, np: &NormalPath) -> Option<&PathDescriptor> {
         self.pbo.get_id(np)
     }
 
@@ -1566,6 +1581,13 @@ impl PathBuffers for BufferObjects {
     /// Get group ids as an iter
     fn get_group_descs(&self) -> RightValues<'_, NormalPath, GroupPathDescriptor> {
         self.gbo.get_ids()
+    }
+
+    /// Get tup id corresponding to its path
+    fn get_tup_id(&self, p: &Path) -> &TupPathDescriptor {
+        let p = without_curdir_prefix(p);
+        let p: &Path = p.as_ref();
+        self.tbo.get_id(&NormalPath::new(p.to_path_buf())).unwrap()
     }
 
     /// Return root folder where tup was initialized
@@ -2728,6 +2750,7 @@ impl ResolvePaths for Vec<LocatedStatement> {
     ) -> Result<Artifacts, Err> {
         let mut merged_arts = Artifacts::new();
         //merged_arts.acquire(psx);
+        debug!("Resolving paths for rules in {:?}", tupfile);
         for stmt in self.iter() {
             let (art, _) = stmt.resolve_paths(tupfile, psx, ph, tup_desc)?;
             debug!("{:?}", art);

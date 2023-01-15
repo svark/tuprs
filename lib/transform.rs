@@ -1053,6 +1053,11 @@ impl ReadWriteBufferObjects {
         let r = self.bo.deref().borrow();
         Ref::map(r, |x| x.get_tup_path(p0))
     }
+    /// Return tup id from its path
+    pub fn get_tup_id(&self, p: &Path) -> Ref<'_, TupPathDescriptor> {
+        let r = self.bo.deref().borrow();
+        Ref::map(r, |x| x.get_tup_id(p))
+    }
 }
 
 impl<Q: PathSearcher + Sized> TupParser<Q> {
