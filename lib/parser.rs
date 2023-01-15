@@ -1,24 +1,26 @@
 //! Module that uses nom to parse a Tupfile
-use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
-use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
-use nom::error::{context, ErrorKind};
-use nom::multi::{many0, many1, many_till};
-use nom::sequence::{delimited, preceded};
-use nom::AsBytes;
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 
-use crate::transform;
-use nom::bytes::complete::{is_a, is_not};
-use nom::Err;
-use nom::IResult;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_until, take_while},
     character::complete::{char, one_of},
 };
-use nom_locate::{position, LocatedSpan};
+use nom::AsBytes;
+use nom::bytes::complete::{is_a, is_not};
+use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
+use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
+use nom::Err;
+use nom::error::{context, ErrorKind};
+use nom::IResult;
+use nom::multi::{many0, many1, many_till};
+use nom::sequence::{delimited, preceded};
+use nom_locate::{LocatedSpan, position};
+
 use statements::*;
-use std::path::{Path, PathBuf};
+
+use crate::transform;
 
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
@@ -509,8 +511,7 @@ pub(crate) fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
     Ok((
         s,
         RuleFormula {
-            description: desc.iter().map(|x| (x.clone()).into()).collect(),
-            //macroref : me,
+            description: desc.into_iter().map(PathExpr::from).collect(),
             formula: me.into_iter().chain(formula.0.into_iter()).collect(),
         },
     ))

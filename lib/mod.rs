@@ -19,9 +19,9 @@ extern crate thiserror;
 extern crate walkdir;
 
 pub use decode::BinDescriptor;
+pub use decode::GeneratedFiles;
 pub use decode::GroupPathDescriptor;
 pub use decode::InputResolvedType;
-pub use decode::OutputAssocs;
 pub use decode::PathDescriptor;
 pub use decode::ResolvedLink;
 pub use decode::RuleDescriptor;

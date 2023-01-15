@@ -27,7 +27,7 @@ use glob;
 use statements::*;
 use transform::{Artifacts, get_parent, get_path_str, ParseState, TupParser};
 
-pub(crate) fn without_curdir_prefix(p: &Path) -> PathBuf {
+pub(crate) fn without_curdir_prefix(p: &Path) -> Cow<'_, Path> {
     let p = if p
         .components()
         .take_while(|x| Component::CurDir.eq(x))
@@ -41,9 +41,9 @@ pub(crate) fn without_curdir_prefix(p: &Path) -> PathBuf {
         debug_assert!(!p
             .components()
             .any(|ref c| Component::ParentDir.eq(c) || Component::CurDir.eq(c)));
-        p
+        Cow::Owned(p)
     } else {
-        p.into()
+        Cow::Borrowed(p)
     };
     p
 }
@@ -571,24 +571,24 @@ impl GenEnvBufferObject {
 
 /// Wrapper over outputs
 #[derive(Default, Debug, Clone)]
-pub struct OutputHolder(Rc<RefCell<OutputAssocs>>);
+pub struct OutputHolder(Rc<RefCell<GeneratedFiles>>);
 
 impl OutputHolder {
     /// construct from
-    pub fn from(outs: OutputAssocs) -> OutputHolder {
+    pub fn from(outs: GeneratedFiles) -> OutputHolder {
         OutputHolder(Rc::new(RefCell::new(outs)))
     }
     /// Create an empty output holder
     pub fn new() -> OutputHolder {
-        OutputHolder(Rc::new(RefCell::new(OutputAssocs::new())))
+        OutputHolder(Rc::new(RefCell::new(GeneratedFiles::new())))
     }
 
     /// Fetch OutputAssocs for read
-    pub(crate) fn get(&self) -> Ref<'_, OutputAssocs> {
+    pub(crate) fn get(&self) -> Ref<'_, GeneratedFiles> {
         self.0.deref().borrow()
     }
     /// Fetch Output Assocs for write
-    pub(crate) fn get_mut(&self) -> RefMut<'_, OutputAssocs> {
+    pub(crate) fn get_mut(&self) -> RefMut<'_, GeneratedFiles> {
         self.0.deref().borrow_mut()
     }
 }
@@ -601,7 +601,7 @@ impl OutputHolder {
 /// We then re-resolve  after ordering the dag formed by rules with connections from  rules providing groups
 /// and rules that take groups as input. Dag is built to check for cyclic dependencies.
 #[derive(Debug, Default, Clone)]
-pub struct OutputAssocs {
+pub struct GeneratedFiles {
     /// rule output files accumulated thus far
     output_files: HashSet<PathDescriptor>,
     /// output files under a directory.
@@ -614,10 +614,10 @@ pub struct OutputAssocs {
     parent_rule: HashMap<PathDescriptor, RuleRef>,
 }
 
-impl OutputAssocs {
-    /// Construct [OutputAssocs] with resolve_groups set to false
-    pub fn new() -> OutputAssocs {
-          OutputAssocs::default()
+impl GeneratedFiles {
+    /// Construct [GeneratedFiles] with resolve_groups set to false
+    pub fn new() -> GeneratedFiles {
+        GeneratedFiles::default()
     }
 
     /// Discover outputs by their path descriptors
@@ -628,7 +628,7 @@ impl OutputAssocs {
         vs: &mut Vec<MatchingPath>,
     ) {
         let mut hs = HashSet::new();
-        hs.extend(vs.iter().map(|mp| mp.path_descriptor()));
+        hs.extend(vs.iter().map(MatchingPath::path_descriptor));
         let mut found = false;
         if let Some(children) = self.children.get(base_path_desc) {
             if children.contains(path_desc) {
@@ -668,7 +668,7 @@ impl OutputAssocs {
     ) {
         let mut hs = HashSet::new();
         let base_path_desc = glob_path.get_base_desc();
-        hs.extend(vs.iter().map(|mp| mp.path_descriptor));
+        hs.extend(vs.iter().map(MatchingPath::path_descriptor));
         debug!("looking for globmatches:{:?}", glob_path.get_abs_path());
         debug!(
             "in dir id {:?}, {:?}",
@@ -677,12 +677,12 @@ impl OutputAssocs {
         );
         if let Some(children) = self.children.get(&base_path_desc) {
             for pd in children.iter() {
-                if let Some(np) = ph.try_get_path(pd) {
+                ph.try_get_path(pd).map(|np| {
                     let p: &Path = np.into();
                     if glob_path.is_match(p) && hs.insert(*pd) {
                         vs.push(MatchingPath::with_captures(*pd, glob_path.group(p)))
                     }
-                }
+                });
             }
         }
 
@@ -704,7 +704,7 @@ impl OutputAssocs {
     }
 }
 
-impl OutputAssocs {
+impl GeneratedFiles {
     /// Get all the output files from rules accumulated so far
     fn get_output_files(&self) -> &HashSet<PathDescriptor> {
         &self.output_files
@@ -1997,7 +1997,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if stems.is_empty() {
                     return Err(Err::StalePercNumberedRef('B', rule_ref.clone()));
                 }
-                replace_decoded_str(d.as_str(), &stems, &PER_CAP_B_RE, rule_ref, 'B')?
+                replace_decoded_str(d.as_ref(), &stems, &PER_CAP_B_RE, rule_ref, 'B')?
             } else {
                 d
             };
