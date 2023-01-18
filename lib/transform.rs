@@ -1041,13 +1041,19 @@ impl ReadWriteBufferObjects {
     }
     /// Return resolved input type in the string form.
     pub fn get_input_path_str(&self, i: &InputResolvedType) -> String {
-        self.bo.deref().borrow_mut().get_input_path_str(i)
+        self.bo.deref().borrow_mut().get_path_str(i.get_resolved_path_desc().unwrap())
     }
     /// Return the file path corresponding to its id
     pub fn get_path(&self, p0: &PathDescriptor) -> Ref<'_, NormalPath> {
         let r = self.bo.deref().borrow();
         Ref::map(r, |x| x.get_path(p0))
     }
+    /// Return the file path corresponding to its id
+    pub fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor> {
+        let r = self.bo.deref().borrow();
+        r.get_parent_id(pd)
+    }
+
     /// Returns the tup file path corresponding to its id
     pub fn get_tup_path(&self, p0: &TupPathDescriptor) -> Ref<'_, Path> {
         let r = self.bo.deref().borrow();
