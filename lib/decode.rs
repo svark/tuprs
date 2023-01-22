@@ -21,11 +21,11 @@ use petgraph::graph::NodeIndex;
 use regex::{Captures, Regex};
 use walkdir::WalkDir;
 
+use glob;
 use errors::{Error as Err, Error};
 use glob::{Candidate, GlobBuilder, GlobMatcher};
-use glob;
 use statements::*;
-use transform::{Artifacts, get_parent, get_path_str, ParseState, TupParser};
+use transform::{Artifacts, get_parent, get_path_str, TupParser};
 
 pub(crate) fn without_curdir_prefix(p: &Path) -> Cow<'_, Path> {
     let p = if p
@@ -90,7 +90,7 @@ pub trait PathBuffers {
     fn add_tup(&mut self, p: &Path) -> (TupPathDescriptor, bool);
 
     /// add env vars and fetch an id for them
-    fn add_env_var(&mut self, var: String, cur_env_desc: &EnvDescriptor) -> Option<EnvDescriptor>;
+    fn add_env_var(&mut self, var: String, cur_env_desc: &EnvDescriptor) -> EnvDescriptor;
 
     /// Return input path from resolved input
     fn get_input_path_name(&self, i: &InputResolvedType) -> String;
@@ -106,7 +106,7 @@ pub trait PathBuffers {
     /// Return Rule from its descriptor
     fn get_rule(&self, rd: &RuleDescriptor) -> &RuleFormulaUsage;
     /// return Env from its descriptor
-    fn get_env(&self, ed: &EnvDescriptor) -> &Env;
+    fn try_get_env(&self, ed: &EnvDescriptor) -> Option<&Env>;
     /// Return tup file path
     fn get_tup_path(&self, p: &TupPathDescriptor) -> &Path;
     /// Return path from its descriptor
@@ -132,7 +132,7 @@ pub trait PathBuffers {
     fn get_path_str(&self, p: &PathDescriptor) -> String;
 
     /// Finds if env var is present
-    fn has_env(&self, id: &str) -> bool;
+    fn has_env(&self, id: &str, cur_env_desc: &EnvDescriptor) -> bool;
 
     /// Return an iterator over all the id-group path pairs.
     /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
@@ -548,21 +548,13 @@ impl GenEnvBufferObject {
         }
     }
     /// Check if var is present in the buffer
-    pub(crate) fn has_env(&self, var: &str) -> bool {
-        let start = 1;
+    pub(crate) fn has_env(&self, var: &str, cur_env_desc: &EnvDescriptor) -> bool {
         // check the env corresponding to the last added env for the presence of var
-        if let Some(rvalue) = self.0.get_by_right(&(start - 1).into()) {
+        if let Some(rvalue) = self.0.get_by_right(cur_env_desc) {
             rvalue.contains(var)
         } else {
             false
         }
-    }
-
-    /// returns a Env in the buffer corresponding to the given EnvDescriptor
-    /// This panics if not found
-    pub(crate) fn get(&self, pd: &EnvDescriptor) -> &Env {
-        self.try_get(pd)
-            .unwrap_or_else(|| panic!("Env for id:{} not in buffer", pd))
     }
 
     /// Fallible version of the above
@@ -804,6 +796,9 @@ impl GeneratedFiles {
         self.merge_output_files(out)?;
         self.merge_bin_tags(out)
     }
+
+    /// extend the list of outputs. Update children of directories with new outputs. Update also the parent rules of each of the output files.
+    /// The last step can error out if the same output is found to have different parent rules.
     fn merge_output_files(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err> {
         self.output_files
             .extend(new_outputs.get_output_files().iter().cloned());
@@ -846,7 +841,7 @@ impl GeneratedFiles {
         }
         Ok(())
     }
-
+    /// return the map from output file descriptor to the parent rule that generates it.
     fn get_parent_rules(&self) -> &HashMap<PathDescriptor, RuleRef> {
         &self.parent_rule
     }
@@ -862,16 +857,10 @@ pub trait OutputHandler {
     fn get_bins(&self) -> Ref<'_, HashMap<BinDescriptor, HashSet<PathDescriptor>>>;
     /// Get parent dir -> children map
     fn get_children(&self) -> Ref<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>>;
-    /// Get a mutable references all the groups with collected rule outputs.
-    /// This can be used to to fill path references from a database.
-    fn get_mut_groups(
-        &mut self,
-    ) -> RefMut<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>>;
     /// the parent rule that generates a output file
     fn get_parent_rule(&self, o: &PathDescriptor) -> Option<Ref<'_, RuleRef>>;
     /// parent rule of each output path
     fn get_parent_rules(&self) -> Ref<'_, HashMap<PathDescriptor, RuleRef>>;
-
     /// Add an entry to the set that holds output paths
     fn add_output(&mut self, pd: PathDescriptor) -> bool;
 
@@ -956,11 +945,6 @@ impl OutputHandler for OutputHolder {
     fn get_children(&self) -> Ref<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>> {
         Ref::map(self.get(), |x| x.get_children())
     }
-    fn get_mut_groups(
-        &mut self,
-    ) -> RefMut<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>> {
-        RefMut::map(self.get_mut(), |x| x.get_mut_groups())
-    }
 
     fn get_parent_rule(&self, o: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
         let r = self.get();
@@ -1023,10 +1007,14 @@ impl OutputHandler for OutputHolder {
 /// A Matching path id discovered using glob matcher along with captured groups
 #[derive(Debug, Default, Eq, PartialEq, Clone)]
 pub struct MatchingPath {
-    path_descriptor: PathDescriptor, // path that matched a glob
+    path_descriptor: PathDescriptor,
+    // path that matched a glob
     captured_globs: Vec<String>,     // first glob match in the above path
 }
+
 const GLOB_PATTERN_CHARACTERS: &str = "*?[";
+
+/// return the parent directory
 fn get_non_pattern_prefix(glob_path: &Path) -> (PathBuf, bool) {
     let mut prefix = PathBuf::new();
     let mut num_comps = 0;
@@ -1051,6 +1039,8 @@ fn get_non_pattern_prefix(glob_path: &Path) -> (PathBuf, bool) {
         )
     }
 }
+
+///  check if any of the components of the input path has glob pattern
 fn has_glob_pattern(glob_path: &Path) -> bool {
     for component in glob_path.iter() {
         let component_str = component.to_str().unwrap();
@@ -1065,6 +1055,7 @@ fn has_glob_pattern(glob_path: &Path) -> bool {
     false
 }
 
+/// Wrapper over Burnt sushi's GlobMatcher
 #[derive(Debug, Clone)]
 pub(crate) struct MyGlob {
     matcher: GlobMatcher,
@@ -1534,14 +1525,21 @@ impl PathBuffers for BufferObjects {
         self.tbo.add(p1.as_path())
     }
 
-    fn add_env_var(&mut self, var: String, cur_env_desc: &EnvDescriptor) -> Option<EnvDescriptor> {
-        if !self.has_env(&var) {
-            let mut env = self.get_env(cur_env_desc).clone();
-            env.add(var);
-            let (id, _) = self.ebo.add_env(Cow::Owned(env));
-            Some(id)
+    /// add environment variable to the list of variables active in current tupfile until now
+    /// This appends a new env var current list of env vars.
+    fn add_env_var(&mut self, var: String, cur_env_desc: &EnvDescriptor) -> EnvDescriptor {
+        if let Some(env) = self.try_get_env(cur_env_desc) {
+            if env.contains(&var)
+            {
+                cur_env_desc.clone()
+            } else {
+                let mut env = env.clone();
+                env.add(var);
+                let (id, _) = self.ebo.add_env(Cow::Owned(env));
+                id
+            }
         } else {
-            None
+            panic!("Unknown environment descriptor:{}", cur_env_desc)
         }
     }
 
@@ -1581,8 +1579,8 @@ impl PathBuffers for BufferObjects {
             .unwrap_or_else(|| panic!("unable to fetch rule formula for id:{}", id))
     }
     /// Returns env corresponding to a env descriptor. Panics if none is found
-    fn get_env(&self, id: &EnvDescriptor) -> &Env {
-        self.ebo.get(id)
+    fn try_get_env(&self, id: &EnvDescriptor) -> Option<&Env> {
+        self.ebo.try_get(id)
     }
 
     /// Returns path corresponding to the given tupfile descriptor
@@ -1632,8 +1630,8 @@ impl PathBuffers for BufferObjects {
     }
 
     /// check if env var exists in our stored buffers
-    fn has_env(&self, var: &str) -> bool {
-        self.ebo.has_env(var)
+    fn has_env(&self, id: &str, cur_env_desc: &EnvDescriptor) -> bool {
+        self.ebo.has_env(id, cur_env_desc)
     }
 
     /// Return an iterator over all the id-group path pairs.
@@ -2475,7 +2473,7 @@ impl ResolvedLink {
             .filter_map(|x| x.get_resolved_path_desc().copied()).for_each(f);
     }
 
-    fn resolve_unresolved(
+    fn reresolve(
         psx: &impl PathSearcher,
         ph: &mut impl PathBuffers,
         p: &PathDescriptor,
@@ -2517,7 +2515,6 @@ impl GatherOutputs for ResolvedLink {
             }
             oti.add_output(*path_desc);
             children.push(PathsWithParent { pd: *path_desc, parent_pd: ph.get_parent_id(path_desc).unwrap() });
-            //oti.add_children(&ph.get_parent_id(&path_desc).unwrap(), vec![*path_desc] );
         }
 
         children.as_mut_slice().sort_by(|x, y| x.parent_pd.cmp(&y.parent_pd));
@@ -2561,17 +2558,7 @@ pub(crate) trait ResolvePaths {
     ) -> Result<Artifacts, Err>;
 }
 
-pub(crate) trait ExpandRun {
-    fn expand_run(
-        &self,
-        m: &mut ParseState,
-        psx: &impl PathSearcher,
-        bo: &mut impl PathBuffers,
-        loc: &Loc,
-    ) -> Result<Vec<Self>, Error>
-    where
-        Self: Sized;
-}
+
 impl ResolvePaths for Vec<ResolvedLink> {
     fn resolve_paths(
         &self,
@@ -2621,7 +2608,7 @@ impl ResolvePaths for ResolvedLink {
         for i in self.primary_sources.iter() {
             match i {
                 InputResolvedType::UnResolvedFile(p) => {
-                    let pes = Self::resolve_unresolved(psx, ph, &p, rlink.get_rule_ref())?;
+                    let pes = Self::reresolve(psx, ph, &p, rlink.get_rule_ref())?;
                     rlink
                         .primary_sources
                         .extend(pes.into_iter().map(InputResolvedType::Deglob));
@@ -2647,7 +2634,7 @@ impl ResolvePaths for ResolvedLink {
         for i in self.secondary_sources.iter() {
             match i {
                 InputResolvedType::UnResolvedFile(p) => {
-                    let pes = Self::resolve_unresolved(psx, ph, &p, rlink.get_rule_ref())?;
+                    let pes = Self::reresolve(psx, ph, &p, rlink.get_rule_ref())?;
                     rlink
                         .secondary_sources
                         .extend(pes.into_iter().map(InputResolvedType::Deglob));

@@ -14,7 +14,7 @@ use nom::AsBytes;
 use pathdiff::diff_paths;
 
 use decode::{
-    BufferObjects, ExpandRun, GlobPath, GroupPathDescriptor, InputResolvedType, normalize_path,
+    BufferObjects, GlobPath, GroupPathDescriptor, InputResolvedType, normalize_path,
     NormalPath, OutputHolder, PathBuffers, PathDescriptor,
     PathSearcher, ResolvedLink, ResolvePaths, RuleDescriptor, RuleFormulaUsage, RuleRef,
     TupPathDescriptor,
@@ -177,26 +177,41 @@ impl ParseState {
         self.statement_cache.get(tup_desc)
     }
 }
+
+/// Method to expand tup `run` statement to discover new rules to add
+/// run is expected to echo regular rule statements which we add to list of rules during the `subst` phase.
+trait ExpandRun {
+    fn expand_run(
+        &self,
+        m: &mut ParseState,
+        psx: &impl PathSearcher,
+        bo: &mut impl PathBuffers,
+        loc: &Loc,
+    ) -> Result<Vec<Self>, crate::errors::Error>
+        where
+            Self: Sized;
+}
+
 impl ExpandRun for Statement {
     /// expand_run adds Statements returned by executing a shell command. Rules that are output from the command should be in the regular format for rules that Tup supports
     /// see docs for how the environment is picked.
     fn expand_run(
         &self,
-        m: &mut ParseState,
+        parse_state: &mut ParseState,
         psx: &impl PathSearcher,
         ph: &mut impl PathBuffers,
         loc: &Loc,
     ) -> Result<Vec<Statement>, crate::errors::Error> {
         let mut vs: Vec<Statement> = Vec::new();
-        let rule_ref = RuleRef::new(&m.cur_file_desc, loc);
+        let rule_ref = RuleRef::new(&parse_state.cur_file_desc, loc);
         match self {
             Statement::Preload(v) => {
                 let dir = v.cat();
                 let p = Path::new(dir.as_str());
 
-                let (dirid, _) = ph.add_path_from(m.get_tup_dir(), p);
+                let (dirid, _) = ph.add_path_from(parse_state.get_tup_dir(), p);
                 {
-                    m.load_dirs.push(dirid);
+                    parse_state.load_dirs.push(dirid);
                 }
             }
             Statement::Run(script_args) => {
@@ -218,7 +233,7 @@ impl ExpandRun for Statement {
                             let arg_path = Path::new(arg);
                             //let outs = OutputAssocs::new();
                             {
-                                let ref glob_path = GlobPath::new(m.get_tup_dir(), arg_path, ph);
+                                let ref glob_path = GlobPath::new(parse_state.get_tup_dir(), arg_path, ph);
                                 let matches =
                                     psx.discover_paths(ph, glob_path).unwrap_or_else(|_| {
                                         panic!("error matching glob pattern {}", arg)
@@ -227,13 +242,13 @@ impl ExpandRun for Statement {
                                 for ofile in matches {
                                     let p = diff_paths(
                                         ph.get_path(ofile.path_descriptor()).as_path(),
-                                        m.get_tup_dir(),
+                                        parse_state.get_tup_dir(),
                                     )
                                     .unwrap_or_else(|| {
                                         panic!(
                                             "Failed to diff path{:?} with base:{:?}",
                                             ph.get_path(ofile.path_descriptor()).as_path(),
-                                            m.get_tup_dir()
+                                            parse_state.get_tup_dir()
                                         )
                                     });
                                     cmd.arg(
@@ -245,8 +260,8 @@ impl ExpandRun for Statement {
                             cmd.arg(arg);
                         }
                     }
-                    let env = ph.get_env(&m.cur_env_desc);
-                    let dir = ph.get_root_dir().join(m.get_tup_dir());
+                    let env = ph.try_get_env(&parse_state.cur_env_desc).unwrap_or_else(|| panic!("unknown env var descriptor:{}", parse_state.cur_env_desc));
+                    let dir = ph.get_root_dir().join(parse_state.get_tup_dir());
                     if cmd.get_args().len() != 0 {
                         cmd.envs(env.getenv()).current_dir(dir.as_path());
 
@@ -285,7 +300,7 @@ impl ExpandRun for Statement {
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
                             .expect("failed to parse output of tup run");
                         let mut lstmts = lstmts
-                            .subst(m, ph)
+                            .subst(parse_state, ph)
                             .expect("subst failure in generated tup rules");
                         vs.extend(lstmts.drain(..).map(LocatedStatement::move_statement));
                     } else {
@@ -720,7 +735,6 @@ impl Subst for Vec<LocatedStatement> {
                         })
                         .collect();
 
-                    //let subst_right = prefix.cat() + (right.subst(m)).cat().as_str();
                     let curright = if app {
                         match parse_state.rexpr_map.get(left.name.as_str()) {
                             Some(prevright) => {
@@ -776,7 +790,7 @@ impl Subst for Vec<LocatedStatement> {
 
                 Statement::IncludeRules => {
                     let parent = get_parent(parse_state.cur_file.as_path());
-                    debug!("attemping to read tuprules");
+                    debug!("attempting to read tuprules");
                     let mut found = false;
                     // locate tupfiles up the heirarchy from the current Tupfile folder
                     for f in locate_tuprules(parent) {
@@ -845,9 +859,8 @@ impl Subst for Vec<LocatedStatement> {
                     ));
                 }
                 Statement::Export(var) => {
-                    if let Some(id) = bo.add_env_var(var.clone(), &parse_state.cur_env_desc) {
-                        parse_state.set_env(id);
-                    }
+                    let id = bo.add_env_var(var.clone(), &parse_state.cur_env_desc);
+                    parse_state.set_env(id);
                 }
                 Statement::Import(var, envval) => {
                     if let Some(val) = envval.clone().or_else(|| std::env::var(var).ok()) {
@@ -868,7 +881,11 @@ impl Subst for Vec<LocatedStatement> {
                 Statement::Comment => {
                     // ignore
                 }
-                Statement::GitIgnore => {}
+                Statement::GitIgnore => {
+                    newstats.push(
+                        LocatedStatement::new(Statement::GitIgnore,
+                                              loc.clone()))
+                }
             }
         }
         Ok(newstats)
@@ -1006,6 +1023,35 @@ impl Artifacts {
 /// It is also available for writing some data in the parser's buffers
 pub struct ReadWriteBufferObjects {
     bo: Rc<RefCell<BufferObjects>>,
+}
+
+struct VectorGenerator<T, U> {
+    vec: Vec<T>,
+    current_index: usize,
+    transform_fn: Box<dyn FnMut(&T) -> Result<
+        Option<U>,
+        crate::errors::Error>,,
+}
+
+impl<T, U> VectorGenerator<T, U> {
+    fn new(vec: Vec<T>, transform_fn: Box<dyn Fn(T) -> Option<U>>) -> Self {
+        VectorGenerator { vec, current_index: 0, transform_fn }
+    }
+}
+
+impl<T, U> Iterator for VectorGenerator<T, U> {
+    type Item = U;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.current_index < self.vec.len() {
+            let current_val = &self.vec[self.current_index];
+            self.current_index += 1;
+            if let Some(transformed) = (self.transform_fn)(current_val) {
+                return Some(transformed);
+            }
+        }
+        None
+    }
 }
 
 impl ReadWriteBufferObjects {
@@ -1154,7 +1200,6 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
             // wer are not going to  resolve group paths during the first phase of parsing.
             parse_script(m, self.bo.clone(), self.psx.clone())
         } else {
-            //let tup_file_path = m.get_cur_file().to_path_buf();
             let stmts = parse_tupfile(tup_file_path)?;
             let mut bo_ref_mut = self.borrow_mut_ref();
             let stmts = stmts.subst(&mut m, bo_ref_mut.deref_mut())?;

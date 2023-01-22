@@ -154,7 +154,7 @@ impl Env {
         });
         Env { set: bt }
     }
-    /// add a env var
+    /// add a env var (note: we dont the values corresponding to keys as it is just a function call away)
     pub fn add(&mut self, k: String) -> bool {
         self.set.insert(k)
     }
