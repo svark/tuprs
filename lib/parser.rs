@@ -24,6 +24,7 @@ use crate::transform;
 
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
+
 fn to_lval(name: String) -> Ident {
     Ident { name }
 }

@@ -82,26 +82,26 @@ fn test_op() {
 
         use std::path::Path;
         let tuppath = Path::new("./tupdata1.txt");
-        let mut map = ParseState {
+        let mut parse_state = ParseState {
             conf_map: load_conf_vars(tuppath).expect("conf var open error from tupdata1.txt"),
             tup_base_path: tuppath.to_path_buf(),
             ..ParseState::default()
         };
 
         assert_eq!(
-            map.conf_map.get("PLATFORM").and_then(|x| x.first()),
+            parse_state.conf_map.get("PLATFORM").and_then(|x| x.first()),
             Some(&"win64".to_owned())
         );
         assert_eq!(
-            map.conf_map.get("CVAR").and_then(|x| x.first()),
+            parse_state.conf_map.get("CVAR").and_then(|x| x.first()),
             Some(&"1".to_owned())
         );
         use decode::BufferObjects;
         use statements::EnvDescriptor;
 
         let mut bo = BufferObjects::new(Path::new("."));
-        set_cwd(tuppath, &mut map, &mut bo);
-        let mut stmts_ = stmts.subst(&mut map, &mut bo).unwrap();
+        set_cwd(tuppath, &mut parse_state, &mut bo);
+        let mut stmts_ = stmts.subst(&mut parse_state, &mut bo).unwrap();
         stmts_.cleanup();
         assert_eq!(stmts_.len(), 3);
         let resolvedexpr = [

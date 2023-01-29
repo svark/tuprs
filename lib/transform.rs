@@ -14,12 +14,11 @@ use nom::AsBytes;
 use pathdiff::diff_paths;
 
 use decode::{
-    BufferObjects, GlobPath, GroupPathDescriptor, InputResolvedType, normalize_path,
-    NormalPath, OutputHolder, PathBuffers, PathDescriptor,
-    PathSearcher, ResolvedLink, ResolvePaths, RuleDescriptor, RuleFormulaUsage, RuleRef,
-    TupPathDescriptor,
+    BufferObjects, GlobPath, GroupPathDescriptor, InputResolvedType, normalize_path, NormalPath,
+    OutputHolder, PathBuffers, PathDescriptor, PathSearcher, ResolvedLink, ResolvePaths,
+    RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
 };
-use errors::Error as Err;
+use errors::{Error as Err, Error};
 use errors::Error::RootNotFound;
 use parser::{parse_statements_until_eof, parse_tupfile, Span};
 use parser::locate_tuprules;
@@ -183,11 +182,11 @@ impl ParseState {
 trait ExpandRun {
     fn expand_run(
         &self,
-        m: &mut ParseState,
-        psx: &impl PathSearcher,
-        bo: &mut impl PathBuffers,
+        parse_state: &mut ParseState,
+        path_searcher: &impl PathSearcher,
+        path_buffers: &mut impl PathBuffers,
         loc: &Loc,
-    ) -> Result<Vec<Self>, crate::errors::Error>
+    ) -> Result<Vec<Self>, Error>
         where
             Self: Sized;
 }
@@ -198,10 +197,10 @@ impl ExpandRun for Statement {
     fn expand_run(
         &self,
         parse_state: &mut ParseState,
-        psx: &impl PathSearcher,
-        ph: &mut impl PathBuffers,
+        path_searcher: &impl PathSearcher,
+        path_buffers: &mut impl PathBuffers,
         loc: &Loc,
-    ) -> Result<Vec<Statement>, crate::errors::Error> {
+    ) -> Result<Vec<Statement>, Error> {
         let mut vs: Vec<Statement> = Vec::new();
         let rule_ref = RuleRef::new(&parse_state.cur_file_desc, loc);
         match self {
@@ -209,7 +208,7 @@ impl ExpandRun for Statement {
                 let dir = v.cat();
                 let p = Path::new(dir.as_str());
 
-                let (dirid, _) = ph.add_path_from(parse_state.get_tup_dir(), p);
+                let (dirid, _) = path_buffers.add_path_from(parse_state.get_tup_dir(), p);
                 {
                     parse_state.load_dirs.push(dirid);
                 }
@@ -233,21 +232,22 @@ impl ExpandRun for Statement {
                             let arg_path = Path::new(arg);
                             //let outs = OutputAssocs::new();
                             {
-                                let ref glob_path = GlobPath::new(parse_state.get_tup_dir(), arg_path, ph);
+                                let ref glob_path =
+                                    GlobPath::new(parse_state.get_tup_dir(), arg_path, path_buffers);
                                 let matches =
-                                    psx.discover_paths(ph, glob_path).unwrap_or_else(|_| {
+                                    path_searcher.discover_paths(path_buffers, glob_path).unwrap_or_else(|_| {
                                         panic!("error matching glob pattern {}", arg)
                                     });
                                 debug!("expand_run num files from glob:{:?}", matches.len());
                                 for ofile in matches {
                                     let p = diff_paths(
-                                        ph.get_path(ofile.path_descriptor()).as_path(),
+                                        path_buffers.get_path(ofile.path_descriptor()).as_path(),
                                         parse_state.get_tup_dir(),
                                     )
                                     .unwrap_or_else(|| {
                                         panic!(
                                             "Failed to diff path{:?} with base:{:?}",
-                                            ph.get_path(ofile.path_descriptor()).as_path(),
+                                            path_buffers.get_path(ofile.path_descriptor()).as_path(),
                                             parse_state.get_tup_dir()
                                         )
                                     });
@@ -260,8 +260,12 @@ impl ExpandRun for Statement {
                             cmd.arg(arg);
                         }
                     }
-                    let env = ph.try_get_env(&parse_state.cur_env_desc).unwrap_or_else(|| panic!("unknown env var descriptor:{}", parse_state.cur_env_desc));
-                    let dir = ph.get_root_dir().join(parse_state.get_tup_dir());
+                    let env = path_buffers
+                        .try_get_env(&parse_state.cur_env_desc)
+                        .unwrap_or_else(|| {
+                            panic!("unknown env var descriptor:{}", parse_state.cur_env_desc)
+                        });
+                    let dir = path_buffers.get_root_dir().join(parse_state.get_tup_dir());
                     if cmd.get_args().len() != 0 {
                         cmd.envs(env.getenv()).current_dir(dir.as_path());
 
@@ -300,7 +304,7 @@ impl ExpandRun for Statement {
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
                             .expect("failed to parse output of tup run");
                         let mut lstmts = lstmts
-                            .subst(parse_state, ph)
+                            .subst(parse_state, path_buffers)
                             .expect("subst failure in generated tup rules");
                         vs.extend(lstmts.drain(..).map(LocatedStatement::move_statement));
                     } else {
@@ -314,36 +318,43 @@ impl ExpandRun for Statement {
     }
 }
 
+fn expand_statement(
+    l: &LocatedStatement,
+    parse_state: &mut ParseState,
+    path_searcher: &(impl PathSearcher + Sized),
+    path_buffers: &mut (impl PathBuffers + Sized),
+) -> Result<Vec<LocatedStatement>, Error> {
+    let loc = l.getloc();
+    let stmts = l.get_statement().expand_run(parse_state, path_searcher, path_buffers, loc)?;
+    Ok(stmts
+        .iter()
+        .map(|s| LocatedStatement::new(s.clone(), *l.getloc()))
+        .collect())
+}
+
 impl ExpandRun for Vec<LocatedStatement> {
     /// discover more rules to add by running shell commands
     fn expand_run(
         &self,
         m: &mut ParseState,
-        psx: &impl PathSearcher,
-        ph: &mut impl PathBuffers,
+        path_searcher: &impl PathSearcher,
+        path_buffers: &mut impl PathBuffers,
         _: &Loc,
-    ) -> Result<Vec<Self>, crate::errors::Error>
-    where
-        Self: Sized,
+    ) -> Result<Vec<Self>, Error>
+        where
+            Self: Sized,
     {
         self.iter()
-            .map(|l| -> Result<Vec<LocatedStatement>, crate::errors::Error> {
-                let loc = l.getloc();
-                let stmts = l.get_statement().expand_run(m, psx, ph, loc)?;
-                Ok(stmts
-                    .iter()
-                    .map(|s| LocatedStatement::new(s.clone(), *l.getloc()))
-                    .collect())
-            })
+            .map(|l| -> Result<Vec<LocatedStatement>, Error> { expand_statement(l, m, path_searcher, path_buffers) })
             .collect()
     }
 }
 
 /// trait that a method to run variable substitution on different parts of tupfile
 pub(crate) trait Subst {
-    fn subst(&self, m: &mut ParseState, bo: &mut impl PathBuffers) -> Result<Self, Err>
-    where
-        Self: Sized;
+    fn subst(&self, parse_state: &mut ParseState, path_buffers: &mut impl PathBuffers) -> Result<Self, Err>
+        where
+            Self: Sized;
 }
 
 /// trait to substitute macro references in rules
@@ -652,11 +663,11 @@ pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut impl PathBuf
 fn switch_to_reading(
     filename: &Path,
     parse_state: &mut ParseState,
-    ph: &mut impl PathBuffers,
+    path_buffers: &mut impl PathBuffers,
 ) -> PathBuf {
     let cf = parse_state.cur_file.clone();
     parse_state.cur_file = filename.to_path_buf();
-    let (d, _) = ph.add_tup(filename);
+    let (d, _) = path_buffers.add_tup(filename);
     parse_state.cur_file_desc = d;
     cf
 }
@@ -673,222 +684,230 @@ impl SubstPEs for Link {
     }
 }
 
+impl LocatedStatement {
+    fn subst(
+        &self,
+        parse_state: &mut ParseState,
+        path_buffers: &mut (impl PathBuffers + Sized),
+    ) -> Result<Vec<LocatedStatement>, Error> {
+        let mut newstats = Vec::new();
+        let loc = self.getloc();
+        match self.get_statement() {
+            Statement::LetExpr {
+                left,
+                right,
+                is_append,
+            } => {
+                let &app = is_append;
+                let subst_right: Vec<_> = right
+                    .split(|x| x == &PathExpr::Sp1)
+                    .map(|x| {
+                        x.to_vec()
+                            .subst_pe(parse_state)
+                            .expect("subst failure in let expr")
+                            .cat()
+                    })
+                    .collect();
+
+                let curright: Vec<String> = if app {
+                    match parse_state.expr_map.get(left.name.as_str()) {
+                        Some(prevright) => prevright.iter().cloned().chain(subst_right).collect(),
+                        _ => subst_right,
+                    }
+                } else {
+                    subst_right
+                };
+                parse_state.expr_map.insert(left.name.clone(), curright);
+            }
+            Statement::LetRefExpr {
+                left,
+                right,
+                is_append,
+            } => {
+                let &app = is_append;
+                let prefix = vec![
+                    PathExpr::DollarExpr("TUP_CWD".to_owned()),
+                    PathExpr::Literal("/".to_owned()),
+                ]
+                    .subst_pe(parse_state)
+                    .expect("no errors expected in subst of TUP_CWD")
+                    .cat();
+                let subst_right: Vec<String> = right
+                    .split(|x| x == &PathExpr::Sp1)
+                    .map(|x| {
+                        prefix.clone()
+                            + x.to_vec()
+                            .subst_pe(parse_state)
+                            .expect("no errors expected in subst")
+                            .cat()
+                            .as_str()
+                    })
+                    .collect();
+
+                let curright = if app {
+                    match parse_state.rexpr_map.get(left.name.as_str()) {
+                        Some(prevright) => prevright.iter().cloned().chain(subst_right).collect(),
+                        _ => subst_right,
+                    }
+                } else {
+                    subst_right
+                };
+                parse_state.rexpr_map.insert(left.name.clone(), curright);
+            }
+
+            Statement::IfElseEndIf {
+                eq,
+                then_statements,
+                else_statements,
+            } => {
+                let e = EqCond {
+                    lhs: eq
+                        .lhs
+                        .subst_pe(parse_state)
+                        .expect("no errors expected in subst"),
+                    rhs: eq
+                        .rhs
+                        .subst_pe(parse_state)
+                        .expect("no errors expected in subst"),
+                    not_cond: eq.not_cond,
+                };
+                let (ts, es) = if e.not_cond {
+                    (else_statements, then_statements)
+                } else {
+                    (then_statements, else_statements)
+                };
+                if e.lhs.cat().eq(&e.rhs.cat()) {
+                    newstats.append(&mut ts.subst(parse_state, path_buffers)?);
+                } else {
+                    newstats.append(&mut es.subst(parse_state, path_buffers)?);
+                }
+            }
+            Statement::IfDef {
+                checked_var,
+                then_statements,
+                else_statements,
+            } => {
+                let cvar = PathExpr::AtExpr(checked_var.0.name.clone());
+                if cvar.subst(parse_state).iter().any(is_empty) == checked_var.1 {
+                    newstats.append(&mut then_statements.subst(parse_state, path_buffers)?);
+                } else {
+                    newstats.append(&mut else_statements.subst(parse_state, path_buffers)?);
+                }
+            }
+
+            Statement::IncludeRules => {
+                let parent = get_parent(parse_state.cur_file.as_path());
+                debug!("attempting to read tuprules");
+                let mut found = false;
+                // locate tupfiles up the heirarchy from the current Tupfile folder
+                for f in locate_tuprules(parent) {
+                    debug!("reading tuprules {:?}", f);
+                    let (tup_desc, _) = path_buffers.add_tup(f.as_path());
+                    let include_stmts = get_or_insert_parsed_statement(parse_state, &tup_desc, &f)?;
+                    let cf = set_cwd(f.as_path(), parse_state, path_buffers);
+                    newstats.append(&mut include_stmts.subst(parse_state, path_buffers)?);
+                    set_cwd(cf.as_path(), parse_state, path_buffers);
+                    found = true;
+                }
+                if !found {
+                    return Err(crate::errors::Error::TupRulesNotFound(RuleRef::new(
+                        &parse_state.cur_file_desc,
+                        loc,
+                    )));
+                }
+            }
+            Statement::Include(s) => {
+                let s = s.subst_pe(parse_state)?;
+                let scat = &s.cat();
+                let longp = get_parent(parse_state.cur_file.as_path());
+                let pscat = Path::new(scat.as_str());
+                let fullp = longp.join(pscat);
+                let p = if pscat.is_relative() {
+                    fullp.as_path()
+                } else {
+                    pscat
+                };
+                if p.is_file() {
+                    let (tup_desc, _) = path_buffers.add_tup(p);
+                    let include_stmmts = get_or_insert_parsed_statement(parse_state, &tup_desc, p)?;
+                    let cf = set_cwd(p, parse_state, path_buffers);
+                    newstats.append(&mut include_stmmts.subst(parse_state, path_buffers)?);
+                    set_cwd(cf.as_path(), parse_state, path_buffers);
+                }
+            }
+            Statement::Rule(link, _) => {
+                let mut l = link.clone();
+                while l.has_ref() {
+                    l = l.expand(parse_state)?; // expand all nested macro refs
+                }
+                let env_desc = parse_state.cur_env_desc.clone();
+                newstats.push(LocatedStatement::new(
+                    Statement::Rule(l.subst_pe(parse_state)?, env_desc),
+                    *loc,
+                ));
+            }
+            // dont subst inside a macro assignment
+            // just update the rule_map
+            Statement::MacroAssignment(name, link) => {
+                let l = link.clone();
+                parse_state.rule_map.insert(name.clone(), l);
+            }
+            Statement::Err(v) => {
+                let v = v.subst_pe(parse_state)?;
+                eprintln!("{}\n", &v.cat().as_str());
+                return Err(Error::UserError(
+                    v.cat().as_str().to_string(),
+                    RuleRef::new(&parse_state.cur_file_desc, loc),
+                ));
+            }
+            Statement::Preload(v) => {
+                newstats.push(LocatedStatement::new(
+                    Statement::Preload(v.subst_pe(parse_state)?),
+                    *loc,
+                ));
+            }
+            Statement::Export(var) => {
+                let id = path_buffers.add_env_var(var.clone(), &parse_state.cur_env_desc);
+                parse_state.set_env(id);
+            }
+            Statement::Import(var, envval) => {
+                if let Some(val) = envval.clone().or_else(|| std::env::var(var).ok()) {
+                    parse_state
+                        .expr_map
+                        .entry(String::from(var.as_str()))
+                        .or_default()
+                        .push(val);
+                }
+                newstats.push(self.clone());
+            }
+            Statement::Run(r) => {
+                newstats.push(LocatedStatement::new(
+                    Statement::Run(r.subst_pe(parse_state)?),
+                    *loc,
+                ));
+            }
+            Statement::Comment => {
+                // ignore
+            }
+            Statement::GitIgnore => {
+                newstats.push(LocatedStatement::new(Statement::GitIgnore, loc.clone()))
+            }
+        }
+        Ok(newstats)
+    }
+}
+
 /// Implement `subst' method for statements. As the statements are processed, this keeps
 /// track of variables assigned so far and replaces variables occurrences in $(Var) or &(Var) or @(Var)
 impl Subst for Vec<LocatedStatement> {
     /// `subst' accumulates variable assignments in various maps in ParseState and replaces occurrences of them in subsequent statements
-    fn subst(&self, parse_state: &mut ParseState, bo: &mut impl PathBuffers) -> Result<Self, Err> {
-        let mut newstats = Vec::new();
+    fn subst(&self, parse_state: &mut ParseState, path_buffers: &mut impl PathBuffers) -> Result<Self, Err> {
+        let mut stats = Vec::new();
         for statement in self.iter() {
-            let loc = statement.getloc();
-            match statement.get_statement() {
-                Statement::LetExpr {
-                    left,
-                    right,
-                    is_append,
-                } => {
-                    let &app = is_append;
-                    let subst_right: Vec<_> = right
-                        .split(|x| x == &PathExpr::Sp1)
-                        .map(|x| {
-                            x.to_vec()
-                                .subst_pe(parse_state)
-                                .expect("subst failure in let expr")
-                                .cat()
-                        })
-                        .collect();
-
-                    let curright: Vec<String> = if app {
-                        match parse_state.expr_map.get(left.name.as_str()) {
-                            Some(prevright) => {
-                                prevright.iter().cloned().chain(subst_right).collect()
-                            }
-                            _ => subst_right,
-                        }
-                    } else {
-                        subst_right
-                    };
-                    parse_state.expr_map.insert(left.name.clone(), curright);
-                }
-                Statement::LetRefExpr {
-                    left,
-                    right,
-                    is_append,
-                } => {
-                    let &app = is_append;
-                    let prefix = vec![
-                        PathExpr::DollarExpr("TUP_CWD".to_owned()),
-                        PathExpr::Literal("/".to_owned()),
-                    ]
-                    .subst_pe(parse_state)
-                    .expect("no errors expected in subst of TUP_CWD")
-                    .cat();
-                    let subst_right: Vec<String> = right
-                        .split(|x| x == &PathExpr::Sp1)
-                        .map(|x| {
-                            prefix.clone()
-                                + x.to_vec()
-                                    .subst_pe(parse_state)
-                                    .expect("no errors expected in subst")
-                                    .cat()
-                                    .as_str()
-                        })
-                        .collect();
-
-                    let curright = if app {
-                        match parse_state.rexpr_map.get(left.name.as_str()) {
-                            Some(prevright) => {
-                                prevright.iter().cloned().chain(subst_right).collect()
-                            }
-                            _ => subst_right,
-                        }
-                    } else {
-                        subst_right
-                    };
-                    parse_state.rexpr_map.insert(left.name.clone(), curright);
-                }
-
-                Statement::IfElseEndIf {
-                    eq,
-                    then_statements,
-                    else_statements,
-                } => {
-                    let e = EqCond {
-                        lhs: eq
-                            .lhs
-                            .subst_pe(parse_state)
-                            .expect("no errors expected in subst"),
-                        rhs: eq
-                            .rhs
-                            .subst_pe(parse_state)
-                            .expect("no errors expected in subst"),
-                        not_cond: eq.not_cond,
-                    };
-                    let (ts, es) = if e.not_cond {
-                        (else_statements, then_statements)
-                    } else {
-                        (then_statements, else_statements)
-                    };
-                    if e.lhs.cat().eq(&e.rhs.cat()) {
-                        newstats.append(&mut ts.subst(parse_state, bo)?);
-                    } else {
-                        newstats.append(&mut es.subst(parse_state, bo)?);
-                    }
-                }
-                Statement::IfDef {
-                    checked_var,
-                    then_statements,
-                    else_statements,
-                } => {
-                    let cvar = PathExpr::AtExpr(checked_var.0.name.clone());
-                    if cvar.subst(parse_state).iter().any(is_empty) == checked_var.1 {
-                        newstats.append(&mut then_statements.subst(parse_state, bo)?);
-                    } else {
-                        newstats.append(&mut else_statements.subst(parse_state, bo)?);
-                    }
-                }
-
-                Statement::IncludeRules => {
-                    let parent = get_parent(parse_state.cur_file.as_path());
-                    debug!("attempting to read tuprules");
-                    let mut found = false;
-                    // locate tupfiles up the heirarchy from the current Tupfile folder
-                    for f in locate_tuprules(parent) {
-                        debug!("reading tuprules {:?}", f);
-                        let (tup_desc, _) = bo.add_tup(f.as_path());
-                        let include_stmts =
-                            get_or_insert_parsed_statement(parse_state, &tup_desc, &f)?;
-                        let cf = set_cwd(f.as_path(), parse_state, bo);
-                        newstats.append(&mut include_stmts.subst(parse_state, bo)?);
-                        set_cwd(cf.as_path(), parse_state, bo);
-                        found = true;
-                    }
-                    if !found {
-                        return Err(crate::errors::Error::TupRulesNotFound(RuleRef::new(
-                            &parse_state.cur_file_desc,
-                            loc,
-                        )));
-                    }
-                }
-                Statement::Include(s) => {
-                    let s = s.subst_pe(parse_state)?;
-                    let scat = &s.cat();
-                    let longp = get_parent(parse_state.cur_file.as_path());
-                    let pscat = Path::new(scat.as_str());
-                    let fullp = longp.join(pscat);
-                    let p = if pscat.is_relative() {
-                        fullp.as_path()
-                    } else {
-                        pscat
-                    };
-                    if p.is_file() {
-                        let (tup_desc, _) = bo.add_tup(p);
-                        let include_stmmts =
-                            get_or_insert_parsed_statement(parse_state, &tup_desc, p)?;
-                        let cf = set_cwd(p, parse_state, bo);
-                        newstats.append(&mut include_stmmts.subst(parse_state, bo)?);
-                        set_cwd(cf.as_path(), parse_state, bo);
-                    }
-                }
-                Statement::Rule(link, _) => {
-                    let mut l = link.clone();
-                    while l.has_ref() {
-                        l = l.expand(parse_state)?; // expand all nested macro refs
-                    }
-                    let env_desc = parse_state.cur_env_desc.clone();
-                    newstats.push(LocatedStatement::new(
-                        Statement::Rule(l.subst_pe(parse_state)?, env_desc),
-                        *loc,
-                    ));
-                }
-                // dont subst inside a macro assignment
-                // just update the rule_map
-                Statement::MacroAssignment(name, link) => {
-                    let l = link.clone();
-                    parse_state.rule_map.insert(name.clone(), l);
-                }
-                Statement::Err(v) => {
-                    let v = v.subst_pe(parse_state)?;
-                    eprintln!("{}\n", &v.cat().as_str());
-                    break;
-                }
-                Statement::Preload(v) => {
-                    newstats.push(LocatedStatement::new(
-                        Statement::Preload(v.subst_pe(parse_state)?),
-                        *loc,
-                    ));
-                }
-                Statement::Export(var) => {
-                    let id = bo.add_env_var(var.clone(), &parse_state.cur_env_desc);
-                    parse_state.set_env(id);
-                }
-                Statement::Import(var, envval) => {
-                    if let Some(val) = envval.clone().or_else(|| std::env::var(var).ok()) {
-                        parse_state
-                            .expr_map
-                            .entry(String::from(var.as_str()))
-                            .or_default()
-                            .push(val);
-                    }
-                    newstats.push(statement.clone());
-                }
-                Statement::Run(r) => {
-                    newstats.push(LocatedStatement::new(
-                        Statement::Run(r.subst_pe(parse_state)?),
-                        *loc,
-                    ));
-                }
-                Statement::Comment => {
-                    // ignore
-                }
-                Statement::GitIgnore => {
-                    newstats.push(
-                        LocatedStatement::new(Statement::GitIgnore,
-                                              loc.clone()))
-                }
-            }
+            let newstats = statement.subst(parse_state, path_buffers)?;
+            stats.extend(newstats);
         }
-        Ok(newstats)
+        Ok(stats)
     }
 }
 
@@ -916,8 +935,8 @@ fn get_or_insert_parsed_statement(
 
 #[derive(Debug, Clone, Default)]
 pub struct TupParser<Q: PathSearcher + Sized + 'static> {
-    bo: Rc<RefCell<BufferObjects>>,
-    psx: Rc<RefCell<Q>>,
+    path_buffers: Rc<RefCell<BufferObjects>>,
+    path_searcher: Rc<RefCell<Q>>,
     config_vars: HashMap<String, Vec<String>>,
 }
 
@@ -925,7 +944,6 @@ pub struct TupParser<Q: PathSearcher + Sized + 'static> {
 #[derive(Debug, Clone, Default)]
 pub struct Artifacts {
     resolved_links: Vec<ResolvedLink>,
-    //outs: OutputHolder,
 }
 
 impl Artifacts {
@@ -937,7 +955,6 @@ impl Artifacts {
     pub fn from(resolved_links: Vec<ResolvedLink>) -> Artifacts {
         Artifacts {
             resolved_links,
-            // outs,
         }
     }
 
@@ -1008,14 +1025,14 @@ impl Artifacts {
         return self.resolved_links.as_slice();
     }
     /*
-        /// get parent rule that generated an output file with given id.
-        pub fn get_parent_rule(&self, p0: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
-            self.outs.get_parent_rule(p0)
-        }
-        /// Add a new path entry against a group with `group_desc`
-        pub fn add_group_entry(&mut self, group_desc: &GroupPathDescriptor, pd: PathDescriptor) {
-            self.outs.add_group_entry(group_desc, pd)
-        } */
+    /// get parent rule that generated an output file with given id.
+    pub fn get_parent_rule(&self, p0: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
+        self.outs.get_parent_rule(p0)
+    }
+    /// Add a new path entry against a group with `group_desc`
+    pub fn add_group_entry(&mut self, group_desc: &GroupPathDescriptor, pd: PathDescriptor) {
+        self.outs.add_group_entry(group_desc, pd)
+    } */
 }
 
 /// Represents an opens  buffer that is ready to be read for all data that stored with an id during parsing.
@@ -1023,35 +1040,6 @@ impl Artifacts {
 /// It is also available for writing some data in the parser's buffers
 pub struct ReadWriteBufferObjects {
     bo: Rc<RefCell<BufferObjects>>,
-}
-
-struct VectorGenerator<T, U> {
-    vec: Vec<T>,
-    current_index: usize,
-    transform_fn: Box<dyn FnMut(&T) -> Result<
-        Option<U>,
-        crate::errors::Error>,,
-}
-
-impl<T, U> VectorGenerator<T, U> {
-    fn new(vec: Vec<T>, transform_fn: Box<dyn Fn(T) -> Option<U>>) -> Self {
-        VectorGenerator { vec, current_index: 0, transform_fn }
-    }
-}
-
-impl<T, U> Iterator for VectorGenerator<T, U> {
-    type Item = U;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.current_index < self.vec.len() {
-            let current_val = &self.vec[self.current_index];
-            self.current_index += 1;
-            if let Some(transformed) = (self.transform_fn)(current_val) {
-                return Some(transformed);
-            }
-        }
-        None
-    }
 }
 
 impl ReadWriteBufferObjects {
@@ -1066,16 +1054,16 @@ impl ReadWriteBufferObjects {
     }
     /// iterate over all the (grouppath, groupid) pairs stored in buffers during parsing
     pub fn for_each_group<F>(&self, f: F)
-    where
-        F: FnMut((&NormalPath, &GroupPathDescriptor)),
+        where
+            F: FnMut((&NormalPath, &GroupPathDescriptor)),
     {
         let r = self.bo.deref().borrow();
         r.group_iter().for_each(f);
     }
     /// Iterate over group ids
-    pub fn map_group_desc<F>(&self,  f: F) -> Vec<(GroupPathDescriptor, i64)>
-    where
-        F: FnMut(&GroupPathDescriptor) -> (GroupPathDescriptor, i64),
+    pub fn map_group_desc<F>(&self, f: F) -> Vec<(GroupPathDescriptor, i64)>
+        where
+            F: FnMut(&GroupPathDescriptor) -> (GroupPathDescriptor, i64),
     {
         self.bo.deref().borrow().get_group_descs().map(f).collect()
     }
@@ -1087,7 +1075,10 @@ impl ReadWriteBufferObjects {
     }
     /// Return resolved input type in the string form.
     pub fn get_input_path_str(&self, i: &InputResolvedType) -> String {
-        self.bo.deref().borrow_mut().get_path_str(i.get_resolved_path_desc().unwrap())
+        self.bo
+            .deref()
+            .borrow_mut()
+            .get_path_str(i.get_resolved_path_desc().unwrap())
     }
     /// Return the file path corresponding to its id
     pub fn get_path(&self, p0: &PathDescriptor) -> Ref<'_, NormalPath> {
@@ -1118,7 +1109,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
     /// tup.config files it can successfully locate in the root folder.
     pub fn try_new_from<P: AsRef<Path>>(
         cur_folder: P,
-        psx: Q,
+        path_searcher: Q,
     ) -> Result<TupParser<Q>, crate::errors::Error> {
         let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(RootNotFound)?;
 
@@ -1127,50 +1118,49 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
         Ok(TupParser::new_from(
             root,
             conf_vars,
-            Rc::new(RefCell::new(psx)),
+            Rc::new(RefCell::new(path_searcher)),
         ))
     }
 
     /// return outputs gathered by this parser and the relationships to its rule, directory etc
     pub fn get_outs(&self) -> OutputHolder {
-        self.psx.deref().borrow().get_outs().clone()
+        self.path_searcher.deref().borrow().get_outs().clone()
     }
 
     /// returned a reference to path searcher
     pub fn get_searcher(&self) -> Ref<'_, Q> {
-        self.psx.deref().borrow()
+        self.path_searcher.deref().borrow()
     }
 
     /// returned a reference to path searcher
     pub fn get_mut_searcher(&self) -> RefMut<'_, Q> {
-        self.psx.deref().borrow_mut()
+        self.path_searcher.deref().borrow_mut()
     }
-
 
     /// Construct at the given rootdir and using config vars
     pub fn new_from<P: AsRef<Path>>(
         root_dir: P,
         config_vars: HashMap<String, Vec<String>>,
-        psx: Rc<RefCell<Q>>,
+        path_searcher: Rc<RefCell<Q>>,
     ) -> TupParser<Q> {
         TupParser {
-            bo: Rc::new(RefCell::from(BufferObjects::new(root_dir))),
-            psx,
+            path_buffers: Rc::new(RefCell::from(BufferObjects::new(root_dir))),
+            path_searcher,
             config_vars,
         }
     }
 
     /// Fetch the parser's read/write buffer for reading and writing in id-ed data that it holds
     pub fn read_write_buffers(&self) -> ReadWriteBufferObjects {
-        ReadWriteBufferObjects::new(self.bo.clone())
+        ReadWriteBufferObjects::new(self.path_buffers.clone())
     }
 
     pub(crate) fn borrow_ref(&self) -> Ref<BufferObjects> {
-        return self.bo.deref().borrow();
+        return self.path_buffers.deref().borrow();
     }
 
     pub(crate) fn borrow_mut_ref(&self) -> RefMut<BufferObjects> {
-        return self.bo.deref().borrow_mut();
+        return self.path_buffers.deref().borrow_mut();
     }
 
     /// `parse` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
@@ -1190,7 +1180,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
             (tup_desc, env_desc)
         };
 
-        let mut m = ParseState::new(
+        let mut parse_state = ParseState::new(
             &self.config_vars,
             self.borrow_ref().get_tup_path(&tup_desc),
             tup_desc,
@@ -1198,29 +1188,43 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
         );
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
-            parse_script(m, self.bo.clone(), self.psx.clone())
+            parse_script(parse_state, self.path_buffers.clone(), self.path_searcher.clone())
         } else {
             let stmts = parse_tupfile(tup_file_path)?;
             let mut bo_ref_mut = self.borrow_mut_ref();
-            let stmts = stmts.subst(&mut m, bo_ref_mut.deref_mut())?;
-            debug!("num stmts:{:?}", stmts.len());
-            let stmts = stmts
-                .expand_run(
-                    &mut m,
-                    self.get_path_searcher().deref(),
-                    bo_ref_mut.deref_mut(),
-                    &Loc::new(0, 0),
-                )?
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
+            // create a transform function that will substitute variables in the statements
+            let mut xform = |stmt: LocatedStatement| -> Result<Vec<LocatedStatement>, Error> {
+                let vs = stmt.subst(&mut parse_state, bo_ref_mut.deref_mut())?;
+                // create a vector generator over the statements
+                let mut xform = |stmt: LocatedStatement| {
+                    expand_statement(
+                        &stmt,
+                        &mut parse_state,
+                        self.get_path_searcher().deref(),
+                        bo_ref_mut.deref_mut(),
+                    )
+                };
+
+                let mut res = Vec::new();
+                for v in vs {
+                    let mut r = xform(v)?;
+                    res.append(&mut r);
+                }
+                Ok(res)
+            };
+            let mut res = Vec::new();
+            for stmt in stmts {
+                let mut r = xform(stmt)?;
+                res.append(&mut r);
+            }
+            let stmts = res;
             debug!(
                 "num statements after expand run:{:?} in tupfile {:?}",
                 stmts.len(),
-                m.get_cur_file()
+                parse_state.get_cur_file()
             );
             stmts.resolve_paths(
-                m.get_cur_file(),
+                parse_state.get_cur_file(),
                 self.get_mut_searcher().deref_mut(),
                 bo_ref_mut.deref_mut(),
                 &tup_desc,
@@ -1233,16 +1237,16 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
     pub fn reresolve(&mut self, arts: Artifacts) -> Result<Artifacts, crate::errors::Error> {
         let pbuf = PathBuf::new();
         let mut boref = self.borrow_mut_ref();
-        let mut psx = self.psx.deref().borrow_mut();
+        let mut path_searcher = self.path_searcher.deref().borrow_mut();
         arts.get_resolved_links().resolve_paths(
             pbuf.as_path(),
-            psx.deref_mut(),
+            path_searcher.deref_mut(),
             boref.deref_mut(),
             &TupPathDescriptor::new(0),
         )
     }
     fn get_path_searcher(&self) -> Ref<'_, Q> {
-        self.psx.deref().borrow()
+        self.path_searcher.deref().borrow()
     }
 }
 

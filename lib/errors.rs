@@ -1,8 +1,10 @@
 //! Module for tracking errors during tupfile parsing
+use std::io::Error as IoErr;
+
+use thiserror::Error as ThisError;
+
 use decode::{PathDescriptor, RuleRef};
 use statements::Loc;
-use std::io::Error as IoErr;
-use thiserror::Error as ThisError;
 
 /// Errors returning during parsing and subst-ing Tupfiles
 #[non_exhaustive]
@@ -68,6 +70,9 @@ pub enum Error {
     /// Raw lua errors
     #[error(transparent)]
     LuaError(#[from] mlua::Error),
+    /// User error
+    #[error("User error: {0} at {1}")]
+    UserError(String, RuleRef),
 }
 
 impl Error {

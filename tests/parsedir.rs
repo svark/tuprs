@@ -1,10 +1,14 @@
-extern crate tupparser;
 extern crate env_logger;
+extern crate tupparser;
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
     use env_logger;
+
     use tupparser::decode::parse_dir;
+
     #[test]
     pub fn test_parsedir() {
         env_logger::init();

@@ -115,8 +115,8 @@ Returns the extension in the filename filename (excluding the .) or the empty st
 #[derive(Clone, Debug, Default)]
 pub struct TupScriptContext<P: PathBuffers + Sized, Q: PathSearcher + Sized> {
     parse_state: ParseState,
-    bo: Rc<RefCell<P>>,
-    psx: Rc<RefCell<Q>>,
+    path_buffers: Rc<RefCell<P>>,
+    path_searcher: Rc<RefCell<Q>>,
     arts: Artifacts,
 }
 #[derive(Debug, Default, Clone)]
@@ -316,22 +316,22 @@ impl ScriptRuleCommand {
 impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
     pub(crate) fn new(
         parse_state: ParseState,
-        bo: Rc<RefCell<P>>,
-        psx: Rc<RefCell<Q>>,
+        path_buffers: Rc<RefCell<P>>,
+        path_searcher: Rc<RefCell<Q>>,
     ) -> TupScriptContext<P, Q> {
         TupScriptContext {
             arts: Artifacts::new(),
             parse_state,
-            bo,
-            psx,
+            path_buffers,
+            path_searcher,
         }
     }
 
     pub(crate) fn bo_as_mut(&self) -> RefMut<'_, P> {
-        self.bo.deref().borrow_mut()
+        self.path_buffers.deref().borrow_mut()
     }
     pub(crate) fn bo_as_ref(&self) -> std::cell::Ref<'_, P> {
-        self.bo.deref().borrow()
+        self.path_buffers.deref().borrow()
     }
 
     pub fn export(&mut self, var: String) {
@@ -363,12 +363,11 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         let (arts, outs) = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
-                self.psx.deref().borrow_mut().deref_mut(),
+                self.path_searcher.deref().borrow_mut().deref_mut(),
                 self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
             )
             .expect("unable to resolve paths");
-        //self.psx.deref().borrow_mut().merge(arts.get_outs()).unwrap();
         //self.resolved_links = rlinks.drain(..).map(|l| (l, env.clone())).collect();
 
         let mut paths = Vec::new();
@@ -412,7 +411,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         let (arts, outs) = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
-                self.psx.deref().borrow_mut().deref_mut(),
+                self.path_searcher.deref().borrow_mut().deref_mut(),
                 self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
             )
@@ -444,7 +443,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             .to_string()
     }
     pub fn get_root(&self) -> std::path::PathBuf {
-        self.bo.deref().borrow().get_root_dir().to_path_buf()
+        self.path_buffers.deref().borrow().get_root_dir().to_path_buf()
     }
     pub fn dir(a: &str) -> String {
         Path::new(a).parent().unwrap().to_string_lossy().to_string()
@@ -862,14 +861,14 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
             let tup_shared: AnyUserData = globals.get("tup")?;
             let scriptctx: RefMut<TupScriptContext<P, Q>> = tup_shared.borrow_mut()?;
             //let outputs = OutputAssocs::new_no_resolve_groups();
-            let psx = scriptctx.psx.as_ref().borrow();
+            let path_searcher = scriptctx.path_searcher.as_ref().borrow();
             let glob_path = &GlobPath::new(
                 Path::new(scriptctx.get_cwd().as_str()),
                 Path::new(path),
                 scriptctx.bo_as_mut().deref_mut(),
             );
 
-            let matching_paths = psx
+            let matching_paths = path_searcher
                 .discover_paths(scriptctx.bo_as_mut().deref_mut(), glob_path)
                 .expect("Glob expansion failed");
             let glob_out = luactx.create_table()?;
@@ -927,13 +926,13 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
 /// main entry point for parsing Tupfile.lua
 pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static>(
     parse_state: ParseState,
-    bo: Rc<RefCell<P>>,
-    psx: Rc<RefCell<Q>>,
+    path_buffers: Rc<RefCell<P>>,
+    path_searcher: Rc<RefCell<Q>>,
 ) -> Result<Artifacts, Err> {
     let lua = unsafe { Lua::unsafe_new() };
     let r = lua.scope(|scope| {
         let script_path = parse_state.get_cur_file().to_path_buf();
-        let tup_script_ctx = TupScriptContext::new(parse_state, bo, psx);
+        let tup_script_ctx = TupScriptContext::new(parse_state, path_buffers, path_searcher);
         let root = tup_script_ctx.get_root();
         let tup_shared = scope.create_userdata(tup_script_ctx)?;
         lua.load_from_std_lib(
