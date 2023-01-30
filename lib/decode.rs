@@ -786,7 +786,7 @@ impl GeneratedFiles {
         }
         Ok(())
     }
-    /// merge groups , outputs and bins from other OutputAssocs
+    /// merge groups , outputs and bins from other `OutputHandler`
     ///  erorr-ing out if unique parent rule
     /// of an output is not found
     fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err> {
@@ -878,7 +878,7 @@ pub trait OutputHandler {
     fn merge_group_tags(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err>;
     /// Merge bins from its new outputs
     fn merge_bin_tags(&mut self, other: &impl OutputHandler) -> Result<(), Err>;
-    /// merge groups , outputs and bins from other OutputAssocs
+    /// merge groups, outputs and bins from other `OutputHandler`
     ///  erorr-ing out if unique parent rule
     /// of an output is not found
     fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err>;

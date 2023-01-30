@@ -170,6 +170,18 @@ impl Env {
         }
         hmap
     }
+    /// return a set of env vars
+    pub fn get_keys(&self) -> &BTreeSet<String> {
+        &self.set
+    }
+    /// returns value of env var if present
+    pub fn get_env_var(&self, k: &str) -> Option<String> {
+        if self.contains(k) {
+            Some(std::env::var(k).unwrap_or_default())
+        } else {
+            None
+        }
+    }
 }
 /// ```EnvDescriptor``` is a unique id to current environment for a rule
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]

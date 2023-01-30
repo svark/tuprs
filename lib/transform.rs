@@ -230,7 +230,6 @@ impl ExpandRun for Statement {
                         let arg = arg.trim();
                         if arg.contains('*') {
                             let arg_path = Path::new(arg);
-                            //let outs = OutputAssocs::new();
                             {
                                 let ref glob_path =
                                     GlobPath::new(parse_state.get_tup_dir(), arg_path, path_buffers);
@@ -285,7 +284,7 @@ impl ExpandRun for Statement {
                         //println!("status:{}", output.status);
                         let contents = output.stdout;
                         if !output.stderr.is_empty() {
-                            return Err(crate::errors::Error::RunError(
+                            return Err(Error::RunError(
                                 rule_ref,
                                 std::str::from_utf8(output.stderr.as_slice())
                                     .unwrap()
@@ -608,7 +607,7 @@ fn tovecstring(right: &[PathExpr]) -> Vec<String> {
 /// TUP_PLATFORM and TUP_ARCH are automatically assigned based on how this program is built
 pub fn load_conf_vars(
     filename: &Path,
-) -> Result<HashMap<String, Vec<String>>, crate::errors::Error> {
+) -> Result<HashMap<String, Vec<String>>, Error> {
     let mut conf_vars = HashMap::new();
 
     if let Some(conf_file) = Path::new(filename).parent().map(|x| x.join("tup.config")) {
@@ -810,7 +809,7 @@ impl LocatedStatement {
                     found = true;
                 }
                 if !found {
-                    return Err(crate::errors::Error::TupRulesNotFound(RuleRef::new(
+                    return Err(Error::TupRulesNotFound(RuleRef::new(
                         &parse_state.cur_file_desc,
                         loc,
                     )));
@@ -915,7 +914,7 @@ fn get_or_insert_parsed_statement(
     parse_state: &mut ParseState,
     tup_desc: &TupPathDescriptor,
     f: &Path,
-) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
+) -> Result<Vec<LocatedStatement>, Error> {
     if !parse_state.is_cached(tup_desc) {
         let res = parse_tupfile(f)?;
         parse_state.add_statements_to_cache(tup_desc, res);
@@ -951,7 +950,7 @@ impl Artifacts {
     pub fn new() -> Artifacts {
         Artifacts::default()
     }
-    /// Builds Artifacts from  [ResolvedLink]s [OutputAssocs]
+    /// Builds Artifacts from a vector of [ResolvedLink]s
     pub fn from(resolved_links: Vec<ResolvedLink>) -> Artifacts {
         Artifacts {
             resolved_links,
@@ -969,7 +968,7 @@ impl Artifacts {
     }
 
     /// extend links in `artifacts` with those in self
-    pub fn extend(&mut self, mut artifacts: Artifacts) -> Result<(), crate::errors::Error> {
+    pub fn extend(&mut self, mut artifacts: Artifacts) -> Result<(), Error> {
         self.resolved_links.extend(artifacts.drain_resolved_links());
         Ok(())
     }
@@ -1101,6 +1100,12 @@ impl ReadWriteBufferObjects {
         let r = self.bo.deref().borrow();
         Ref::map(r, |x| x.get_tup_id(p))
     }
+
+    /// Return set of environment variables
+    pub fn get_envs(&self, e: &EnvDescriptor) -> Ref<'_, Env> {
+        let r = self.bo.deref().borrow();
+        Ref::map(r, |x| x.try_get_env(e).unwrap_or_else(|| panic!("env not found:{:?}", e)))
+    }
 }
 
 impl<Q: PathSearcher + Sized> TupParser<Q> {
@@ -1110,7 +1115,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
     pub fn try_new_from<P: AsRef<Path>>(
         cur_folder: P,
         path_searcher: Q,
-    ) -> Result<TupParser<Q>, crate::errors::Error> {
+    ) -> Result<TupParser<Q>, Error> {
         let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(RootNotFound)?;
 
         let root = tup_ini.parent().ok_or(RootNotFound)?;
@@ -1171,7 +1176,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
     pub fn parse<P: AsRef<Path>>(
         &mut self,
         tup_file_path: P,
-    ) -> Result<Artifacts, crate::errors::Error> {
+    ) -> Result<Artifacts, Error> {
         let (tup_desc, env_desc) = {
             let mut boref = self.borrow_mut_ref();
             let (tup_desc, _) = boref.add_tup(tup_file_path.as_ref());
@@ -1234,7 +1239,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
 
     /// Re-resolve for resolved groups that were left unresolved in the first round of parsing
     /// This step is usually run as a second pass to resolve group references across Tupfiles
-    pub fn reresolve(&mut self, arts: Artifacts) -> Result<Artifacts, crate::errors::Error> {
+    pub fn reresolve(&mut self, arts: Artifacts) -> Result<Artifacts, Error> {
         let pbuf = PathBuf::new();
         let mut boref = self.borrow_mut_ref();
         let mut path_searcher = self.path_searcher.deref().borrow_mut();
