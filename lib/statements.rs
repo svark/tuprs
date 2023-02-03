@@ -15,6 +15,23 @@ pub(crate) enum PathExpr {
     ExcludePattern(String),
     /// $(EXPR)
     DollarExpr(String),
+    /// $(addprefix prefix, EXPR)
+    /// prefix is added to each path in EXPR
+    AddPrefix(Vec<PathExpr>, Vec<PathExpr>),
+    /// $(addsuffix suffix, EXPR)
+    /// suffix is added to each path in EXPR
+    AddSuffix(Vec<PathExpr>, Vec<PathExpr>),
+    /// $(subst from, to, EXPR)
+    Subst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
+    /// $(filter pattern, EXPR)
+    Filter(Vec<PathExpr>, Vec<PathExpr>),
+    /// $(filter-out pattern, EXPR)
+    FilterOut(Vec<PathExpr>, Vec<PathExpr>),
+    /// $(foreach var, list, EXPR)
+    /// var is replaced by each element in list
+    ForEach(String, Vec<PathExpr>, Vec<PathExpr>),
+    /// $(findstring pattern, EXPR)
+    FindString(Vec<PathExpr>, Vec<PathExpr>),
     ///  @(EXPR)
     AtExpr(String),
     /// &(Expr)
@@ -122,6 +139,8 @@ pub struct LocatedStatement {
     pub(crate) statement: Statement,
     pub(crate) loc: Loc,
 }
+
+
 impl LocatedStatement {
     pub(crate) fn new(stmt: Statement, l: Loc) -> LocatedStatement {
         LocatedStatement {
@@ -137,6 +156,9 @@ impl LocatedStatement {
     }
     pub(crate) fn getloc(&self) -> &Loc {
         &self.loc
+    }
+    pub(crate) fn is_comment(&self) -> bool {
+        matches!(self.statement, Statement::Comment)
     }
 }
 /// List of env vars that are to be passed for rule execution
@@ -225,11 +247,13 @@ pub(crate) enum Statement {
         left: Ident,
         right: Vec<PathExpr>,
         is_append: bool,
+        is_empty_assign: bool,
     },
     LetRefExpr {
         left: Ident,
         right: Vec<PathExpr>,
         is_append: bool,
+        is_empty_assign: bool,
     },
     IfElseEndIf {
         eq: EqCond,

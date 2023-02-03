@@ -58,6 +58,9 @@ pub enum Error {
     /// Tuprules file could not be located from current Tupfile
     #[error("Tup rules could not be located from {0}")]
     TupRulesNotFound(RuleRef),
+    /// Tuprules file could not be located from current Tupfile
+    #[error("Include path {0} referred in {1} could not be located")]
+    PathNotFound(String, RuleRef),
     /// input file could not be resolved
     #[error("Error resolving an input: {0} at {1}")]
     UnResolvedFile(String, RuleRef),

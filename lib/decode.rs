@@ -874,23 +874,10 @@ pub trait OutputHandler {
     /// Add an entry to the collector that holds paths of a group
     fn add_bin_entry(&mut self, bin_desc: &BinDescriptor, pd: PathDescriptor);
 
-    /// Merge paths of different groups from new_outputs into current group path container
-    fn merge_group_tags(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err>;
-    /// Merge bins from its new outputs
-    fn merge_bin_tags(&mut self, other: &impl OutputHandler) -> Result<(), Err>;
     /// merge groups, outputs and bins from other `OutputHandler`
     ///  erorr-ing out if unique parent rule
     /// of an output is not found
     fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err>;
-    /// Merge outputfiles from other outputs read.
-    fn merge_output_files(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err>;
-    /// Track parent rules of outputs, error-ing out if unique parent rule
-    /// of an output is not found
-    fn merge_parent_rules(
-        &mut self,
-        new_parent_rule: &HashMap<PathDescriptor, RuleRef>,
-        new_path_descs: &HashSet<PathDescriptor>,
-    ) -> Result<(), Err>;
 }
 
 impl PathSearcher for OutputHolder {
@@ -980,30 +967,10 @@ impl OutputHandler for OutputHolder {
         self.get_mut().add_bin_entry(bin_desc, pd)
     }
 
-    fn merge_group_tags(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err> {
-        self.get_mut().merge_group_tags(new_outputs)
-    }
-
-    fn merge_bin_tags(&mut self, other: &impl OutputHandler) -> Result<(), Err> {
-        self.get_mut().merge_bin_tags(other)
-    }
-
     fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err> {
         self.get_mut().merge(out)
     }
 
-    fn merge_output_files(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err> {
-        self.get_mut().merge_output_files(new_outputs)
-    }
-
-    fn merge_parent_rules(
-        &mut self,
-        new_parent_rule: &HashMap<PathDescriptor, RuleRef>,
-        new_path_descs: &HashSet<PathDescriptor>,
-    ) -> Result<(), Err> {
-        self.get_mut()
-            .merge_parent_rules(new_parent_rule, new_path_descs)
-    }
 }
 
 /// A Matching path id discovered using glob matcher along with captured groups
@@ -1754,7 +1721,6 @@ impl DecodeInputPaths for Vec<PathExpr> {
     }
 }
 
-// decode input paths
 
 trait GatherOutputs {
     fn gather_outputs(

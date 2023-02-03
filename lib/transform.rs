@@ -1,6 +1,7 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell, RefMut};
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ops::{AddAssign, Deref, DerefMut};
@@ -118,6 +119,7 @@ impl ParseState {
         cur_file: &Path,
         cur_file_desc: TupPathDescriptor,
         cur_env_desc: EnvDescriptor,
+        statement_cache: &HashMap<TupPathDescriptor, Vec<LocatedStatement>>
     ) -> Self {
         let mut def_vars = HashMap::new();
         let dir = get_parent_str(cur_file);
@@ -130,9 +132,12 @@ impl ParseState {
             tup_base_path: cur_file.to_path_buf(),
             cur_file_desc,
             cur_env_desc,
-            statement_cache: HashMap::new(),
+            statement_cache: statement_cache.clone(),
             ..ParseState::default()
         }
+    }
+    pub(crate) fn get_cache(&mut self) -> &mut HashMap<TupPathDescriptor, Vec<LocatedStatement>> {
+        &mut self.statement_cache
     }
 
     pub(crate) fn replace_tup_cwd(&mut self, dir: &str) -> Option<Vec<String>> {
@@ -164,7 +169,8 @@ impl ParseState {
     }
 
     /// Add statements to cache.
-    fn add_statements_to_cache(&mut self, tup_desc: &TupPathDescriptor, vs: Vec<LocatedStatement>) {
+    fn add_statements_to_cache(&mut self, tup_desc: &TupPathDescriptor, mut vs: Vec<LocatedStatement>) {
+        let vs = vs.drain(..).filter(|s| !s.is_comment()).collect();
         self.statement_cache.insert(*tup_desc, vs);
     }
     fn is_cached(&self, tup_desc: &TupPathDescriptor) -> bool {
@@ -376,8 +382,16 @@ fn is_empty(rval: &PathExpr) -> bool {
 }
 
 impl PathExpr {
+    fn is_literal(&self) -> bool {
+        if let PathExpr::Literal(_) = self {
+            true
+        } else {
+            false
+        }
+    }
     /// substitute a single pathexpr into an array of literal pathexpr
     /// SFINAE holds
+
     fn subst(&self, m: &mut ParseState) -> Vec<PathExpr> {
         match self {
             PathExpr::DollarExpr(ref x) => {
@@ -415,6 +429,120 @@ impl PathExpr {
                     ys.iter().flat_map(|y| y.subst(m)).collect(),
                 )]
             }
+            PathExpr::Subst(ref from, ref to, ref vs) => {
+                let vs = vs.subst_pe(m);
+                let to = to.subst_pe(m);
+                let to = to.cat();
+                let from = from.iter().flat_map(|x| x.subst(m)).collect::<Vec<PathExpr>>();
+                let from = from.cat();
+                vs.iter().filter_map(|v| {
+                    if let PathExpr::Literal(s) = v {
+                        Some(PathExpr::from(s.replace(from.as_str(), to.as_str())))
+                    } else {
+                        None
+                    }
+                }).collect()
+            }
+            PathExpr::Filter(ref filter, ref vs) => {
+                let mut vs = vs.subst_pe(m);
+                let filter: Vec<PathExpr> = filter.subst_pe(m);
+                vs.retain(|x| {
+                    if let PathExpr::Literal(ref s) = x {
+                        for f in filter.iter() {
+                            if let PathExpr::Literal(ref f) = f {
+                                if s.contains(f.as_str()) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    false
+                });
+                vs
+            }
+            PathExpr::FilterOut(ref filter, ref vs) => {
+                let mut vs = vs.subst_pe(m);
+                let filter: Vec<PathExpr> = filter.subst_pe(m);
+                vs.retain(|x| {
+                    if let PathExpr::Literal(ref s) = x {
+                        for f in filter.iter() {
+                            if let PathExpr::Literal(ref f) = f {
+                                if s.contains(f.as_str()) {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                    true
+                });
+                vs
+            }
+            PathExpr::ForEach(var, list, body) => {
+                let mut list = list.subst_pe(m);
+                let body = body.subst_pe(m);
+                let mut vs = Vec::new();
+                for l in list.iter_mut() {
+                    if let PathExpr::Literal(ref s) = l {
+                        m.expr_map.insert(var.clone(), vec![s.clone()]);
+                        vs.append(&mut body.iter().flat_map(|x| x.subst(m)).collect::<Vec<PathExpr>>());
+                        m.expr_map.remove(var);
+                    }
+                }
+                vs
+            }
+            PathExpr::FindString(ref find, ref vs) => {
+                let vs = vs.subst_pe(m);
+                let mut find = find.subst_pe(m);
+                let find = find.drain(..).filter(PathExpr::is_literal).collect::<Vec<_>>();
+                if find.is_empty() {
+                    return vec![];
+                }
+                let maybe_found = vs.iter().find(|x| {
+                    if let PathExpr::Literal(ref s) = x {
+                        for f in find.iter() {
+                            if let PathExpr::Literal(ref f) = f {
+                                if s.contains(f.as_str()) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    false
+                });
+                if maybe_found.is_some() {
+                    return find;
+                }
+                { return vec![]; }
+            }
+            PathExpr::AddPrefix(ref prefix, ref vs) => {
+                let mut vs = vs.subst_pe(m);
+                let prefix = prefix.subst_pe(m);
+                let prefix: String = prefix.cat().chars().take_while(|x| !x.is_whitespace()).collect();
+                for v in vs.iter_mut() {
+                    if let PathExpr::Literal(ref mut s) = v {
+                        s.insert_str(0, prefix.as_str());
+                    }
+                }
+                if vs.is_empty() {
+                    vs.push(PathExpr::from(prefix));
+                }
+                vs
+            }
+            PathExpr::AddSuffix(ref suffix, ref vs) => {
+                let mut vs = vs.subst_pe(m);
+                let sfx = suffix.subst_pe(m);
+                let sfx: String = sfx.cat().chars().take_while(|x| !x.is_whitespace()).collect();
+                for v in vs.iter_mut() {
+                    if let PathExpr::Literal(ref mut s) = v {
+                        s.push_str(sfx.as_str());
+                    }
+                }
+                if vs.is_empty() {
+                    vs.push(PathExpr::from(sfx));
+                }
+                vs
+            }
+
             _ => vec![self.clone()],
         }
     }
@@ -432,32 +560,32 @@ fn intersperse_sp1(val: &[String]) -> Vec<PathExpr> {
 }
 
 trait SubstPEs {
-    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err>
-    where
-        Self: Sized;
+    fn subst_pe(&self, m: &mut ParseState) -> Self
+        where
+            Self: Sized;
 }
 
 impl SubstPEs for Vec<PathExpr> {
     /// call subst on each path expr and flatten/cleanup the output.
-    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err> {
+    fn subst_pe(&self, m: &mut ParseState) -> Self {
         let mut newpe: Vec<_> = self
             .iter()
             .flat_map(|x| x.subst(m))
             .filter(|x| !is_empty(x))
             .collect();
         newpe.cleanup();
-        Ok(newpe)
+        newpe
     }
 }
 
 impl SubstPEs for Source {
     /// call subst on each path expr and flatten/cleanup the input.
-    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err> {
-        Ok(Source {
-            primary: self.primary.subst_pe(m)?,
+    fn subst_pe(&self, m: &mut ParseState) -> Self {
+        Source {
+            primary: self.primary.subst_pe(m),
             for_each: self.for_each,
-            secondary: self.secondary.subst_pe(m)?,
-        })
+            secondary: self.secondary.subst_pe(m),
+        }
     }
 }
 
@@ -501,22 +629,22 @@ fn takefirst(o: &Option<PathExpr>, m: &mut ParseState) -> Result<Option<PathExpr
 
 impl SubstPEs for Target {
     /// run variable substitution on `Target'
-    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err> {
-        Ok(Target {
-            primary: self.primary.subst_pe(m)?,
-            secondary: self.secondary.subst_pe(m)?,
-            group: takefirst(&self.group, m)?,
-            bin: takefirst(&self.bin, m)?,
-        })
+    fn subst_pe(&self, m: &mut ParseState) -> Self {
+        Target {
+            primary: self.primary.subst_pe(m),
+            secondary: self.secondary.subst_pe(m),
+            group: takefirst(&self.group, m).unwrap_or_default(),
+            bin: takefirst(&self.bin, m).unwrap_or_default(),
+        }
     }
 }
 impl SubstPEs for RuleFormula {
     /// run variable substitution on `RuleFormula'
-    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err> {
-        Ok(RuleFormula {
+    fn subst_pe(&self, m: &mut ParseState) -> Self {
+        RuleFormula {
             description: self.description.clone(), // todo : convert to rval and subst here as well,
-            formula: self.formula.subst_pe(m)?,
-        })
+            formula: self.formula.subst_pe(m),
+        }
     }
 }
 impl ExpandMacro for Link {
@@ -665,21 +793,21 @@ fn switch_to_reading(
     path_buffers: &mut impl PathBuffers,
 ) -> PathBuf {
     let cf = parse_state.cur_file.clone();
-    parse_state.cur_file = filename.to_path_buf();
     let (d, _) = path_buffers.add_tup(filename);
+    parse_state.cur_file = path_buffers.get_tup_path(&d).to_path_buf();
     parse_state.cur_file_desc = d;
     cf
 }
 
 impl SubstPEs for Link {
     /// recursively substitute variables inside a link
-    fn subst_pe(&self, m: &mut ParseState) -> Result<Self, Err> {
-        Ok(Link {
-            source: self.source.subst_pe(m)?,
-            target: self.target.subst_pe(m)?,
-            rule_formula: self.rule_formula.subst_pe(m)?,
+    fn subst_pe(&self, m: &mut ParseState) -> Self {
+        Link {
+            source: self.source.subst_pe(m),
+            target: self.target.subst_pe(m),
+            rule_formula: self.rule_formula.subst_pe(m),
             pos: self.pos,
-        })
+        }
     }
 }
 
@@ -696,6 +824,7 @@ impl LocatedStatement {
                 left,
                 right,
                 is_append,
+                is_empty_assign,
             } => {
                 let &app = is_append;
                 let subst_right: Vec<_> = right
@@ -703,7 +832,6 @@ impl LocatedStatement {
                     .map(|x| {
                         x.to_vec()
                             .subst_pe(parse_state)
-                            .expect("subst failure in let expr")
                             .cat()
                     })
                     .collect();
@@ -713,15 +841,22 @@ impl LocatedStatement {
                         Some(prevright) => prevright.iter().cloned().chain(subst_right).collect(),
                         _ => subst_right,
                     }
+                } else if *is_empty_assign {
+                    match parse_state.expr_map.get(left.name.as_str()) {
+                        Some(prevright) => prevright.iter().cloned().collect(),
+                        _ => subst_right,
+                    }
                 } else {
                     subst_right
                 };
+                debug!("let expr: {:?} {}= {:?}", left.name, if *is_empty_assign {"?"} else if app {"+"} else {""}, curright);
                 parse_state.expr_map.insert(left.name.clone(), curright);
             }
             Statement::LetRefExpr {
                 left,
                 right,
                 is_append,
+                is_empty_assign,
             } => {
                 let &app = is_append;
                 let prefix = vec![
@@ -729,7 +864,6 @@ impl LocatedStatement {
                     PathExpr::Literal("/".to_owned()),
                 ]
                     .subst_pe(parse_state)
-                    .expect("no errors expected in subst of TUP_CWD")
                     .cat();
                 let subst_right: Vec<String> = right
                     .split(|x| x == &PathExpr::Sp1)
@@ -737,7 +871,6 @@ impl LocatedStatement {
                         prefix.clone()
                             + x.to_vec()
                             .subst_pe(parse_state)
-                            .expect("no errors expected in subst")
                             .cat()
                             .as_str()
                     })
@@ -748,9 +881,15 @@ impl LocatedStatement {
                         Some(prevright) => prevright.iter().cloned().chain(subst_right).collect(),
                         _ => subst_right,
                     }
+                } else if *is_empty_assign {
+                    match parse_state.expr_map.get(left.name.as_str()) {
+                        Some(prevright) => prevright.iter().cloned().collect(),
+                        _ => subst_right,
+                    }
                 } else {
                     subst_right
                 };
+                debug!("letref expr: {:?} {}= {:?}", left.name, if *is_empty_assign {"?"} else if app {"+"} else {""}, curright);
                 parse_state.rexpr_map.insert(left.name.clone(), curright);
             }
 
@@ -762,12 +901,10 @@ impl LocatedStatement {
                 let e = EqCond {
                     lhs: eq
                         .lhs
-                        .subst_pe(parse_state)
-                        .expect("no errors expected in subst"),
+                        .subst_pe(parse_state),
                     rhs: eq
                         .rhs
-                        .subst_pe(parse_state)
-                        .expect("no errors expected in subst"),
+                        .subst_pe(parse_state),
                     not_cond: eq.not_cond,
                 };
                 let (ts, es) = if e.not_cond {
@@ -816,7 +953,7 @@ impl LocatedStatement {
                 }
             }
             Statement::Include(s) => {
-                let s = s.subst_pe(parse_state)?;
+                let s = s.subst_pe(parse_state);
                 let scat = &s.cat();
                 let longp = get_parent(parse_state.cur_file.as_path());
                 let pscat = Path::new(scat.as_str());
@@ -832,6 +969,9 @@ impl LocatedStatement {
                     let cf = set_cwd(p, parse_state, path_buffers);
                     newstats.append(&mut include_stmmts.subst(parse_state, path_buffers)?);
                     set_cwd(cf.as_path(), parse_state, path_buffers);
+                } else {
+                    return Err(Error::PathNotFound(p.to_string_lossy().to_string(),
+                                                   RuleRef::new(parse_state.get_cur_file_desc(), self.getloc())))
                 }
             }
             Statement::Rule(link, _) => {
@@ -841,7 +981,7 @@ impl LocatedStatement {
                 }
                 let env_desc = parse_state.cur_env_desc.clone();
                 newstats.push(LocatedStatement::new(
-                    Statement::Rule(l.subst_pe(parse_state)?, env_desc),
+                    Statement::Rule(l.subst_pe(parse_state), env_desc),
                     *loc,
                 ));
             }
@@ -852,7 +992,7 @@ impl LocatedStatement {
                 parse_state.rule_map.insert(name.clone(), l);
             }
             Statement::Err(v) => {
-                let v = v.subst_pe(parse_state)?;
+                let v = v.subst_pe(parse_state);
                 eprintln!("{}\n", &v.cat().as_str());
                 return Err(Error::UserError(
                     v.cat().as_str().to_string(),
@@ -861,7 +1001,7 @@ impl LocatedStatement {
             }
             Statement::Preload(v) => {
                 newstats.push(LocatedStatement::new(
-                    Statement::Preload(v.subst_pe(parse_state)?),
+                    Statement::Preload(v.subst_pe(parse_state)),
                     *loc,
                 ));
             }
@@ -881,7 +1021,7 @@ impl LocatedStatement {
             }
             Statement::Run(r) => {
                 newstats.push(LocatedStatement::new(
-                    Statement::Run(r.subst_pe(parse_state)?),
+                    Statement::Run(r.subst_pe(parse_state)),
                     *loc,
                 ));
             }
@@ -916,7 +1056,9 @@ fn get_or_insert_parsed_statement(
     f: &Path,
 ) -> Result<Vec<LocatedStatement>, Error> {
     if !parse_state.is_cached(tup_desc) {
+        debug!("Parsing {:?}", f);
         let res = parse_tupfile(f)?;
+        debug!("Got: {:?} statements", res.len());
         parse_state.add_statements_to_cache(tup_desc, res);
     } else {
         debug!("Reusing cached statements for {:?}", f);
@@ -937,6 +1079,7 @@ pub struct TupParser<Q: PathSearcher + Sized + 'static> {
     path_buffers: Rc<RefCell<BufferObjects>>,
     path_searcher: Rc<RefCell<Q>>,
     config_vars: HashMap<String, Vec<String>>,
+    statement_cache: HashMap<TupPathDescriptor, Vec<LocatedStatement>>, //< cache of parsed statements for each included file
 }
 
 /// Artifacts represent rules and their outputs that the parser gathers.
@@ -987,6 +1130,7 @@ impl Artifacts {
     pub fn get_resolved_links(&self) -> &Vec<ResolvedLink> {
         &self.resolved_links
     }
+
     /*
         pub(crate) fn acquire(&mut self, outs: &impl PathSearcher) {
             self.outs.acquire(outs);
@@ -1132,6 +1276,13 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
         self.path_searcher.deref().borrow().get_outs().clone()
     }
 
+    fn extend_cache(&mut self, tup_desc: TupPathDescriptor, v: &mut Vec<LocatedStatement>) {
+        match self.statement_cache.entry(tup_desc) {
+            Entry::Occupied(_) => {}
+            Entry::Vacant(e) => { e.insert(std::mem::take(v)); }
+        }
+    }
+
     /// returned a reference to path searcher
     pub fn get_searcher(&self) -> Ref<'_, Q> {
         self.path_searcher.deref().borrow()
@@ -1152,6 +1303,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
             path_buffers: Rc::new(RefCell::from(BufferObjects::new(root_dir))),
             path_searcher,
             config_vars,
+            statement_cache: HashMap::new(),
         }
     }
 
@@ -1190,37 +1342,36 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
             self.borrow_ref().get_tup_path(&tup_desc),
             tup_desc,
             env_desc,
+            self.get_cache()
         );
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
             parse_script(parse_state, self.path_buffers.clone(), self.path_searcher.clone())
         } else {
             let stmts = parse_tupfile(tup_file_path)?;
-            let mut bo_ref_mut = self.borrow_mut_ref();
-            // create a transform function that will substitute variables in the statements
-            let mut xform = |stmt: LocatedStatement| -> Result<Vec<LocatedStatement>, Error> {
-                let vs = stmt.subst(&mut parse_state, bo_ref_mut.deref_mut())?;
-                // create a vector generator over the statements
-                let mut xform = |stmt: LocatedStatement| {
-                    expand_statement(
-                        &stmt,
-                        &mut parse_state,
-                        self.get_path_searcher().deref(),
-                        bo_ref_mut.deref_mut(),
-                    )
+            let mut res = Vec::new();
+            {
+                let mut bo_ref_mut = self.borrow_mut_ref();
+                // create a transform function that will substitute variables in the statements
+                let mut xform = |stmt: LocatedStatement| -> Result<Vec<LocatedStatement>, Error> {
+                    let vs = stmt.subst(&mut parse_state, bo_ref_mut.deref_mut())?;
+                    // create a vector generator over the statements
+                    let mut res = Vec::new();
+                    for v in vs {
+                        let mut r = expand_statement(
+                            &v,
+                            &mut parse_state,
+                            self.get_path_searcher().deref(),
+                            bo_ref_mut.deref_mut(),
+                        )?;
+                        res.append(&mut r);
+                    }
+                    Ok(res)
                 };
-
-                let mut res = Vec::new();
-                for v in vs {
-                    let mut r = xform(v)?;
+                for stmt in stmts {
+                    let mut r = xform(stmt)?;
                     res.append(&mut r);
                 }
-                Ok(res)
-            };
-            let mut res = Vec::new();
-            for stmt in stmts {
-                let mut r = xform(stmt)?;
-                res.append(&mut r);
             }
             let stmts = res;
             debug!(
@@ -1228,10 +1379,13 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
                 stmts.len(),
                 parse_state.get_cur_file()
             );
+            for (k, v) in parse_state.get_cache() {
+                self.extend_cache(*k, v);
+            }
             stmts.resolve_paths(
                 parse_state.get_cur_file(),
                 self.get_mut_searcher().deref_mut(),
-                bo_ref_mut.deref_mut(),
+                self.borrow_mut_ref().deref_mut(),
                 &tup_desc,
             )
         }
@@ -1252,6 +1406,9 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
     }
     fn get_path_searcher(&self) -> Ref<'_, Q> {
         self.path_searcher.deref().borrow()
+    }
+    fn get_cache(&self) -> &HashMap<TupPathDescriptor, Vec<LocatedStatement>> {
+        &self.statement_cache
     }
 }
 

@@ -229,6 +229,8 @@ fn test_parse() {
     use transform::*;
     type Span<'a> = LocatedSpan<&'a [u8]>;
     use statements::EnvDescriptor;
+    //use env_logger;
+    // env_logger::init();
     {
         let sp0 = Span::new(b" ifeq($(DEBUG), 20)\n");
         let res1 = parser::parse_eq(sp0);
@@ -271,11 +273,12 @@ fn test_parse() {
     let res7 = parser::parse_statement(Span::new(
         b"ifeq ($(DEBUG),1)\n: foreach $(SRCS) |>\
                                  !CC %<grp> %<grp2> |> command.pch |\
-                                 %B.o ../<grp3>\nelse\nx+=eere\nendif\n",
+                                 $(addprefix %B, $(addsuffix .o,  )) ../<grp3>\nelse\nx+=eere\nendif\n",
     ))
     .unwrap()
     .1
     .statement;
+
     let loc = Loc::new(0, 0);
     let stmts_raw = vec![res64, res65, res66, res67, res68, res7];
     let mut stmtsloc: Vec<_> = stmts_raw

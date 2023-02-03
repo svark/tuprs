@@ -142,8 +142,16 @@ fn parse_pathexpr_at(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
     context(
         "dollar expression",
-        cut(map(parse_pathexpr_ref_raw, PathExpr::DollarExpr)),
-    )(i)
+        alt((
+            complete(parse_pathexpr_addprefix),
+            complete(parse_pathexpr_addsuffix),
+            complete(parse_pathexpr_subst),
+            complete(parse_pathexpr_findstring),
+            complete(parse_pathexpr_foreach),
+            complete(parse_pathexpr_filter_out),
+            complete(parse_pathexpr_filter),
+            complete(map(parse_pathexpr_ref_raw, PathExpr::DollarExpr)),
+        )))(i)
 }
 
 // parse rvalue dollar expression eg $(H)
@@ -230,6 +238,98 @@ fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
     }
 }
 
+/// parse $(addsuffix suffix, list)
+fn parse_pathexpr_addsuffix(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(addsuffix")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (suffix, _)) = parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (list, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed add suffix: {:?} {:?}", suffix, list);
+    log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
+    Ok((s, PathExpr::AddSuffix(suffix, list)))
+}
+
+/// parse $(addprefix prefix, list)
+fn parse_pathexpr_addprefix(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(addprefix")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (prefix, _)) = cut(|s| parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS))(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (list, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed add prefix: {:?} {:?}", prefix, list);
+    log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
+    Ok((s, PathExpr::AddPrefix(prefix, list)))
+}
+
+/// parse $(subst from,to,text)
+/// $(subst from,to,text) is a function that replaces all occurrences of from with to in text.
+fn parse_pathexpr_subst(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(subst")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (from, _)) = cut(|s| parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS))(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (to, _)) = cut(|s| parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS))(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (text, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::Subst(from, to, text)))
+}
+
+/// parse $(finstring find, in)
+/// $(findstring find, in) is a function that searches for find in in and returns `find` if it is found, otherwise it returns the empty string.
+fn parse_pathexpr_findstring(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(findstring")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (find, _)) = parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (in_, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::FindString(find, in_)))
+}
+
+/// parse $(foreach var,list,text)
+/// $(foreach var,list,text) is a function that expands text once for each word in list, replacing each occurrence of var with the current word.
+fn parse_pathexpr_foreach(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(foreach")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, r) = take_while(is_ident)(s)?;
+    let var = std::str::from_utf8(r.as_bytes()).unwrap().to_string();
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (list, _)) = parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::ForEach(var, list, text)))
+}
+
+/// parse $(filter pattern...,text)
+/// $(filter pattern...,text) is a function that returns the words in text that match at least one of the given patterns.
+fn parse_pathexpr_filter(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(filter")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (patterns, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::Filter(patterns, text)))
+}
+
+/// parse $(filter-out pattern...,text)
+/// $(filter-out pattern...,text) is a function that returns the words in text that do not match any of the given patterns.
+fn parse_pathexpr_filter_out(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(filter-out")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (patterns, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::FilterOut(patterns, text)))
+}
+
+
 /// process whitespace
 fn parse_ws(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = is_a(" \t")(i)?;
@@ -296,7 +396,7 @@ fn parse_pelist_till_delim_with_ws<'a, 'b>(
 ) -> IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
     many_till(
         |i| parse_pathexpr_ws(i, delim, pathexpr_delims),
-        is_a(delim),
+        map(one_of(delim), |_| (Span::new(b"".as_ref())))
     )(input)
 }
 // repeatedly invoke the rvalue parser until eof or delim is encountered
@@ -307,7 +407,7 @@ fn parse_pelist_till_delim_no_ws<'a, 'b>(
 ) -> IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
     many_till(
         |i| parse_pathexpr_no_ws(i, delim, pathexpr_delims),
-        is_a(delim),
+        map(one_of(delim), |_| (Span::new(b"".as_ref()))),
     )(input)
 }
 
@@ -443,7 +543,7 @@ fn parse_gitignore(i: Span) -> IResult<Span, LocatedStatement> {
 fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("#")(s)?;
-    let (s, _) = is_not("\n\r")(s)?;
+    let (s, _) = opt(is_not("\n\r"))(s)?;
     let (s, _) = line_ending(s)?;
     Ok((s, (Statement::Comment, i).into()))
 }
@@ -453,7 +553,7 @@ fn parse_let_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, l) = parse_lvalue(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, op) = alt((complete(tag("=")), complete(tag(":=")), complete(tag("+="))))(s)?;
+    let (s, op) = alt((complete(tag("=")), complete(tag(":=")), complete(tag("?=")), complete(tag("+="))))(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
@@ -463,6 +563,7 @@ fn parse_let_expr(i: Span) -> IResult<Span, LocatedStatement> {
                 left: l,
                 right: r.0,
                 is_append: (op.as_bytes() == b"+="),
+                is_empty_assign: (op.as_bytes() == b"?="),
             },
             i,
         )
@@ -475,7 +576,7 @@ fn parse_letref_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, l) = parse_lvalue_ref(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, op) = alt((complete(tag("=")), complete(tag(":=")), complete(tag("+="))))(s)?;
+    let (s, op) = alt((complete(tag("=")), complete(tag(":=")), complete(tag("?=")), complete(tag("+="))))(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     Ok((
@@ -485,6 +586,7 @@ fn parse_letref_expr(i: Span) -> IResult<Span, LocatedStatement> {
                 left: l,
                 right: r.0,
                 is_append: (op.as_bytes() == b"+="),
+                is_empty_assign: (op.as_bytes() == b"?="),
             },
             i,
         )
