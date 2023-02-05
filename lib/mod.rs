@@ -17,6 +17,7 @@ extern crate petgraph;
 extern crate regex;
 extern crate thiserror;
 extern crate walkdir;
+//extern  crate env_logger;
 
 pub use decode::BinDescriptor;
 pub use decode::GeneratedFiles;
@@ -242,6 +243,27 @@ fn test_parse() {
         assert_eq!(res1.unwrap().1, prog1);
     }
     {
+        let letexpr = Span::new(b"ROOT = .\n INCS = -I$(ROOT)/inc1 -I$(ROOT)/inc2\n");
+        let res2 = parser::parse_statements_until_eof(letexpr).unwrap();
+        assert_eq!(res2.len(), 2);
+        use statements::Ident;
+        assert_eq!(res2[0].statement, Statement::LetExpr {
+            left: Ident { name: "ROOT".to_string() },
+            right: vec![Literal(".".to_string())],
+            is_append: false,
+            is_empty_assign: false,
+        });
+        assert_eq!(res2[1].statement,
+                   Statement::LetExpr {
+                       left: Ident { name: "INCS".to_string() },
+                       right: vec![Literal("-I".to_string()), DollarExpr("ROOT".to_string()), Literal("/inc1".to_string()), Sp1,
+                                   Literal("-I".to_string()), DollarExpr("ROOT".to_string()),
+                                   Literal("/inc2".to_string())],
+                       is_append: false,
+                       is_empty_assign: false,
+                   });
+    }
+    {
         let sp = Span::new(b" ifneq($(DEBUG), 20)\n");
         let res1 = parser::parse_eq(sp);
         let prog1 = EqCond {
@@ -405,3 +427,14 @@ fn test_parse() {
 
     // assert_eq!(deglob(&prog[0]).len(), 18);
 }
+/*#[test]
+fn parse_x()
+{
+    use env_logger;
+    env_logger::init();
+    use decode::{DirSearcher, PathSearcher};
+    std::env::set_current_dir(root).unwrap();
+    let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new()).unwrap();
+    let arts = parser.parse("./devtools/Tupfile").unwrap();
+    assert_eq!(arts.get_resolved_links().len(), 136);
+}*/

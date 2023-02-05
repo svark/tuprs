@@ -247,7 +247,7 @@ fn parse_pathexpr_addsuffix(i: Span) -> IResult<Span, PathExpr> {
     let (s, (list, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed add suffix: {:?} {:?}", suffix, list);
-    log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
+   // log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
     Ok((s, PathExpr::AddSuffix(suffix, list)))
 }
 
@@ -260,7 +260,7 @@ fn parse_pathexpr_addprefix(i: Span) -> IResult<Span, PathExpr> {
     let (s, (list, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed add prefix: {:?} {:?}", prefix, list);
-    log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
+    //  log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
     Ok((s, PathExpr::AddPrefix(prefix, list)))
 }
 

@@ -827,13 +827,11 @@ impl LocatedStatement {
                 is_empty_assign,
             } => {
                 let &app = is_append;
-                let subst_right: Vec<_> = right
-                    .split(|x| x == &PathExpr::Sp1)
-                    .map(|x| {
-                        x.to_vec()
-                            .subst_pe(parse_state)
-                            .cat()
-                    })
+                let subst_right_pe: Vec<_> = right.iter().flat_map(|x| x.subst(parse_state))
+                    //.filter_map(|x| if !matches!(x, PathExpr::Sp1) { Some(x.cat())} else { None})
+                    .collect();
+                let subst_right: Vec<String> = subst_right_pe.split(|x| matches!(x, PathExpr::Sp1)).map(|x|
+                    x.iter().map(|x| x.cat()).collect::<Vec<String>>().join(""))
                     .collect();
 
                 let curright: Vec<String> = if app {
@@ -953,16 +951,19 @@ impl LocatedStatement {
                 }
             }
             Statement::Include(s) => {
+                debug!("Include:{:?}", s.cat());
                 let s = s.subst_pe(parse_state);
                 let scat = &s.cat();
                 let longp = get_parent(parse_state.cur_file.as_path());
                 let pscat = Path::new(scat.as_str());
-                let fullp = longp.join(pscat);
+                let fullp = NormalPath::absolute_from(pscat, longp.as_path());
+
                 let p = if pscat.is_relative() {
                     fullp.as_path()
                 } else {
                     pscat
                 };
+                debug!("cur path to include:{:?} at {:?}", p, std::env::current_dir());
                 if p.is_file() {
                     let (tup_desc, _) = path_buffers.add_tup(p);
                     let include_stmmts = get_or_insert_parsed_statement(parse_state, &tup_desc, p)?;
@@ -1348,7 +1349,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
             // wer are not going to  resolve group paths during the first phase of parsing.
             parse_script(parse_state, self.path_buffers.clone(), self.path_searcher.clone())
         } else {
-            let stmts = parse_tupfile(tup_file_path)?;
+            let mut stmts = parse_tupfile(tup_file_path)?;
             let mut res = Vec::new();
             {
                 let mut bo_ref_mut = self.borrow_mut_ref();
@@ -1368,7 +1369,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
                     }
                     Ok(res)
                 };
-                for stmt in stmts {
+                for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
                     let mut r = xform(stmt)?;
                     res.append(&mut r);
                 }
