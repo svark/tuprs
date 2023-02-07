@@ -400,6 +400,7 @@ impl PathExpr {
                 } else if x.contains('%') {
                     vec![self.clone()]
                 } else {
+                    debug!("dollarexpr {} not found", x);
                     vec![PathExpr::from("".to_owned())] // postpone subst until placeholders are fixed
                 }
             }
@@ -409,13 +410,13 @@ impl PathExpr {
                 } else if !x.contains('%') {
                     vec![PathExpr::Literal("".to_owned())]
                 } else {
+                    debug!("atexpr {} not found", x);
                     vec![self.clone()]
                 }
             }
             PathExpr::AmpExpr(ref x) => {
                 if let Some(val) = m.rexpr_map.get(x.as_str()) {
                     intersperse_sp1(val)
-                    // val.iter().map(|x| PathExpr::from(x.clone())).collect()
                 } else if !x.contains('%') {
                     vec![PathExpr::from("".to_owned())]
                 } else {
@@ -423,11 +424,15 @@ impl PathExpr {
                 }
             }
 
+            PathExpr::Quoted(ref x) => {
+                vec![PathExpr::Quoted(x.subst_pe(m))]
+            }
+
             PathExpr::Group(ref xs, ref ys) => {
-                vec![PathExpr::Group(
-                    xs.iter().flat_map(|x| x.subst(m)).collect(),
-                    ys.iter().flat_map(|y| y.subst(m)).collect(),
-                )]
+                let newxs = xs.subst_pe(m);
+                let newys = ys.subst_pe(m);
+                debug!("newxs:{:?} newys:{:?}", newxs, newys);
+                vec![PathExpr::Group(newxs, newys)]
             }
             PathExpr::Subst(ref from, ref to, ref vs) => {
                 let vs = vs.subst_pe(m);
@@ -630,9 +635,12 @@ fn takefirst(o: &Option<PathExpr>, m: &mut ParseState) -> Result<Option<PathExpr
 impl SubstPEs for Target {
     /// run variable substitution on `Target'
     fn subst_pe(&self, m: &mut ParseState) -> Self {
+        let primary = self.primary.subst_pe(m);
+        let secondary = self.secondary.subst_pe(m);
+        debug!("subst_pe: primary: {:?}, secondary: {:?}", primary, secondary);
         Target {
-            primary: self.primary.subst_pe(m),
-            secondary: self.secondary.subst_pe(m),
+            primary,
+            secondary,
             group: takefirst(&self.group, m).unwrap_or_default(),
             bin: takefirst(&self.bin, m).unwrap_or_default(),
         }
@@ -705,6 +713,9 @@ impl ExpandMacro for Link {
 
 /// parent folder path for a given tupfile
 pub(crate) fn get_parent(cur_file: &Path) -> PathBuf {
+    if cur_file.eq(OsStr::new("/")) {
+        return PathBuf::from(".");
+    }
     let p = cur_file
         .parent()
         .unwrap_or_else(|| panic!("unable to find parent folder for tup file:{:?}", cur_file))
@@ -737,10 +748,13 @@ pub fn load_conf_vars(
     filename: &Path,
 ) -> Result<HashMap<String, Vec<String>>, Error> {
     let mut conf_vars = HashMap::new();
-
+    debug!("attempting loading conf vars from tup.config at {:?}", filename);
+    let mut loaded = false;
     if let Some(conf_file) = Path::new(filename).parent().map(|x| x.join("tup.config")) {
         if conf_file.is_file() {
             if let Some(fstr) = conf_file.to_str() {
+                debug!("loading conf vars from tup.config at {:?}", filename);
+                loaded = true;
                 for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
                     if let Statement::LetExpr { left, right, .. } = statement {
                         if let Some(rest) = left.name.strip_prefix("CONFIG_") {
@@ -750,6 +764,9 @@ pub fn load_conf_vars(
                 }
             }
         }
+    }
+    if !loaded {
+        debug!("no tup.config file found at folder corresponding to {:?}", filename);
     }
     // @(TUP_PLATFORM)
     //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
@@ -905,6 +922,7 @@ impl LocatedStatement {
                         .subst_pe(parse_state),
                     not_cond: eq.not_cond,
                 };
+                debug!("testing {:?} == {:?}", e.lhs,  e.rhs);
                 let (ts, es) = if e.not_cond {
                     (else_statements, then_statements)
                 } else {
@@ -922,6 +940,7 @@ impl LocatedStatement {
                 else_statements,
             } => {
                 let cvar = PathExpr::AtExpr(checked_var.0.name.clone());
+                debug!("testing ifdef {:?}", cvar);
                 if cvar.subst(parse_state).iter().any(is_empty) == checked_var.1 {
                     newstats.append(&mut then_statements.subst(parse_state, path_buffers)?);
                 } else {
@@ -1264,7 +1283,7 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
         let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(RootNotFound)?;
 
         let root = tup_ini.parent().ok_or(RootNotFound)?;
-        let conf_vars = load_conf_vars(root)?;
+        let conf_vars = load_conf_vars(tup_ini.as_path())?;
         Ok(TupParser::new_from(
             root,
             conf_vars,
@@ -1421,7 +1440,8 @@ pub fn locate_file<P: AsRef<Path>>(
 ) -> Option<PathBuf> {
     let mut cwd = cur_tupfile.as_ref();
     let pb: PathBuf;
-    if cwd.is_dir() {
+    if cwd.is_dir() || cwd.as_os_str().is_empty()
+    {
         pb = cwd.join("Tupfile");
         cwd = &pb;
     }
@@ -1437,6 +1457,7 @@ pub fn locate_file<P: AsRef<Path>>(
                 return Some(p);
             }
         }
+        debug!("next path we are looking for {:?} in {:?}", file_to_loc, parent.parent());
         cwd = parent;
     }
     None

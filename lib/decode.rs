@@ -1790,7 +1790,7 @@ impl InputsAsPaths {
     /// Returns all paths as strings in a vector
     pub(crate) fn get_file_names(&self) -> Vec<String> {
         self.raw_inputs
-            .iter()
+            .iter().map(|x| x.as_path())
             .filter_map(|f| f.file_name())
             .map(|x| x.to_string_lossy().to_string())
             .collect()
@@ -1798,31 +1798,38 @@ impl InputsAsPaths {
 
     /// Returns the first parent folder name
     pub(crate) fn parent_folder_name(&self) -> Option<String> {
+        if self.raw_inputs.is_empty() && self.groups_by_name.is_empty() {
+            debug!("no inputs");
+            return None
+        }
         self.raw_inputs
-            .iter()
+            .iter().map(|x| x.as_path())
+            .chain(self.groups_by_name.values().map(Path::new))
             .filter_map(|f| f.parent())
             .filter_map(|f| f.file_name())
-            .map(|x| x.to_string_lossy().to_string())
-            .next()
+            .map(|x| x.to_string_lossy().to_string()).next()
     }
 
     /// returns all the inputs
     pub(crate) fn get_paths(&self) -> Vec<String> {
         self.raw_inputs
-            .iter()
+            .iter().map(|x| x.as_path())
+            .chain(self.groups_by_name.values().map(Path::new))
             .map(|x| x.to_string_lossy().to_string())
             .collect()
     }
 
     pub(crate) fn get_extension(&self) -> Option<String> {
         self.raw_inputs
-            .first()
-            .and_then(|x| x.extension())
-            .map(|x| x.to_string_lossy().to_string())
+            .iter().map(|x| x.as_path())
+            .chain(self.groups_by_name.values().map(Path::new))
+            .filter_map(|x| x.extension())
+            .map(|x| x.to_string_lossy().to_string()).next()
     }
     pub(crate) fn get_file_stem(&self) -> Vec<String> {
         self.raw_inputs
-            .iter()
+            .iter().map(|x| x.as_path())
+            .chain(self.groups_by_name.values().map(Path::new))
             .filter_map(|x| x.file_stem())
             .map(|x| x.to_string_lossy().to_string())
             .collect()
@@ -1884,7 +1891,7 @@ impl InputsAsPaths {
             .map(|(s, v)| (s, v.join(" ")))
             .collect();
         let raw_inputs_glob_match = inp.first().cloned();
-        debug!("gl:{:?}", raw_inputs_glob_match);
+        debug!("input glob match :{:?}", raw_inputs_glob_match);
         InputsAsPaths {
             raw_inputs: allnongroups,
             groups_by_name: namedgroupitems,
@@ -1996,7 +2003,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if stems.is_empty() {
                     return Err(Err::StalePerc('B', rule_ref.clone()));
                 }
-                d.replace("%B", inp.get_file_stem().join(" ").as_str())
+                d.replace("%B", stems.join(" ").as_str())
             } else {
                 d
             };

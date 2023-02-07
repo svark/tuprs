@@ -4,6 +4,7 @@
 extern crate bimap;
 extern crate bstr;
 extern crate daggy;
+extern crate env_logger;
 #[macro_use]
 extern crate lazy_static;
 extern crate log;
@@ -17,7 +18,6 @@ extern crate petgraph;
 extern crate regex;
 extern crate thiserror;
 extern crate walkdir;
-//extern  crate env_logger;
 
 pub use decode::BinDescriptor;
 pub use decode::GeneratedFiles;
@@ -46,7 +46,7 @@ pub mod transform;
 fn test_op() {
     use statements::CleanupPaths;
     use statements::PathExpr;
-    use statements::PathExpr::Sp1;
+    use statements::PathExpr::{Quoted, Sp1};
     use std::fs::File;
     use std::io::Write;
     {
@@ -58,7 +58,7 @@ fn test_op() {
                   SRCS=*.cxx $(PRVSRCS)\n\
                   #comment\n\
                   SRCS +=*.cpp\n\
-                  !CC = |> cl %f /Fout:%o |> \n";
+                  !CC = |> \"visual studio/cl\" %f /Fout:%o |> \n";
         file.write_all(stmts).expect("write failed");
         let stmts1 = b"include tupdata0.txt\n\
                        ifeq ($(DEBUG),1) \n \
@@ -138,7 +138,9 @@ fn test_op() {
                     rule_formula: RuleFormula {
                         description: vec![],
                         formula: vec![
-                            Literal("cl".to_string()),
+                            Quoted(
+                                vec![Literal("visual studio/cl".to_string())],
+                            ),
                             Sp1,
                             Literal("%f".to_string()),
                             Sp1,
@@ -427,14 +429,17 @@ fn test_parse() {
 
     // assert_eq!(deglob(&prog[0]).len(), 18);
 }
-/*#[test]
+/*
+#[test]
 fn parse_x()
 {
     use env_logger;
     env_logger::init();
-    use decode::{DirSearcher, PathSearcher};
+    use decode::{DirSearcher};
+    let root = "c:/ws/fegeomscratch";
     std::env::set_current_dir(root).unwrap();
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new()).unwrap();
-    let arts = parser.parse("./devtools/Tupfile").unwrap();
-    assert_eq!(arts.get_resolved_links().len(), 136);
-}*/
+    let arts = parser.parse("./hm/commands/Tupfile").unwrap();
+    assert_eq!(arts.get_resolved_links().len(), 375);
+}
+ */

@@ -11,6 +11,8 @@ pub(crate) enum PathExpr {
     Literal(String),
     /// spaces between paths
     Sp1,
+    /// Quoted string
+    Quoted(Vec<PathExpr>),
     /// Exclude patterns at the end of rules to avoid tracking some outputs
     ExcludePattern(String),
     /// $(EXPR)
@@ -293,14 +295,23 @@ pub(crate) trait CleanupPaths {
 }
 
 impl CleanupPaths for Vec<PathExpr> {
+    // merges adjacent literals into one. Adjacent literals show up usually after substitution.
     fn cleanup(&mut self) {
         let mut newpes: String = String::new();
         let mut newpesall = Vec::new();
         let mut was_lit = false;
         let mut was_sp = false;
         for pe in self.iter() {
-            if matches!(pe, PathExpr::Literal(_)) {
-                newpes += pe.cat_ref();
+            if let PathExpr::Quoted(vs) = pe
+            {
+                let mut vs = vs.clone();
+                vs.cleanup();
+                newpesall.push(PathExpr::Quoted(vs));
+                newpes = "".to_string();
+                was_lit = false;
+            } else if matches!(pe, PathExpr::Literal(_)) {
+                let s = pe.cat_ref();
+                newpes += s;
                 was_lit = true;
             } else if was_lit {
                 newpesall.push(PathExpr::Literal(newpes));
@@ -312,7 +323,7 @@ impl CleanupPaths for Vec<PathExpr> {
             } else if was_sp {
                 newpesall.push(PathExpr::Sp1);
             }
-            if !matches!(pe, PathExpr::Sp1 | PathExpr::Literal(_)) {
+            if !matches!(pe, PathExpr::Sp1 | PathExpr::Literal(_) | PathExpr::Quoted(_)) {
                 newpesall.push(pe.clone());
             }
         }
@@ -416,6 +427,7 @@ impl Cat for &PathExpr {
         match self {
             PathExpr::Literal(x) => x.clone(),
             PathExpr::Sp1 => " ".to_string(),
+            PathExpr::Quoted(v) => format!("\"{}\"", v.cat()),
             PathExpr::Group(p, g) => format!("{}<{}>", p.cat(), g.cat()),
             _ => String::new(),
         }

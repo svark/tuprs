@@ -40,6 +40,7 @@ impl Loc {
 lazy_static! {
     static ref BRKTOKSINNER: &'static str = "\\\n$&";
     static ref BRKTOKS: &'static str = "\\\n$@&";
+    static ref BRKTOKSQ: &'static str = "\\\n$@&\"";
     static ref BRKTOKSWS: &'static str = "\\\n$@& ";
     static ref BRKTOKSIO: &'static str = "\\\n $@&^<{";
     static ref BRKTAGSNOWS: &'static str = "<|{";
@@ -336,6 +337,14 @@ fn parse_ws(i: Span) -> IResult<Span, PathExpr> {
     Ok((s, PathExpr::Sp1))
 }
 
+fn parse_quote(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("\"")(i)?;
+    let parse_inner = |s| parse_pelist_till_delim_no_ws(s, "\"", &BRKTOKSQ);
+    let (s, (inner, _)) = parse_inner(s)?;
+    log::debug!("read: {:?}", inner);
+    Ok((s, PathExpr::Quoted(inner)))
+}
+
 /// eat up the (dollar or at) that dont parse to (dollar or at) expression
 fn parse_delim(i: Span) -> IResult<Span, Span> {
     if !test_pathexpr_ref(i) {
@@ -364,8 +373,9 @@ pub(crate) fn parse_pathexpr_ws<'a, 'b>(
     pathexpr_toks: &'static str,
 ) -> IResult<Span<'a>, PathExpr> {
     alt((
-        complete(parse_ws),
         complete(parse_escaped),
+        complete(parse_quote),
+        complete(parse_ws),
         complete(parse_pathexprbasic),
         complete(map_res(
             |i| parse_misc_bits(i, delim, pathexpr_toks),
@@ -1025,6 +1035,7 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
 pub(crate) fn locate_tuprules<P: AsRef<Path>>(cur_tupfile: P) -> VecDeque<PathBuf> {
     let mut v = VecDeque::new();
 
+    log::debug!("locating tuprules for {:?}", cur_tupfile.as_ref());
     let mut tupr = cur_tupfile.as_ref();
     while let Some(p) = transform::locate_file(tupr, "Tuprules.tup", "lua") {
         v.push_front(p);
@@ -1033,6 +1044,7 @@ pub(crate) fn locate_tuprules<P: AsRef<Path>>(cur_tupfile: P) -> VecDeque<PathBu
             break;
         }
         tupr = tupr.parent().unwrap();
+        log::debug!("try:{:?}", tupr);
     }
     v
 }
