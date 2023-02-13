@@ -1,6 +1,5 @@
 //! This module handles decoding and de-globbing of rules
 use std::borrow::{Borrow, Cow};
-use std::cell::{Ref, RefCell, RefMut};
 use std::collections::{HashMap, HashSet};
 use std::collections::hash_map::Entry;
 use std::ffi::{OsStr, OsString};
@@ -8,13 +7,14 @@ use std::fmt::Formatter;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use bimap::BiMap;
 use bimap::hash::RightValues;
 use bstr::ByteSlice;
 use daggy::Dag;
 use log::{debug, log_enabled};
+use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use path_dedot::ParseDot;
 use pathdiff::diff_paths;
 use petgraph::graph::NodeIndex;
@@ -62,9 +62,6 @@ pub trait PathSearcher {
 
     /// Merge outputs from previous outputs
     fn merge(&mut self, o: &impl OutputHandler) -> Result<(), Error>;
-
-    /// Acquire children and group paths from another searcher
-    fn acquire(&mut self, t: OutputHolder);
 }
 
 /// Methods to store and retrieve paths, groups, bins, rules from in-memory buffers
@@ -566,25 +563,25 @@ impl GenEnvBufferObject {
 
 /// Wrapper over outputs
 #[derive(Default, Debug, Clone)]
-pub struct OutputHolder(Rc<RefCell<GeneratedFiles>>);
+pub struct OutputHolder(Arc<RwLock<GeneratedFiles>>);
 
 impl OutputHolder {
     /// construct from
     pub fn from(outs: GeneratedFiles) -> OutputHolder {
-        OutputHolder(Rc::new(RefCell::new(outs)))
+        OutputHolder(Arc::new(RwLock::new(outs)))
     }
     /// Create an empty output holder
     pub fn new() -> OutputHolder {
-        OutputHolder(Rc::new(RefCell::new(GeneratedFiles::new())))
+        OutputHolder(Arc::new(RwLock::new(GeneratedFiles::new())))
     }
 
     /// Fetch generated files for read
-    pub(crate) fn get(&self) -> Ref<'_, GeneratedFiles> {
-        self.0.deref().borrow()
+    pub(crate) fn get(&self) -> RwLockReadGuard<'_, GeneratedFiles> {
+        self.0.deref().read()
     }
     /// Fetch generated files for write
-    pub(crate) fn get_mut(&self) -> RefMut<'_, GeneratedFiles> {
-        self.0.deref().borrow_mut()
+    pub(crate) fn get_mut(&self) -> RwLockWriteGuard<'_, GeneratedFiles> {
+        self.0.deref().write()
     }
 }
 
@@ -848,17 +845,17 @@ impl GeneratedFiles {
 /// Interface to add and read outputs of rules parsed in tupfiles.
 pub trait OutputHandler {
     /// Get all the output files from rules accumulated so far
-    fn get_output_files(&self) -> Ref<'_, HashSet<PathDescriptor>>;
+    fn get_output_files(&self) -> MappedRwLockReadGuard<'_, HashSet<PathDescriptor>>;
     /// Get all the groups with collected rule outputs
-    fn get_groups(&self) -> Ref<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>>;
+    fn get_groups(&self) -> MappedRwLockReadGuard<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>>;
     /// Get paths stored against a bin
-    fn get_bins(&self) -> Ref<'_, HashMap<BinDescriptor, HashSet<PathDescriptor>>>;
+    fn get_bins(&self) -> MappedRwLockReadGuard<'_, HashMap<BinDescriptor, HashSet<PathDescriptor>>>;
     /// Get parent dir -> children map
-    fn get_children(&self) -> Ref<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>>;
+    fn get_children(&self) -> MappedRwLockReadGuard<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>>;
     /// the parent rule that generates a output file
-    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<Ref<'_, RuleRef>>;
+    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<MappedRwLockReadGuard<'_, RuleRef>>;
     /// parent rule of each output path
-    fn get_parent_rules(&self) -> Ref<'_, HashMap<PathDescriptor, RuleRef>>;
+    fn get_parent_rules(&self) -> MappedRwLockReadGuard<'_, HashMap<PathDescriptor, RuleRef>>;
     /// Add an entry to the set that holds output paths
     fn add_output(&mut self, pd: PathDescriptor) -> bool;
 
@@ -888,15 +885,13 @@ impl PathSearcher for OutputHolder {
     ) -> Result<Vec<MatchingPath>, Error> {
         let mut vs = Vec::new();
         if !glob_path.has_glob_pattern() {
-            self.0.deref().borrow().outputs_with_desc(
+            self.get().outputs_with_desc(
                 glob_path.get_path_desc(),
                 glob_path.get_base_desc(),
                 &mut vs,
             );
         } else {
-            self.0
-                .deref()
-                .borrow()
+            self.get()
                 .outputs_matching_glob(path_buffers, &glob_path, &mut vs);
         }
         Ok(vs)
@@ -907,41 +902,38 @@ impl PathSearcher for OutputHolder {
     }
 
     fn merge(&mut self, o: &impl OutputHandler) -> Result<(), Error> {
-        self.0.deref().borrow_mut().merge(o)
+        self.get_mut().merge(o)
     }
 
-    fn acquire(&mut self, t: OutputHolder) {
-        self.0.swap(&*t.0)
-    }
 }
 impl OutputHandler for OutputHolder {
-    fn get_output_files(&self) -> Ref<'_, HashSet<PathDescriptor>> {
-        Ref::map(self.get(), |x| x.get_output_files())
+    fn get_output_files(&self) -> MappedRwLockReadGuard<'_, HashSet<PathDescriptor>> {
+        RwLockReadGuard::map(self.get(), |x| x.get_output_files())
     }
 
-    fn get_groups(&self) -> Ref<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>> {
-        Ref::map(self.get(), |x| x.get_groups())
+    fn get_groups(&self) -> MappedRwLockReadGuard<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>> {
+        RwLockReadGuard::map(self.get(), |x| x.get_groups())
     }
 
-    fn get_bins(&self) -> Ref<'_, HashMap<BinDescriptor, HashSet<PathDescriptor>>> {
-        Ref::map(self.get(), |x| x.get_bins())
+    fn get_bins(&self) -> MappedRwLockReadGuard<'_, HashMap<BinDescriptor, HashSet<PathDescriptor>>> {
+        RwLockReadGuard::map(self.get(), |x| x.get_bins())
     }
 
-    fn get_children(&self) -> Ref<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>> {
-        Ref::map(self.get(), |x| x.get_children())
+    fn get_children(&self) -> MappedRwLockReadGuard<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>> {
+        RwLockReadGuard::map(self.get(), |x| x.get_children())
     }
 
-    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
+    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<MappedRwLockReadGuard<'_, RuleRef>> {
         let r = self.get();
         if r.get_parent_rule(o).is_some() {
-            Some(Ref::map(self.get(), |x| x.get_parent_rule(o).unwrap()))
+            Some(RwLockReadGuard::map(self.get(), |x| x.get_parent_rule(o).unwrap()))
         } else {
             None
         }
     }
 
-    fn get_parent_rules(&self) -> Ref<'_, HashMap<PathDescriptor, RuleRef>> {
-        Ref::map(self.get(), |x| x.get_parent_rules())
+    fn get_parent_rules(&self) -> MappedRwLockReadGuard<'_, HashMap<PathDescriptor, RuleRef>> {
+        RwLockReadGuard::map(self.get(), |x| x.get_parent_rules())
     }
 
     fn add_output(&mut self, pd: PathDescriptor) -> bool {
@@ -1443,10 +1435,6 @@ impl PathSearcher for DirSearcher {
 
     fn merge(&mut self, o: &impl OutputHandler) -> Result<(), Error> {
         OutputHandler::merge(&mut self.output_holder, o)
-    }
-
-    fn acquire(&mut self, t: OutputHolder) {
-        self.output_holder.acquire(t);
     }
 }
 
@@ -2572,7 +2560,7 @@ impl ResolvePaths for Vec<ResolvedLink> {
                     path_buffers,
                     resolved_link.get_rule_ref().get_tupfile_desc(),
                 )?;
-                resolved_artifacts.extend(art)?;
+                resolved_artifacts.extend(art);
             } else {
                 resolved_artifacts.add_link(resolved_link.clone())
             }
@@ -2749,7 +2737,7 @@ impl ResolvePaths for Vec<LocatedStatement> {
         for stmt in self.iter() {
             let (art, _) = stmt.resolve_paths(tupfile, path_searcher, path_buffers, tup_desc)?;
             debug!("{:?}", art);
-            merged_arts.extend(art)?;
+            merged_arts.extend(art);
         }
         Ok(merged_arts)
     }
@@ -2774,7 +2762,7 @@ pub fn parse_dir(root: &Path) -> Result<Artifacts, Error> {
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new())?;
     for tup_file_path in tupfiles.iter() {
         let artifacts = parser.parse(tup_file_path)?;
-        artifacts_all.extend(artifacts)?;
+        artifacts_all.extend(artifacts);
     }
 
     {

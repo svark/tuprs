@@ -3,8 +3,9 @@
 #![warn(missing_docs)]
 extern crate bimap;
 extern crate bstr;
+extern crate crossbeam;
 extern crate daggy;
-extern crate env_logger;
+//extern crate env_logger;
 #[macro_use]
 extern crate lazy_static;
 extern crate log;
@@ -12,6 +13,7 @@ extern crate mlua;
 #[macro_use]
 extern crate nom;
 extern crate nom_locate;
+extern crate parking_lot;
 extern crate path_dedot;
 extern crate pathdiff;
 extern crate petgraph;
@@ -439,7 +441,7 @@ fn parse_x()
     let root = "c:/ws/fegeomscratch";
     std::env::set_current_dir(root).unwrap();
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new()).unwrap();
-    let arts = parser.parse("./hm/commands/Tupfile").unwrap();
+    let arts = parser.parse("./hm/hmcore/Tupfile").unwrap();
     assert_eq!(arts.get_resolved_links().len(), 375);
 }
- */
+*/

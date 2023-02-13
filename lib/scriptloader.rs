@@ -1,11 +1,9 @@
 use std::borrow::BorrowMut;
-use std::cell::RefCell;
 use std::cell::RefMut;
 use std::fs::File;
 use std::io::Read;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::rc::Rc;
 use std::sync::Arc;
 
 use log::{debug, log_enabled};
@@ -14,6 +12,7 @@ use mlua::{AnyUserData, HookTriggers, Lua, MultiValue, StdLib, ToLua, Value, Var
 use mlua::{UserData, UserDataMethods};
 use mlua::Error::SyntaxError;
 use nom::{AsBytes, InputTake};
+use parking_lot::RwLock;
 
 use decode::{GlobPath, OutputHandler, PathBuffers, PathSearcher};
 use errors::Error as Err;
@@ -115,8 +114,8 @@ Returns the extension in the filename filename (excluding the .) or the empty st
 #[derive(Clone, Debug, Default)]
 pub struct TupScriptContext<P: PathBuffers + Sized, Q: PathSearcher + Sized> {
     parse_state: ParseState,
-    path_buffers: Rc<RefCell<P>>,
-    path_searcher: Rc<RefCell<Q>>,
+    path_buffers: Arc<RwLock<P>>,
+    path_searcher: Arc<RwLock<Q>>,
     arts: Artifacts,
 }
 #[derive(Debug, Default, Clone)]
@@ -316,8 +315,8 @@ impl ScriptRuleCommand {
 impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
     pub(crate) fn new(
         parse_state: ParseState,
-        path_buffers: Rc<RefCell<P>>,
-        path_searcher: Rc<RefCell<Q>>,
+        path_buffers: Arc<RwLock<P>>,
+        path_searcher: Arc<RwLock<Q>>,
     ) -> TupScriptContext<P, Q> {
         TupScriptContext {
             arts: Artifacts::new(),
@@ -327,11 +326,17 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         }
     }
 
-    pub(crate) fn bo_as_mut(&self) -> RefMut<'_, P> {
-        self.path_buffers.deref().borrow_mut()
+    pub(crate) fn bo_as_mut(&self) -> parking_lot::RwLockWriteGuard<'_, P> {
+        self.path_buffers.deref().write()
     }
-    pub(crate) fn bo_as_ref(&self) -> std::cell::Ref<'_, P> {
-        self.path_buffers.deref().borrow()
+    pub(crate) fn bo_as_ref(&self) -> parking_lot::RwLockReadGuard<'_, P> {
+        self.path_buffers.deref().read()
+    }
+    pub(crate) fn get_mut_path_searcher(&self) -> parking_lot::RwLockWriteGuard<'_, Q> {
+        self.path_searcher.deref().write()
+    }
+    pub(crate) fn get_path_searcher(&self) -> parking_lot::RwLockReadGuard<'_, Q> {
+        self.path_searcher.deref().read()
     }
 
     pub fn export(&mut self, var: String) {
@@ -363,7 +368,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         let (arts, outs) = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
-                self.path_searcher.deref().borrow_mut().deref_mut(),
+                self.get_mut_path_searcher().deref_mut(),
                 self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
             )
@@ -381,8 +386,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             );
         }
         self.arts
-            .extend(arts)
-            .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
+            .extend(arts);
         Ok(paths)
     }
 
@@ -411,7 +415,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         let (arts, outs) = statement
             .resolve_paths(
                 self.parse_state.get_cur_file(),
-                self.path_searcher.deref().borrow_mut().deref_mut(),
+                self.get_mut_path_searcher().deref_mut(),
                 self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
             )
@@ -422,8 +426,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             paths.push(path);
         }
         self.arts
-            .extend(arts)
-            .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
+            .extend(arts);
         Ok(paths)
     }
 
@@ -443,7 +446,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             .to_string()
     }
     pub fn get_root(&self) -> std::path::PathBuf {
-        self.path_buffers.deref().borrow().get_root_dir().to_path_buf()
+        self.bo_as_ref().get_root_dir().to_path_buf()
     }
     pub fn dir(a: &str) -> String {
         Path::new(a).parent().unwrap().to_string_lossy().to_string()
@@ -861,16 +864,17 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
             let tup_shared: AnyUserData = globals.get("tup")?;
             let scriptctx: RefMut<TupScriptContext<P, Q>> = tup_shared.borrow_mut()?;
             //let outputs = OutputAssocs::new_no_resolve_groups();
-            let path_searcher = scriptctx.path_searcher.as_ref().borrow();
-            let glob_path = &GlobPath::new(
-                Path::new(scriptctx.get_cwd().as_str()),
-                Path::new(path),
-                scriptctx.bo_as_mut().deref_mut(),
-            );
-
-            let matching_paths = path_searcher
-                .discover_paths(scriptctx.bo_as_mut().deref_mut(), glob_path)
-                .expect("Glob expansion failed");
+            let matching_paths = {
+                let path_searcher = scriptctx.get_path_searcher();
+                let glob_path = &GlobPath::new(
+                    Path::new(scriptctx.get_cwd().as_str()),
+                    Path::new(path),
+                    scriptctx.bo_as_mut().deref_mut(),
+                );
+                path_searcher
+                    .discover_paths(scriptctx.bo_as_mut().deref_mut(), glob_path)
+                    .expect("Glob expansion failed")
+            };
             let glob_out = luactx.create_table()?;
             let mut cnt = 1;
             for m in matching_paths {
@@ -926,8 +930,8 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
 /// main entry point for parsing Tupfile.lua
 pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static>(
     parse_state: ParseState,
-    path_buffers: Rc<RefCell<P>>,
-    path_searcher: Rc<RefCell<Q>>,
+    path_buffers: Arc<RwLock<P>>,
+    path_searcher: Arc<RwLock<Q>>,
 ) -> Result<Artifacts, Err> {
     let lua = unsafe { Lua::unsafe_new() };
     let r = lua.scope(|scope| {

@@ -1,17 +1,18 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
 use std::borrow::Cow;
-use std::cell::{Ref, RefCell, RefMut};
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::ops::{AddAssign, Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::vec::Drain;
 
+use crossbeam::channel::{Receiver, Sender};
 use log::debug;
 use nom::AsBytes;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use parking_lot::MappedRwLockReadGuard;
 use pathdiff::diff_paths;
 
 use decode::{
@@ -26,6 +27,21 @@ use parser::locate_tuprules;
 use platform::*;
 use scriptloader::parse_script;
 use statements::*;
+
+pub struct StatementsToResolve {
+    statements: Vec<LocatedStatement>,
+    //< statements to resolve
+    parse_state: ParseState, // state of parsing
+}
+
+impl StatementsToResolve {
+    pub(crate) fn new(statements: Vec<LocatedStatement>, parse_state: ParseState) -> Self {
+        StatementsToResolve {
+            statements,
+            parse_state,
+        }
+    }
+}
 
 /// ParseState holds maps tracking current state of variable replacements as we read a tupfile
 #[derive(Debug, Clone, Default)]
@@ -49,14 +65,16 @@ pub(crate) struct ParseState {
     /// current state of env variables to be passed to rules for execution
     pub(crate) cur_env_desc: EnvDescriptor,
     /// Cache of statements from previously read Tupfiles
-    pub(crate) statement_cache: HashMap<TupPathDescriptor, Vec<LocatedStatement>>,
+    pub(crate) statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
 }
+
+impl ParseState {}
 
 // Default Env to feed into every tupfile
 fn init_env() -> Env {
     let mut def_exported = HashMap::new();
     #[cfg(target_os = "windows")]
-    let keys: Vec<&str> = vec![
+        let keys: Vec<&str> = vec![
         /* NOTE: Please increment PARSER_VERSION if these are modified */
         "PATH",
         "HOME",
@@ -119,7 +137,7 @@ impl ParseState {
         cur_file: &Path,
         cur_file_desc: TupPathDescriptor,
         cur_env_desc: EnvDescriptor,
-        statement_cache: &HashMap<TupPathDescriptor, Vec<LocatedStatement>>
+        statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
     ) -> Self {
         let mut def_vars = HashMap::new();
         let dir = get_parent_str(cur_file);
@@ -136,8 +154,9 @@ impl ParseState {
             ..ParseState::default()
         }
     }
-    pub(crate) fn get_cache(&mut self) -> &mut HashMap<TupPathDescriptor, Vec<LocatedStatement>> {
-        &mut self.statement_cache
+    pub(crate) fn get_statements_from_cache(&self, tup_desc: &TupPathDescriptor) -> Option<Vec<LocatedStatement>> {
+        let x = self.statement_cache.deref().read();
+        x.get(tup_desc).cloned()
     }
 
     pub(crate) fn replace_tup_cwd(&mut self, dir: &str) -> Option<Vec<String>> {
@@ -170,16 +189,8 @@ impl ParseState {
 
     /// Add statements to cache.
     fn add_statements_to_cache(&mut self, tup_desc: &TupPathDescriptor, mut vs: Vec<LocatedStatement>) {
-        let vs = vs.drain(..).filter(|s| !s.is_comment()).collect();
-        self.statement_cache.insert(*tup_desc, vs);
-    }
-    fn is_cached(&self, tup_desc: &TupPathDescriptor) -> bool {
-        self.statement_cache.contains_key(tup_desc)
-    }
-
-    /// Get statement already in cache from the given tup file(or one of the included files)
-    fn get_statements(&self, tup_desc: &TupPathDescriptor) -> Option<&Vec<LocatedStatement>> {
-        self.statement_cache.get(tup_desc)
+        let vs: Vec<_> = vs.drain(..).filter(|s| !s.is_comment()).collect();
+        self.statement_cache.deref().write().entry(*tup_desc).or_insert(vs);
     }
 }
 
@@ -1075,31 +1086,27 @@ fn get_or_insert_parsed_statement(
     tup_desc: &TupPathDescriptor,
     f: &Path,
 ) -> Result<Vec<LocatedStatement>, Error> {
-    if !parse_state.is_cached(tup_desc) {
+    if let Some(vs) = parse_state.get_statements_from_cache(tup_desc) {
+        debug!("Reusing cached statements for {:?}", f);
+        Ok(vs)
+    } else {
         debug!("Parsing {:?}", f);
         let res = parse_tupfile(f)?;
         debug!("Got: {:?} statements", res.len());
-        parse_state.add_statements_to_cache(tup_desc, res);
-    } else {
-        debug!("Reusing cached statements for {:?}", f);
+        parse_state.add_statements_to_cache(tup_desc, res.clone());
+        Ok(res)
     }
-    let include_stmts = parse_state
-        .get_statements(tup_desc)
-        .cloned()
-        .unwrap_or_default();
-    Ok(include_stmts)
 }
 
 /// TupParser parser for a file containing tup file syntax
 /// Inputs are config vars, Tupfile\[.lua\] path and a buffer in which to store descriptors for files.
 /// The parser returns  resolved rules,  outputs of rules packaged in OutputTagInfo and updated buffer objects.
-
-#[derive(Debug, Clone, Default)]
-pub struct TupParser<Q: PathSearcher + Sized + 'static> {
-    path_buffers: Rc<RefCell<BufferObjects>>,
-    path_searcher: Rc<RefCell<Q>>,
+#[derive(Debug, Clone)]
+pub struct TupParser<Q: PathSearcher + Sized + Send + 'static> {
+    path_buffers: Arc<RwLock<BufferObjects>>,
+    path_searcher: Arc<RwLock<Q>>,
     config_vars: HashMap<String, Vec<String>>,
-    statement_cache: HashMap<TupPathDescriptor, Vec<LocatedStatement>>, //< cache of parsed statements for each included file
+    statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>, //< cache of parsed statements for each included file
 }
 
 /// Artifacts represent rules and their outputs that the parser gathers.
@@ -1131,9 +1138,8 @@ impl Artifacts {
     }
 
     /// extend links in `artifacts` with those in self
-    pub fn extend(&mut self, mut artifacts: Artifacts) -> Result<(), Error> {
+    pub fn extend(&mut self, mut artifacts: Artifacts) {
         self.resolved_links.extend(artifacts.drain_resolved_links());
-        Ok(())
     }
     /// add a single link
     pub fn add_link(&mut self, rlink: ResolvedLink) {
@@ -1202,25 +1208,34 @@ impl Artifacts {
 /// such as (rules, paths, groups, bins) stored during parsing.
 /// It is also available for writing some data in the parser's buffers
 pub struct ReadWriteBufferObjects {
-    bo: Rc<RefCell<BufferObjects>>,
+    bo: Arc<RwLock<BufferObjects>>,
 }
 
 impl ReadWriteBufferObjects {
     /// Constructor
-    pub fn new(bo: Rc<RefCell<BufferObjects>>) -> ReadWriteBufferObjects {
+    pub fn new(bo: Arc<RwLock<BufferObjects>>) -> ReadWriteBufferObjects {
         ReadWriteBufferObjects { bo }
+    }
+    /// get a read only reference to buffer objects
+    pub fn get(&self) -> RwLockReadGuard<'_, BufferObjects> {
+        self.bo.deref().read()
+    }
+
+    /// get a mutable reference to buffer objects
+    pub fn get_mut(&self) -> RwLockWriteGuard<'_, BufferObjects> {
+        self.bo.deref().write()
     }
     /// add a  path to parser's buffer and return its unique id.
     /// If it already exists in its buffers boolean returned will be false
     pub fn add_abs(&mut self, p: &Path) -> (PathDescriptor, bool) {
-        self.bo.deref().borrow_mut().add_abs(p)
+        self.get_mut().add_abs(p)
     }
     /// iterate over all the (grouppath, groupid) pairs stored in buffers during parsing
     pub fn for_each_group<F>(&self, f: F)
         where
             F: FnMut((&NormalPath, &GroupPathDescriptor)),
     {
-        let r = self.bo.deref().borrow();
+        let r = self.get_mut();
         r.group_iter().for_each(f);
     }
     /// Iterate over group ids
@@ -1228,51 +1243,49 @@ impl ReadWriteBufferObjects {
         where
             F: FnMut(&GroupPathDescriptor) -> (GroupPathDescriptor, i64),
     {
-        self.bo.deref().borrow().get_group_descs().map(f).collect()
+        self.bo.deref().read().get_group_descs().map(f).collect()
     }
 
     /// returns the rule corresponding to `RuleDescriptor`
-    pub fn get_rule(&self, rd: &RuleDescriptor) -> Ref<'_, RuleFormulaUsage> {
-        let r = self.bo.deref().borrow();
-        Ref::map(r, |x| x.get_rule(rd))
+    pub fn get_rule(&self, rd: &RuleDescriptor) -> MappedRwLockReadGuard<'_, RuleFormulaUsage> {
+        let r = self.get();
+        RwLockReadGuard::map(r, |x| x.get_rule(rd))
     }
     /// Return resolved input type in the string form.
     pub fn get_input_path_str(&self, i: &InputResolvedType) -> String {
-        self.bo
-            .deref()
-            .borrow_mut()
+        self.get()
             .get_path_str(i.get_resolved_path_desc().unwrap())
     }
     /// Return the file path corresponding to its id
-    pub fn get_path(&self, p0: &PathDescriptor) -> Ref<'_, NormalPath> {
-        let r = self.bo.deref().borrow();
-        Ref::map(r, |x| x.get_path(p0))
+    pub fn get_path(&self, p0: &PathDescriptor) -> MappedRwLockReadGuard<'_, NormalPath> {
+        let r = self.get();
+        RwLockReadGuard::map(r, |x| x.get_path(p0))
     }
     /// Return the file path corresponding to its id
     pub fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor> {
-        let r = self.bo.deref().borrow();
+        let r = self.get();
         r.get_parent_id(pd)
     }
 
     /// Returns the tup file path corresponding to its id
-    pub fn get_tup_path(&self, p0: &TupPathDescriptor) -> Ref<'_, Path> {
-        let r = self.bo.deref().borrow();
-        Ref::map(r, |x| x.get_tup_path(p0))
+    pub fn get_tup_path(&self, p0: &TupPathDescriptor) -> MappedRwLockReadGuard<'_, Path> {
+        let r = self.get();
+        RwLockReadGuard::map(r, |x| x.get_tup_path(p0))
     }
     /// Return tup id from its path
-    pub fn get_tup_id(&self, p: &Path) -> Ref<'_, TupPathDescriptor> {
-        let r = self.bo.deref().borrow();
-        Ref::map(r, |x| x.get_tup_id(p))
+    pub fn get_tup_id(&self, p: &Path) -> MappedRwLockReadGuard<'_, TupPathDescriptor> {
+        let r = self.get();
+        RwLockReadGuard::map(r, |x| x.get_tup_id(p))
     }
 
     /// Return set of environment variables
-    pub fn get_envs(&self, e: &EnvDescriptor) -> Ref<'_, Env> {
-        let r = self.bo.deref().borrow();
-        Ref::map(r, |x| x.try_get_env(e).unwrap_or_else(|| panic!("env not found:{:?}", e)))
+    pub fn get_envs(&self, e: &EnvDescriptor) -> MappedRwLockReadGuard<'_, Env> {
+        let r = self.get();
+        RwLockReadGuard::map(r, |x| x.try_get_env(e).unwrap_or_else(|| panic!("env not found:{:?}", e)))
     }
 }
 
-impl<Q: PathSearcher + Sized> TupParser<Q> {
+impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     /// Fallible constructor that attempts to setup a parser after looking from the current folder,
     /// a root folder where Tupfile.ini exists. If found, it also attempts to load config vars from
     /// tup.config files it can successfully locate in the root folder.
@@ -1287,43 +1300,36 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
         Ok(TupParser::new_from(
             root,
             conf_vars,
-            Rc::new(RefCell::new(path_searcher)),
+            Arc::new(RwLock::new(path_searcher)),
         ))
     }
 
     /// return outputs gathered by this parser and the relationships to its rule, directory etc
     pub fn get_outs(&self) -> OutputHolder {
-        self.path_searcher.deref().borrow().get_outs().clone()
-    }
-
-    fn extend_cache(&mut self, tup_desc: TupPathDescriptor, v: &mut Vec<LocatedStatement>) {
-        match self.statement_cache.entry(tup_desc) {
-            Entry::Occupied(_) => {}
-            Entry::Vacant(e) => { e.insert(std::mem::take(v)); }
-        }
+        self.get_searcher().get_outs().clone()
     }
 
     /// returned a reference to path searcher
-    pub fn get_searcher(&self) -> Ref<'_, Q> {
-        self.path_searcher.deref().borrow()
+    pub fn get_searcher(&self) -> RwLockReadGuard<'_, Q> {
+        self.path_searcher.deref().read()
     }
 
     /// returned a reference to path searcher
-    pub fn get_mut_searcher(&self) -> RefMut<'_, Q> {
-        self.path_searcher.deref().borrow_mut()
+    pub fn get_mut_searcher(&self) -> RwLockWriteGuard<'_, Q> {
+        self.path_searcher.deref().write()
     }
 
     /// Construct at the given rootdir and using config vars
     pub fn new_from<P: AsRef<Path>>(
         root_dir: P,
         config_vars: HashMap<String, Vec<String>>,
-        path_searcher: Rc<RefCell<Q>>,
+        path_searcher: Arc<RwLock<Q>>,
     ) -> TupParser<Q> {
         TupParser {
-            path_buffers: Rc::new(RefCell::from(BufferObjects::new(root_dir))),
+            path_buffers: Arc::new(RwLock::from(BufferObjects::new(root_dir))),
             path_searcher,
             config_vars,
-            statement_cache: HashMap::new(),
+            statement_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -1332,12 +1338,72 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
         ReadWriteBufferObjects::new(self.path_buffers.clone())
     }
 
-    pub(crate) fn borrow_ref(&self) -> Ref<BufferObjects> {
-        return self.path_buffers.deref().borrow();
+    pub(crate) fn borrow_ref(&self) -> RwLockReadGuard<'_, BufferObjects> {
+        return self.path_buffers.deref().read();
     }
 
-    pub(crate) fn borrow_mut_ref(&self) -> RefMut<BufferObjects> {
-        return self.path_buffers.deref().borrow_mut();
+    pub(crate) fn borrow_mut_ref(&self) -> RwLockWriteGuard<'_, BufferObjects> {
+        return self.path_buffers.deref().write();
+    }
+
+    pub(crate) fn with_path_buffers_do<F, R>(&self, f: F) -> R
+        where
+            F: FnOnce(&mut BufferObjects) -> R,
+    {
+        let mut bo = self.borrow_mut_ref();
+        f(&mut bo)
+    }
+
+    pub(crate) fn with_path_searcher_do<F, R>(&self, f: F) -> R
+        where
+            F: FnOnce(&mut Q) -> R,
+    {
+        let mut bo = self.get_mut_searcher();
+        f(&mut bo)
+    }
+    /// `parse` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
+    /// These are all referenced by their ids that are generated  on the fly.
+    /// Upon success the parser returns `Artifacts` that holds  references to all the resolved outputs by their ids
+    /// The parser currently also allows you to read its buffers (id-object pairs) and even update it based on externally saved data via `ReadBufferObjects` and `WriteBufObjects`
+    /// See [Artifacts]
+    pub fn send_tupfile<P: AsRef<Path>>(
+        &mut self,
+        tup_file_path: P,
+        sender: Sender<StatementsToResolve>,
+    ) -> Result<(), Error> {
+        // add tupfile path and tup environment to the buffer
+        let (tup_desc, env_desc) = self.with_path_buffers_do(|boref| {
+            let (tup_desc, _) = boref.add_tup(tup_file_path.as_ref());
+            let env = init_env();
+            let (env_desc, _) = boref.add_env(Cow::Borrowed(&env));
+            (tup_desc, env_desc)
+        });
+
+        // create a parser state
+        let parse_state = ParseState::new(
+            &self.config_vars,
+            self.borrow_ref().get_tup_path(&tup_desc),
+            tup_desc,
+            env_desc,
+            self.statement_cache.clone(),
+        );
+        // now we ready to parse the tupfile or tupfile.lua
+        {
+            let stmts = parse_tupfile(tup_file_path)?;
+            sender.send(StatementsToResolve::new(stmts, parse_state)).unwrap();
+            Ok(())
+        }
+    }
+
+    /// wait for the next [StatementsToResolve] and process them
+    pub fn receive_resolved_statements(&mut self, receiver: Receiver<StatementsToResolve>) -> Result<Artifacts, Error> {
+        let mut artifacts = Artifacts::new();
+        for to_resolve in receiver.iter() {
+            let arts = self.process_raw_statements(to_resolve)?;
+            artifacts.extend(arts)
+        }
+        drop(receiver);
+        Ok(artifacts)
     }
 
     /// `parse` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
@@ -1349,86 +1415,87 @@ impl<Q: PathSearcher + Sized> TupParser<Q> {
         &mut self,
         tup_file_path: P,
     ) -> Result<Artifacts, Error> {
-        let (tup_desc, env_desc) = {
-            let mut boref = self.borrow_mut_ref();
+        // add tupfile path and tup environment to the buffer
+        let (tup_desc, env_desc) = self.with_path_buffers_do(|boref| {
             let (tup_desc, _) = boref.add_tup(tup_file_path.as_ref());
             let env = init_env();
             let (env_desc, _) = boref.add_env(Cow::Borrowed(&env));
             (tup_desc, env_desc)
-        };
+        });
 
-        let mut parse_state = ParseState::new(
+        // create a parser state
+        let parse_state = ParseState::new(
             &self.config_vars,
             self.borrow_ref().get_tup_path(&tup_desc),
             tup_desc,
             env_desc,
-            self.get_cache()
+            self.statement_cache.clone(),
         );
+        // now we ready to parse the tupfile or tupfile.lua
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
+            // both path buffers and path searcher are rc-cloned (with shared ref cells) and passed to the lua parser
             parse_script(parse_state, self.path_buffers.clone(), self.path_searcher.clone())
         } else {
-            let mut stmts = parse_tupfile(tup_file_path)?;
+            let stmts = parse_tupfile(tup_file_path)?;
+            self.process_raw_statements(StatementsToResolve::new(stmts, parse_state))
+        }
+    }
+
+    fn process_raw_statements(&self, statements_to_resolve: StatementsToResolve) -> Result<Artifacts, Error> {
+        let mut parse_state = statements_to_resolve.parse_state;
+        let mut stmts = statements_to_resolve.statements;
+        let tup_desc = *parse_state.get_cur_file_desc();
+        let res = self.with_path_buffers_do(|bo_ref_mut| -> Result<Vec<LocatedStatement>, Error> {
             let mut res = Vec::new();
-            {
-                let mut bo_ref_mut = self.borrow_mut_ref();
-                // create a transform function that will substitute variables in the statements
-                let mut xform = |stmt: LocatedStatement| -> Result<Vec<LocatedStatement>, Error> {
-                    let vs = stmt.subst(&mut parse_state, bo_ref_mut.deref_mut())?;
-                    // create a vector generator over the statements
-                    let mut res = Vec::new();
-                    for v in vs {
-                        let mut r = expand_statement(
-                            &v,
-                            &mut parse_state,
-                            self.get_path_searcher().deref(),
-                            bo_ref_mut.deref_mut(),
-                        )?;
-                        res.append(&mut r);
-                    }
-                    Ok(res)
-                };
-                for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
-                    let mut r = xform(stmt)?;
-                    res.append(&mut r);
+            // create a transform function that will substitute variables in the statements
+            for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
+                let vs = stmt.subst(&mut parse_state, bo_ref_mut)?;
+                // create a vector generator over the statements
+                for v in vs {
+                    let mut r = expand_statement(
+                        &v,
+                        &mut parse_state,
+                        self.get_path_searcher().deref(),
+                        bo_ref_mut,
+                    )?;
+                    res.extend(r.drain(..));
                 }
             }
-            let stmts = res;
-            debug!(
+            Ok(res)
+        })?;
+        let stmts = res;
+        debug!(
                 "num statements after expand run:{:?} in tupfile {:?}",
                 stmts.len(),
                 parse_state.get_cur_file()
             );
-            for (k, v) in parse_state.get_cache() {
-                self.extend_cache(*k, v);
-            }
-            stmts.resolve_paths(
-                parse_state.get_cur_file(),
-                self.get_mut_searcher().deref_mut(),
-                self.borrow_mut_ref().deref_mut(),
-                &tup_desc,
-            )
-        }
+        stmts.resolve_paths(
+            parse_state.get_cur_file(),
+            self.get_mut_searcher().deref_mut(),
+            self.borrow_mut_ref().deref_mut(),
+            &tup_desc,
+        )
     }
 
     /// Re-resolve for resolved groups that were left unresolved in the first round of parsing
     /// This step is usually run as a second pass to resolve group references across Tupfiles
     pub fn reresolve(&mut self, arts: Artifacts) -> Result<Artifacts, Error> {
         let pbuf = PathBuf::new();
-        let mut boref = self.borrow_mut_ref();
-        let mut path_searcher = self.path_searcher.deref().borrow_mut();
-        arts.get_resolved_links().resolve_paths(
-            pbuf.as_path(),
-            path_searcher.deref_mut(),
-            boref.deref_mut(),
-            &TupPathDescriptor::new(0),
-        )
+        type R = Result<Artifacts, Error>;
+        self.with_path_buffers_do(|path_buffers| -> R {
+            self.with_path_searcher_do(|path_searcher| -> R {
+                arts.get_resolved_links().resolve_paths(
+                    pbuf.as_path(),
+                    path_searcher,
+                    path_buffers,
+                    &TupPathDescriptor::new(0),
+                )
+            })
+        })
     }
-    fn get_path_searcher(&self) -> Ref<'_, Q> {
-        self.path_searcher.deref().borrow()
-    }
-    fn get_cache(&self) -> &HashMap<TupPathDescriptor, Vec<LocatedStatement>> {
-        &self.statement_cache
+    fn get_path_searcher(&self) -> RwLockReadGuard<'_, Q> {
+        self.path_searcher.deref().read()
     }
 }
 
