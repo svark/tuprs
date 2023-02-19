@@ -2474,7 +2474,7 @@ impl GatherOutputs for ResolvedLink {
         let mut children = Vec::new();
         for path_desc in self.get_targets() {
             debug!(
-                "adding parent for : {:?} as {:?}",
+                "adding parent for: {:?} as {:?}",
                 path_buffers.get_path(path_desc),
                 &rule_ref
             );
@@ -2718,6 +2718,7 @@ impl LocatedStatement {
                     deglobbed.push(delink);
                 }
             } else if !inpdec.is_empty() || !secondinpdec.is_empty() {
+                debug!("Resolving rule {:?} at {:?}", rule_ref, tup_cwd);
                 let delink = get_deglobbed_rule(&resolver, inpdec.as_slice(), path_buffers, env)?;
                 delink.gather_outputs(&mut output, path_buffers)?;
                 deglobbed.push(delink);
