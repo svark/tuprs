@@ -2708,6 +2708,10 @@ impl LocatedStatement {
             let for_each = s.for_each;
             if for_each {
                 for input in inpdec {
+                    if input.is_unresolved() {
+                        log::warn!("Unresolved input files found : {:?} for rule:{:?} at  {:?}/Tupfile:{:?}", input, resolver.rule_formula, resolver.tup_cwd, rule_ref);
+                        continue;
+                    }
                     let delink =
                         get_deglobbed_rule(&resolver, core::slice::from_ref(&input), path_buffers, env)?;
                     delink.gather_outputs(&mut output, path_buffers)?;

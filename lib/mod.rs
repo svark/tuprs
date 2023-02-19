@@ -441,7 +441,7 @@ fn parse_x()
     let root = "c:/ws/fegeomscratch";
     std::env::set_current_dir(root).unwrap();
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new()).unwrap();
-    let arts = parser.parse("./hm/hmcore/Tupfile").unwrap();
+    let arts = parser.parse("./hwcommon/hcdi/src/MESSAGE/Tupfile").unwrap();
     assert_eq!(arts.get_resolved_links().len(), 375);
 }
-*/
+ */

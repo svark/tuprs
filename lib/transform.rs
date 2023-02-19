@@ -28,6 +28,7 @@ use platform::*;
 use scriptloader::parse_script;
 use statements::*;
 
+/// Statements to resolve with their current parse state
 pub struct StatementsToResolve {
     statements: Vec<LocatedStatement>,
     //< statements to resolve
@@ -40,6 +41,9 @@ impl StatementsToResolve {
             statements,
             parse_state,
         }
+    }
+    pub(crate) fn get_tup_desc(&self) -> &TupPathDescriptor {
+        &self.parse_state.cur_file_desc
     }
 }
 
@@ -1283,6 +1287,12 @@ impl ReadWriteBufferObjects {
         let r = self.get();
         RwLockReadGuard::map(r, |x| x.try_get_env(e).unwrap_or_else(|| panic!("env not found:{:?}", e)))
     }
+
+    /// get a reportable version of error for display
+    pub fn display_str(&self, e: &Error) -> String {
+        let r = self.get();
+        e.human_readable(r.deref())
+    }
 }
 
 impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
@@ -1396,10 +1406,12 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     }
 
     /// wait for the next [StatementsToResolve] and process them
-    pub fn receive_resolved_statements(&mut self, receiver: Receiver<StatementsToResolve>) -> Result<Artifacts, Error> {
+    pub fn receive_resolved_statements(&mut self, receiver: Receiver<StatementsToResolve>) -> Result<Artifacts, crate::errors::ErrorContext> {
         let mut artifacts = Artifacts::new();
         for to_resolve in receiver.iter() {
-            let arts = self.process_raw_statements(to_resolve)?;
+            let tup_desc = to_resolve.get_tup_desc().clone();
+            let arts = self.process_raw_statements(to_resolve).map_err(|e|
+                crate::errors::ErrorContext::new(e, tup_desc))?;
             artifacts.extend(arts)
         }
         drop(receiver);
@@ -1416,10 +1428,10 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         tup_file_path: P,
     ) -> Result<Artifacts, Error> {
         // add tupfile path and tup environment to the buffer
-        let (tup_desc, env_desc) = self.with_path_buffers_do(|boref| {
-            let (tup_desc, _) = boref.add_tup(tup_file_path.as_ref());
+        let (tup_desc, env_desc) = self.with_path_buffers_do(|path_buffers| {
+            let (tup_desc, _) = path_buffers.add_tup(tup_file_path.as_ref());
             let env = init_env();
-            let (env_desc, _) = boref.add_env(Cow::Borrowed(&env));
+            let (env_desc, _) = path_buffers.add_env(Cow::Borrowed(&env));
             (tup_desc, env_desc)
         });
 

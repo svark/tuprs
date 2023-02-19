@@ -1,10 +1,12 @@
 //! Module for tracking errors during tupfile parsing
 use std::io::Error as IoErr;
 
+use regex::{Regex, Replacer};
 use thiserror::Error as ThisError;
 
-use decode::{PathDescriptor, RuleRef};
+use decode::{PathDescriptor, PathSearcher, RuleRef};
 use statements::Loc;
+use TupPathDescriptor;
 
 /// Errors returning during parsing and subst-ing Tupfiles
 #[non_exhaustive]
@@ -41,7 +43,7 @@ pub enum Error {
     #[error("Groups reference {0} could not be resolved at input{0}")]
     StaleGroupRef(String, RuleRef),
     /// Bin reference could not be resolved
-    #[error("Bin reference {0} could not be resolved at input{0}")]
+    #[error("Bin reference {0} could not be resolved at input {0}")]
     StaleBinRef(String, RuleRef),
     /// Percentage char in rules could not be resolved
     #[error("%{0} could not be resolved for rule at: {1}")]
@@ -78,10 +80,52 @@ pub enum Error {
     UserError(String, RuleRef),
 }
 
+pub struct ErrorContext {
+    e: Error,
+    p: TupPathDescriptor,
+}
+
+impl ErrorContext
+{
+    pub fn new(e: Error, p: TupPathDescriptor) -> Self {
+        Self { e, p }
+    }
+
+    pub fn get_tup_descriptor(&self) -> &TupPathDescriptor {
+        &self.p
+    }
+    pub fn get_error_ref(&self) -> &Error {
+        &self.e
+    }
+
+    pub fn get_error(self) -> Error {
+        self.e
+    }
+}
+
 impl Error {
     /// Create an error from outside this library to allow traits of this library
     /// to have  have fallible implementations outside of this library
     pub fn new_path_search_error(error_str: &str, _rule_ref: RuleRef) -> Error {
         Error::PathSearchError(error_str.to_string())
     }
+    pub fn human_readable(&self, path_buffers: &impl crate::decode::PathBuffers) -> String {
+        let r = Regex::new(r"TupPathDescriptor\((\d+)\)").unwrap();
+
+        let selstr = self.to_string();
+        let replacement = r.replace_all(selstr.as_str(), |caps: &regex::Captures| {
+            let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
+            let path = path_buffers.get_tup_path(&TupPathDescriptor::new(num));
+            path.to_string_lossy().to_string()
+        });
+
+        let r = Regex::new(r"PathDescriptor\((\d+)\)").unwrap();
+        r.replace_all(replacement.as_ref(), |caps: &regex::Captures| {
+            let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
+            let path = path_buffers.get_path(&PathDescriptor::new(num));
+            path.as_path().to_string_lossy().to_string()
+        }).to_string()
+    }
 }
+
+
