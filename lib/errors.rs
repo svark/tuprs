@@ -1,10 +1,10 @@
 //! Module for tracking errors during tupfile parsing
 use std::io::Error as IoErr;
 
-use regex::{Regex, Replacer};
+use regex::Regex;
 use thiserror::Error as ThisError;
 
-use decode::{PathDescriptor, PathSearcher, RuleRef};
+use decode::{PathDescriptor, RuleRef};
 use statements::Loc;
 use TupPathDescriptor;
 
@@ -80,6 +80,7 @@ pub enum Error {
     UserError(String, RuleRef),
 }
 
+/// Error along with the tupfile path where it occurred
 pub struct ErrorContext {
     e: Error,
     p: TupPathDescriptor,
@@ -87,17 +88,21 @@ pub struct ErrorContext {
 
 impl ErrorContext
 {
+    ///Create a new error context
     pub fn new(e: Error, p: TupPathDescriptor) -> Self {
         Self { e, p }
     }
 
+    /// tupfile path descriptor where this error occurred
     pub fn get_tup_descriptor(&self) -> &TupPathDescriptor {
         &self.p
     }
+    /// error reference held with this context
     pub fn get_error_ref(&self) -> &Error {
         &self.e
     }
 
+    /// pass the error out of self
     pub fn get_error(self) -> Error {
         self.e
     }
@@ -109,7 +114,7 @@ impl Error {
     pub fn new_path_search_error(error_str: &str, _rule_ref: RuleRef) -> Error {
         Error::PathSearchError(error_str.to_string())
     }
-    pub fn human_readable(&self, path_buffers: &impl crate::decode::PathBuffers) -> String {
+    pub(crate) fn human_readable(&self, path_buffers: &impl crate::decode::PathBuffers) -> String {
         let r = Regex::new(r"TupPathDescriptor\((\d+)\)").unwrap();
 
         let selstr = self.to_string();
