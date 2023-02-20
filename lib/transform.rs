@@ -413,9 +413,10 @@ impl PathExpr {
                 if let Some(val) = m.expr_map.get(x.as_str()) {
                     intersperse_sp1(val)
                 } else if x.contains('%') {
+                    log::warn!("dollarexpr {} not found", x);
                     vec![self.clone()]
                 } else {
-                    debug!("dollarexpr {} not found", x);
+                    debug!("delay subst of {}", x);
                     vec![PathExpr::from("".to_owned())] // postpone subst until placeholders are fixed
                 }
             }
@@ -423,9 +424,10 @@ impl PathExpr {
                 if let Some(val) = m.conf_map.get(x.as_str()) {
                     intersperse_sp1(val)
                 } else if !x.contains('%') {
+                    log::warn!("atexpr {} not found", x);
                     vec![PathExpr::Literal("".to_owned())]
                 } else {
-                    debug!("atexpr {} not found", x);
+                    log::debug!("delay subst of atexpr {}", x);
                     vec![self.clone()]
                 }
             }
@@ -433,8 +435,10 @@ impl PathExpr {
                 if let Some(val) = m.rexpr_map.get(x.as_str()) {
                     intersperse_sp1(val)
                 } else if !x.contains('%') {
+                    log::warn!("ampexpr {} not found", x);
                     vec![PathExpr::from("".to_owned())]
                 } else {
+                    log::debug!("delay subst of ampexpr {}", x);
                     vec![self.clone()]
                 }
             }
@@ -773,6 +777,7 @@ pub fn load_conf_vars(
                 for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
                     if let Statement::LetExpr { left, right, .. } = statement {
                         if let Some(rest) = left.name.strip_prefix("CONFIG_") {
+                            log::warn!("conf var:{} = {}", rest, right.cat());
                             conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
                         }
                     }
@@ -1306,6 +1311,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(RootNotFound)?;
 
         let root = tup_ini.parent().ok_or(RootNotFound)?;
+        log::debug!("root folder: {:?}", root);
         let conf_vars = load_conf_vars(tup_ini.as_path())?;
         Ok(TupParser::new_from(
             root,

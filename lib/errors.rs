@@ -46,11 +46,11 @@ pub enum Error {
     #[error("Bin reference {0} could not be resolved at input {0}")]
     StaleBinRef(String, RuleRef),
     /// Percentage char in rules could not be resolved
-    #[error("%{0} could not be resolved for rule at: {1}")]
-    StalePerc(char, RuleRef),
+    #[error("%{0} could not be resolved from {2} for rule at: {1}")]
+    StalePerc(char, RuleRef, String),
     ///  Numbered reference could not be resolved
-    #[error("Number reference %[num]{0} could not be resolved at input: {1}")]
-    StalePercNumberedRef(char, RuleRef),
+    #[error("Number reference %[num]{0} could not be resolved from {2} for rule at {1}")]
+    StalePercNumberedRef(char, RuleRef, String),
     /// Lua script error
     #[error("Script Error: {0}")]
     ScriptError(String, u32),

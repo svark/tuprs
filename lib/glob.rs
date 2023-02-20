@@ -1,21 +1,21 @@
 // code taken mostly verbatim from globset crate glob
 // adapted to return a regex with capturing groups corresponding to group
 
-use platform::get_platform;
-use regex;
 use std::borrow::Cow;
-use std::ops::{Deref, DerefMut};
-
 use std::error::Error as StdError;
 use std::fmt;
 use std::hash;
 use std::iter;
+use std::ops::{Deref, DerefMut};
 use std::path::{is_separator, Path};
 use std::str;
 
 //use aho_corasick::AhoCorasick;
 use bstr::ByteVec;
+use regex;
 use regex::bytes::{Regex, RegexBuilder};
+
+use platform::get_platform;
 
 //use bstr::{ByteSlice, ByteVec};
 /// Represents an error that can occur when parsing a glob pattern.
@@ -243,7 +243,7 @@ impl GlobMatcher {
     /// get the i-the matching capturing group in path. Each glob pattern has corresponds to a capturing group
     pub fn group<P: AsRef<Path>>(&self, path: P) -> Vec<String> {
         let c = Candidate::new(path.as_ref());
-        log::debug!("group regex: {:?}", self.re);
+        log::debug!("group regex: {:?} in {:?}", self.re, str::from_utf8(c.path()));
         let u: u8 = b'G';
         self.re
             .captures_iter(c.path.as_ref())

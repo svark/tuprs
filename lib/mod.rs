@@ -5,7 +5,8 @@ extern crate bimap;
 extern crate bstr;
 extern crate crossbeam;
 extern crate daggy;
-//extern crate env_logger;
+#[cfg(test)]
+extern crate env_logger;
 #[macro_use]
 extern crate lazy_static;
 extern crate log;
@@ -46,6 +47,8 @@ pub mod transform;
 
 #[test]
 fn test_op() {
+    use env_logger;
+    let _ = env_logger::try_init();
     use statements::CleanupPaths;
     use statements::PathExpr;
     use statements::PathExpr::{Quoted, Sp1};
@@ -65,7 +68,7 @@ fn test_op() {
         let stmts1 = b"include tupdata0.txt\n\
                        ifeq ($(DEBUG),1) \n \
                        :foreach $(SRCS)  ../<grp> ../<grp2> |> \
-                  !CC %<grp> %<grp2> \\\n |> command.pch | ^exclude_pattern.* {objs}\
+                  !CC %<grp> %<grp2> \\\n |> | command.pch  ^exclude_pattern.* {objs}\
                   \n &v := src/main.rs\n\
                   :&(v) |> type %f > file.txt |> \\\nfile.txt |\n\
                   : |> type &(v) |> \n\
@@ -132,8 +135,8 @@ fn test_op() {
                         secondary: vec![],
                     },
                     target: Target {
-                        secondary: vec![Literal("command.pch".to_string())],
-                        primary: vec![Sp1, ExcludePattern("exclude_pattern.*".to_string())],
+                        primary: vec![],
+                        secondary: vec![Sp1, Literal("command.pch".to_string()), Sp1, ExcludePattern("exclude_pattern.*".to_string())],
                         group: None,
                         bin: Some(Bin("objs".to_string())),
                     },
@@ -165,8 +168,8 @@ fn test_op() {
                         secondary: vec![],
                     },
                     target: Target {
-                        primary: vec![],
-                        secondary: vec![Literal("file.txt".to_string())],
+                        secondary: vec![],
+                        primary: vec![Literal("file.txt".to_string())],
                         group: None,
                         bin: None,
                     },
@@ -298,8 +301,8 @@ fn test_parse() {
         .statement;
     let res7 = parser::parse_statement(Span::new(
         b"ifeq ($(DEBUG),1)\n: foreach $(SRCS) |>\
-                                 !CC %<grp> %<grp2> |> command.pch |\
-                                 $(addprefix %B, $(addsuffix .o,  )) ../<grp3>\nelse\nx+=eere\nendif\n",
+                                 !CC %<grp> %<grp2> |> $(addprefix %B, $(addsuffix .o,  ))\
+                                  | command.pch ../<grp3>\nelse\nx+=eere\nendif\n",
     ))
     .unwrap()
     .1
@@ -337,7 +340,7 @@ fn test_parse() {
                 secondary: vec![],
             },
             target: Target {
-                secondary: vec![Literal("command.pch".to_string())],
+                secondary: vec![Sp1, Literal("command.pch".to_string())],
                 primary: vec![Literal("%B.o".to_string())],
                 group: Some(Group(
                     vec![Literal("../".to_string())],
@@ -431,17 +434,16 @@ fn test_parse() {
 
     // assert_eq!(deglob(&prog[0]).len(), 18);
 }
-/*
+
 #[test]
 fn parse_x()
 {
     use env_logger;
-    env_logger::init();
-    use decode::{DirSearcher};
+    let _ = env_logger::try_init();
+    use decode::DirSearcher;
     let root = "c:/ws/fegeomscratch";
     std::env::set_current_dir(root).unwrap();
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new()).unwrap();
-    let arts = parser.parse("./hwcommon/hcdi/src/MESSAGE/Tupfile").unwrap();
+    let arts = parser.parse("./hm/swmesh/shrinkwrapinput/Tupfile").unwrap();
     assert_eq!(arts.get_resolved_links().len(), 375);
 }
- */

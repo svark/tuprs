@@ -750,7 +750,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     };
 
     let (output, secondary_output) = if has_more {
-        (output1, output0.unwrap_or((Vec::new(), false)).0)
+        (output0.unwrap_or((Vec::new(), false)).0, output1)
     } else {
         (output0.unwrap_or((Vec::new(), false)).0, Vec::new())
     };

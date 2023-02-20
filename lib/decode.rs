@@ -1763,6 +1763,7 @@ pub struct InputsAsPaths {
     groups_by_name: HashMap<String, String>,
     raw_inputs_glob_match: Option<InputResolvedType>,
     rule_ref: RuleRef,
+    tup_dir: PathBuf,
 }
 impl InputsAsPaths {
     /// Returns all paths  (space separated) associated with a given group name
@@ -1785,17 +1786,8 @@ impl InputsAsPaths {
     }
 
     /// Returns the first parent folder name
-    pub(crate) fn parent_folder_name(&self) -> Option<String> {
-        if self.raw_inputs.is_empty() && self.groups_by_name.is_empty() {
-            debug!("no inputs");
-            return None
-        }
-        self.raw_inputs
-            .iter().map(|x| x.as_path())
-            .chain(self.groups_by_name.values().map(Path::new))
-            .filter_map(|f| f.parent())
-            .filter_map(|f| f.file_name())
-            .map(|x| x.to_string_lossy().to_string()).next()
+    pub(crate) fn parent_folder_name(&self) -> &Path {
+        self.tup_dir.as_path()
     }
 
     /// returns all the inputs
@@ -1885,6 +1877,7 @@ impl InputsAsPaths {
             groups_by_name: namedgroupitems,
             raw_inputs_glob_match,
             rule_ref,
+            tup_dir: tup_cwd.to_path_buf(),
         }
     }
 }
@@ -1943,12 +1936,13 @@ impl DecodeInputPlaceHolders for PathExpr {
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
     ) -> Result<Self, Err> {
+
         let frep = |inp: &InputsAsPaths, sinp: &InputsAsPaths, d: &str| -> Result<String, Err> {
             let rule_ref = &inp.rule_ref;
             let d = if d.contains("%f") {
                 let inputs = inp.get_paths();
                 if inputs.is_empty() {
-                    return Err(Err::StalePerc('f', rule_ref.clone()));
+                    return Err(Err::StalePerc('f', rule_ref.clone(), d.to_string()))
                 }
                 d.replace("%f", inputs.join(" ").as_str())
             } else {
@@ -1959,7 +1953,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                 // numbered inputs will be replaced here
                 let inputs = inp.get_paths();
                 if inputs.is_empty() {
-                    return Err(Err::StalePerc('f', rule_ref.clone()));
+                    return Err(Err::StalePerc('f', rule_ref.clone(), d.clone()));
                 }
                 replace_decoded_str(d.as_str(), &inputs, &PERC_NUM_F_RE, rule_ref, 'f')?
             } else {
@@ -1969,7 +1963,7 @@ impl DecodeInputPlaceHolders for PathExpr {
             let d = if d.contains("%b") {
                 let fnames = inputs.get_file_names();
                 if fnames.is_empty() {
-                    return Err(Err::StalePerc('b', rule_ref.clone()));
+                    return Err(Err::StalePerc('b', rule_ref.clone(), d.clone()));
                 }
                 d.replace("%b", fnames.join(" ").as_str())
             } else {
@@ -1979,7 +1973,7 @@ impl DecodeInputPlaceHolders for PathExpr {
             let d = if PERC_NUM_B_RE.captures(d.as_str()).is_some() {
                 let fnames = inputs.get_file_names();
                 if fnames.is_empty() {
-                    return Err(Err::StalePercNumberedRef('b', rule_ref.clone()));
+                    return Err(Err::StalePercNumberedRef('b', rule_ref.clone(), d.clone()));
                 }
                 replace_decoded_str(d.as_str(), &fnames, &PERC_NUM_B_RE, rule_ref, 'b')?
             } else {
@@ -1989,7 +1983,7 @@ impl DecodeInputPlaceHolders for PathExpr {
             let d = if d.contains("%B") {
                 let stems = inp.get_file_stem();
                 if stems.is_empty() {
-                    return Err(Err::StalePerc('B', rule_ref.clone()));
+                    return Err(Err::StalePerc('B', rule_ref.clone(), d.clone()));
                 }
                 d.replace("%B", stems.join(" ").as_str())
             } else {
@@ -1999,7 +1993,7 @@ impl DecodeInputPlaceHolders for PathExpr {
             let d = if PER_CAP_B_RE.captures(d.as_str()).is_some() {
                 let stems = inp.get_file_stem();
                 if stems.is_empty() {
-                    return Err(Err::StalePercNumberedRef('B', rule_ref.clone()));
+                    return Err(Err::StalePercNumberedRef('B', rule_ref.clone(), d.clone()));
                 }
                 replace_decoded_str(d.as_ref(), &stems, &PER_CAP_B_RE, rule_ref, 'B')?
             } else {
@@ -2009,22 +2003,21 @@ impl DecodeInputPlaceHolders for PathExpr {
             let d = if d.contains("%e") {
                 let ext = inp
                     .get_extension()
-                    .ok_or_else(|| Err::StalePerc('e', rule_ref.clone()))?;
+                    .ok_or_else(|| Err::StalePerc('e', rule_ref.clone(), d.clone()))?;
                 d.replace("%e", ext.as_str())
             } else {
                 d
             };
             let d = if d.contains("%d") {
                 let parent_name = inp
-                    .parent_folder_name()
-                    .ok_or_else(|| Err::StalePerc('d', rule_ref.clone()))?;
+                    .parent_folder_name().to_string_lossy().to_string();
                 d.replace("%d", parent_name.as_str())
             } else {
                 d
             };
             let d = if d.contains("%g") {
                 let g = inp.get_glob().and_then(|x| x.first());
-                let g = g.ok_or_else(|| Err::StalePerc('g', rule_ref.clone()))?;
+                let g = g.ok_or_else(|| Err::StalePerc('g', rule_ref.clone(), d.clone()))?;
                 d.replace("%g", g.as_str())
             } else {
                 d
@@ -2034,7 +2027,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                 // replace with secondary inputs (order only inputs)
                 let sinputsflat = sinp.get_paths();
                 if sinp.is_empty() {
-                    return Err(Err::StalePerc('i', sinp.rule_ref.clone()));
+                    return Err(Err::StalePerc('i', sinp.rule_ref.clone(), d));
                 }
                 d.replace("%i", sinputsflat.join(" ").as_str())
             } else {
@@ -2043,7 +2036,7 @@ impl DecodeInputPlaceHolders for PathExpr {
             let d = if PERC_NUM_I.captures(d.as_str()).is_some() {
                 // replaced with numbered captures of order only inputs
                 if sinp.is_empty() {
-                    return Err(Err::StalePercNumberedRef('i', sinp.rule_ref.clone()));
+                    return Err(Err::StalePercNumberedRef('i', sinp.rule_ref.clone(), d));
                 }
                 let sinputsflat = sinp.get_paths();
                 replace_decoded_str(d.as_str(), &sinputsflat, &PERC_NUM_I, &sinp.rule_ref, 'i')?
@@ -2054,7 +2047,7 @@ impl DecodeInputPlaceHolders for PathExpr {
             let d = if PERC_NUM_G_RE.captures(d.as_str()).is_some() {
                 let captures = inp
                     .get_glob()
-                    .ok_or(Err::StalePercNumberedRef('g', inp.rule_ref.clone()))?;
+                    .ok_or(Err::StalePercNumberedRef('g', inp.rule_ref.clone(), d.clone()))?;
                 replace_decoded_str(d.as_str(), captures, &PERC_NUM_G_RE, &inp.rule_ref, 'g')?
             } else {
                 d
@@ -2084,7 +2077,7 @@ fn replace_decoded_str(
             let i = caps[1].parse::<usize>().unwrap();
             file_names
                 .get(i - 1)
-                .ok_or_else(|| Err::StalePercNumberedRef(c, rule_ref.clone()))
+                .ok_or_else(|| Err::StalePercNumberedRef(c, rule_ref.clone(), decoded_str.to_string()))
         })
         .collect();
     let reps = reps?;
@@ -2125,7 +2118,7 @@ impl DecodeOutputPlaceHolders for PathExpr {
                 let space_separated_outputs = outputs.get_paths().join(" ");
                 if outputs.is_empty() {
                     debug!("no output found for %o replacement");
-                    return Err(Err::StalePerc('o', outputs.rule_ref.clone()));
+                    return Err(Err::StalePerc('o', outputs.rule_ref.clone(), d.to_string()));
                 }
                 d.replace("%o", space_separated_outputs.as_str())
             } else {
@@ -2133,11 +2126,11 @@ impl DecodeOutputPlaceHolders for PathExpr {
             };
             let d = if d.contains("%O") {
                 if outputs.is_empty() {
-                    return Err(Err::StalePerc('O', outputs.rule_ref.clone()));
+                    return Err(Err::StalePerc('O', outputs.rule_ref.clone(), d));
                 }
                 let stem = outputs
                     .get_file_stem()
-                    .ok_or_else(|| Err::StalePerc('O', outputs.rule_ref.clone()))?;
+                    .ok_or_else(|| Err::StalePerc('O', outputs.rule_ref.clone(), d.clone()))?;
                 d.replace("%O", stem.as_str())
             } else {
                 d
