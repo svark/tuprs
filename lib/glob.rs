@@ -11,7 +11,7 @@ use std::path::{is_separator, Path};
 use std::str;
 
 //use aho_corasick::AhoCorasick;
-use bstr::ByteVec;
+use bstr::{ByteSlice, ByteVec};
 use regex;
 use regex::bytes::{Regex, RegexBuilder};
 
@@ -225,6 +225,12 @@ impl<'a> Candidate<'a> {
 
     pub fn path(&self) -> &Cow<'a, [u8]> {
         &self.path
+    }
+    pub fn to_string(&self) -> String {
+        self.path.to_str_lossy().to_string()
+    }
+    pub fn to_cow_str(&self) -> Cow<'_, str> {
+        self.path.to_str_lossy()
     }
 }
 impl GlobMatcher {

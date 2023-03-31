@@ -870,7 +870,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                     Path::new(scriptctx.get_cwd().as_str()),
                     Path::new(path),
                     scriptctx.bo_as_mut().deref_mut(),
-                );
+                ).map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
                 path_searcher
                     .discover_paths(scriptctx.bo_as_mut().deref_mut(), glob_path)
                     .expect("Glob expansion failed")

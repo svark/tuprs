@@ -25,7 +25,7 @@ use errors::{Error as Err, Error};
 use glob;
 use glob::{Candidate, GlobBuilder, GlobMatcher};
 use statements::*;
-use transform::{Artifacts, get_parent, get_path_str, TupParser};
+use transform::{Artifacts, get_parent, TupParser};
 
 pub(crate) fn without_curdir_prefix(p: &Path) -> Cow<'_, Path> {
     let p = if p
@@ -154,7 +154,7 @@ impl NormalPath {
             NormalPath { inner: p }
         }
     }
-    /// Construct a `NormalPath' from joining tup_cwd with path
+    /// Construct a `NormalPath' by joining tup_cwd with path
     pub fn absolute_from(path: &Path, tup_cwd: &Path) -> Self {
         let p1 = Self::cleanup(path, tup_cwd);
         debug!("abs:{:?}", p1);
@@ -199,19 +199,19 @@ impl NormalPath {
     }
 }
 
-/// Get a string version of path that normalizes by using `/` as path separator and replaces empty paths by cur dir '.'
-pub(crate) fn normalize_path(p: &Path) -> String {
+/// Get a string version of path that normalizes using `/` as path separator and replaces empty paths with cur dir '.'
+pub(crate) fn normalize_path(p: &Path) -> Candidate {
     if p.as_os_str().is_empty() {
-        ".".to_string()
+        Candidate::new(".")
     } else {
-        Candidate::new(p).path().to_str_lossy().to_string()
+        Candidate::new(p)
     }
 }
 impl ToString for NormalPath {
     /// Inner path in form that can be compared or stored as a bytes
     fn to_string(&self) -> String {
         // following converts backslashes to forward slashes
-        normalize_path(self.as_path())
+        normalize_path(self.as_path()).to_string()
     }
 }
 
@@ -1023,11 +1023,11 @@ pub(crate) struct MyGlob {
 }
 
 impl MyGlob {
-    pub(crate) fn new(path_pattern: &str) -> Result<Self, Error> {
+    pub(crate) fn new(path_pattern: Candidate) -> Result<Self, Error> {
         let to_glob_error = |e: &glob::Error| {
             Error::GlobError(path_pattern.to_string() + ":" + e.kind().to_string().as_str())
         };
-        let glob_pattern = GlobBuilder::new(path_pattern)
+        let glob_pattern = GlobBuilder::new(path_pattern.path().to_str_lossy().as_ref())
             .literal_separator(true)
             .capture_globs(true)
             .build()
@@ -1272,27 +1272,27 @@ pub struct GlobPath {
 
 impl GlobPath {
     /// tup_cwd should include root (it is not relative to root but includes root)
-    pub fn new(tup_cwd: &Path, glob_path: &Path, path_buffers: &mut impl PathBuffers) -> Self {
+    pub fn new(tup_cwd: &Path, glob_path: &Path, path_buffers: &mut impl PathBuffers) -> Result<Self, Error> {
         let ided_path = IdedPath::from_rel_path(tup_cwd, glob_path, path_buffers);
         Self::build_from(path_buffers, ided_path)
     }
 
-    fn build_from(path_buffers: &mut impl PathBuffers, ided_path: IdedPath) -> GlobPath {
+    fn build_from(path_buffers: &mut impl PathBuffers, ided_path: IdedPath) -> Result<GlobPath, Error> {
         let (mut base_path, _) = get_non_pattern_prefix(ided_path.as_path());
         if base_path.eq(&PathBuf::new()) {
             base_path = base_path.join(".");
         }
         let (base_desc, _) = path_buffers.add_abs(base_path.as_path());
-        let glob = MyGlob::new(normalize_path(ided_path.as_path()).as_str()).unwrap();
-        GlobPath {
+        let glob = MyGlob::new(normalize_path(ided_path.as_path()))?;
+        Ok(GlobPath {
             base_path: IdedPath::new(NormalPath::new(base_path), base_desc),
             glob_path: ided_path,
             glob,
-        }
+        })
     }
 
     /// Construct from id to path
-    pub fn from_path_desc(path_buffers: &mut impl PathBuffers, p: PathDescriptor) -> Self {
+    pub fn from_path_desc(path_buffers: &mut impl PathBuffers, p: PathDescriptor) -> Result<Self, Error> {
         let np = path_buffers.get_path(&p).clone();
         let ided_path = IdedPath::new(np, p);
         Self::build_from(path_buffers, ided_path)
@@ -1326,8 +1326,8 @@ impl GlobPath {
     }
 
     /// fix path string to regularize the path with forward slashes
-    pub fn get_slash_corrected(&self) -> String {
-        let slash_corrected_glob = get_path_str(self.get_abs_path());
+    pub fn get_slash_corrected(&self) -> Candidate {
+        let slash_corrected_glob = normalize_path(self.get_abs_path());
         slash_corrected_glob
     }
     /// Check if the pattern for matching has glob pattern chars such as "*[]"
@@ -1400,7 +1400,7 @@ impl PathSearcher for DirSearcher {
             return Ok(pes);
         }
 
-        let globs = MyGlob::new(glob_path.get_slash_corrected().as_str())?;
+        let globs = MyGlob::new(glob_path.get_slash_corrected())?;
         let base_path = glob_path.get_base_abs_path();
         debug!("glob regex used for finding matches {}", globs.re());
         debug!("base path for files matching glob: {:?}", base_path);
@@ -1412,7 +1412,7 @@ impl PathSearcher for DirSearcher {
             .filter_map(|e| e.ok())
             .filter(|entry| {
                 let match_path = normalize_path(entry.path());
-                globs.is_match(match_path)
+                globs.is_match(match_path.path().to_str_lossy().as_ref())
             });
         let mut pes = Vec::new();
         for matching in filtered_paths {
@@ -1619,7 +1619,7 @@ impl DecodeInputPaths for PathExpr {
         match self {
             PathExpr::Literal(_) => {
                 let pbuf = normalized_path(self);
-                let glob_path = GlobPath::new(tup_cwd, pbuf.as_path(), path_buffers);
+                let glob_path = GlobPath::new(tup_cwd, pbuf.as_path(), path_buffers)?;
 
                 debug!("glob str: {:?}", glob_path.get_abs_path());
                 let pes = path_searcher.discover_paths(path_buffers, &glob_path)?;
@@ -2438,7 +2438,7 @@ impl ResolvedLink {
         p: &PathDescriptor,
         rule_ref: &RuleRef,
     ) -> Result<Vec<MatchingPath>, Error> {
-        let glob_path = GlobPath::from_path_desc(path_buffers, *p);
+        let glob_path = GlobPath::from_path_desc(path_buffers, *p)?;
         debug!("need to resolve file:{:?}", glob_path.get_abs_path());
         let pes: Vec<MatchingPath> = path_searcher.discover_paths(path_buffers, &glob_path)?;
         if pes.is_empty() {

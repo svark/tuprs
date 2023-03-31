@@ -22,6 +22,7 @@ use decode::{
 };
 use errors::{Error as Err, Error};
 use errors::Error::RootNotFound;
+use glob::Candidate;
 use parser::{parse_statements_until_eof, parse_tupfile, Span};
 use parser::locate_tuprules;
 use platform::*;
@@ -144,7 +145,7 @@ impl ParseState {
         statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
     ) -> Self {
         let mut def_vars = HashMap::new();
-        let dir = get_parent_str(cur_file);
+        let dir = get_parent_str(cur_file).to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir]);
 
         ParseState {
@@ -253,7 +254,7 @@ impl ExpandRun for Statement {
                             let arg_path = Path::new(arg);
                             {
                                 let ref glob_path =
-                                    GlobPath::new(parse_state.get_tup_dir(), arg_path, path_buffers);
+                                    GlobPath::new(parse_state.get_tup_dir(), arg_path, path_buffers)?;
                                 let matches =
                                     path_searcher.discover_paths(path_buffers, glob_path).unwrap_or_else(|_| {
                                         panic!("error matching glob pattern {}", arg)
@@ -747,10 +748,11 @@ pub(crate) fn get_parent(cur_file: &Path) -> PathBuf {
 }
 
 /// parent folder path as a string slice
-pub fn get_parent_str(cur_file: &Path) -> String {
+pub fn get_parent_str(cur_file: &Path) -> Candidate {
     normalize_path(cur_file.parent().unwrap())
 }
-pub(crate) fn get_path_str(cur_file: &Path) -> String {
+
+pub(crate) fn get_path_str(cur_file: &Path) -> Candidate {
     normalize_path(cur_file)
 }
 
@@ -818,7 +820,7 @@ pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut impl PathBuf
         m.replace_tup_cwd(".");
     } else {
         let p = get_path_str(parent);
-        m.replace_tup_cwd(p.as_str());
+        m.replace_tup_cwd(p.to_cow_str().as_ref());
     }
     cf
 }
