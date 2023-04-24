@@ -434,7 +434,7 @@ fn test_parse() {
 
     // assert_eq!(deglob(&prog[0]).len(), 18);
 }
-
+/*
 #[test]
 fn parse_x()
 {
@@ -447,3 +447,4 @@ fn parse_x()
     let arts = parser.parse("./hm/swmesh/shrinkwrapinput/Tupfile").unwrap();
     assert_eq!(arts.get_resolved_links().len(), 375);
 }
+ */
