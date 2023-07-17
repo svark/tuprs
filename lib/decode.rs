@@ -112,6 +112,7 @@ pub trait PathBuffers {
 
     /// Try get a bin path entry by its descriptor.
     fn try_get_group_path(&self, gd: &GroupPathDescriptor) -> Option<&NormalPath>;
+
     /// Get group ids as an iter
     fn get_group_descs(&self) -> RightValues<'_, NormalPath, GroupPathDescriptor>;
     /// Get tup id corresponding to its path
@@ -161,20 +162,21 @@ impl NormalPath {
         NormalPath::new(p1)
     }
 
-    fn cleanup(path: &Path, tup_cwd: &Path) -> PathBuf {
+    fn cleanup<P: AsRef<Path>>(path: &Path, tup_cwd: P) -> PathBuf {
         let p1: PathBuf = path
             .components()
             .skip_while(|x| Component::CurDir.eq(x))
             .collect();
-        let p2: PathBuf = if tup_cwd.components().all(|ref x| Component::CurDir.eq(x)) {
-            p1.parse_dot().unwrap_or_default().into()
-        } else {
-            tup_cwd
-                .join(p1.as_path())
-                .parse_dot()
-                .unwrap_or_else(|_| panic!("could not join paths: {:?} with {:?}", tup_cwd, path))
-                .into()
-        };
+        let p2: PathBuf =
+            if tup_cwd.as_ref().components().all(|ref x| Component::CurDir.eq(x)) {
+                p1.parse_dot_from(".").unwrap_or_default().into()
+            } else {
+                tup_cwd.as_ref()
+                    .join(p1)
+                    .parse_dot_from(".")
+                    .unwrap_or_else(|_| panic!("could not join paths: {:?} with {:?}", tup_cwd.as_ref(), path))
+                    .into()
+            };
         p2
     }
 
@@ -1341,8 +1343,8 @@ impl GlobPath {
     }
 
     /// Checks if the path is a match with the glob we have
-    pub fn is_match(&self, p: &Path) -> bool {
-        self.glob.is_match(p)
+    pub fn is_match<P: AsRef<Path>>(&self, p: P) -> bool {
+        self.glob.is_match(p.as_ref())
     }
 
     /// List of all glob captures in a path
@@ -1633,6 +1635,7 @@ impl DecodeInputPaths for PathExpr {
             PathExpr::Group(_, _) => {
                 let (ref grp_desc, _) = path_buffers.add_group_pathexpr(tup_cwd, self.cat().as_str());
                 {
+                    debug!("resolving grp: {:?} with desc:{:?}", path_buffers.try_get_group_path(grp_desc).unwrap(), grp_desc);
                     if let Some(paths) = path_searcher.get_outs().get().get_group(grp_desc) {
                         vs.extend(
                             paths
@@ -1648,6 +1651,7 @@ impl DecodeInputPaths for PathExpr {
             }
             PathExpr::Bin(b) => {
                 let (ref bin_desc, _) = path_buffers.add_bin_path_expr(tup_cwd, b.as_ref());
+                debug!("resolving bin: {:?}/{:?}", tup_cwd, b.as_str());
                 if let Some(paths) = path_searcher.get_outs().get().get_bin(bin_desc) {
                     for p in paths.deref() {
                         vs.push(InputResolvedType::BinEntry(*bin_desc, *p))
@@ -2182,7 +2186,8 @@ fn excluded_patterns(
     p.iter()
         .filter_map(|x| {
             if let PathExpr::ExcludePattern(pattern) = x {
-                let path = Path::new(pattern.as_str());
+                let s = "^".to_string() + pattern.as_str();
+                let path = Path::new(s.as_str());
                 let (pid, _) = path_buffers.add_path_from(tup_cwd, path);
                 Some(pid)
             } else {
