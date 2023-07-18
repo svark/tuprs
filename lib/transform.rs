@@ -470,7 +470,7 @@ impl PathExpr {
             PathExpr::Group(ref xs, ref ys) => {
                 let newxs = xs.subst_pe(m);
                 let newys = ys.subst_pe(m);
-                debug!("newxs:{:?} newys:{:?}", newxs, newys);
+                debug!("grpdir:{:?} grpname:{:?}", newxs, newys);
                 vec![PathExpr::Group(newxs, newys)]
             }
             PathExpr::Subst(ref from, ref to, ref vs) => {
