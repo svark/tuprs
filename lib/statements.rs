@@ -142,7 +142,6 @@ pub struct LocatedStatement {
     pub(crate) loc: Loc,
 }
 
-
 impl LocatedStatement {
     pub(crate) fn new(stmt: Statement, l: Loc) -> LocatedStatement {
         LocatedStatement {
@@ -302,8 +301,7 @@ impl CleanupPaths for Vec<PathExpr> {
         let mut was_lit = false;
         let mut was_sp = false;
         for pe in self.iter() {
-            if let PathExpr::Quoted(vs) = pe
-            {
+            if let PathExpr::Quoted(vs) = pe {
                 let mut vs = vs.clone();
                 vs.cleanup();
                 newpesall.push(PathExpr::Quoted(vs));
@@ -323,7 +321,10 @@ impl CleanupPaths for Vec<PathExpr> {
             } else if was_sp {
                 newpesall.push(PathExpr::Sp1);
             }
-            if !matches!(pe, PathExpr::Sp1 | PathExpr::Literal(_) | PathExpr::Quoted(_)) {
+            if !matches!(
+                pe,
+                PathExpr::Sp1 | PathExpr::Literal(_) | PathExpr::Quoted(_)
+            ) {
                 newpesall.push(pe.clone());
             }
         }
@@ -453,14 +454,25 @@ impl Cat for &RuleFormula {
     }
 }
 impl RuleFormula {
+    #[allow(dead_code)]
     pub(crate) fn new(description: String, formula: String) -> RuleFormula {
         RuleFormula {
             description: vec![PathExpr::from(description)],
             formula: vec![PathExpr::from(formula)],
         }
     }
+    pub(crate) fn new_from_parts(
+        description: Vec<PathExpr>,
+        formula: Vec<PathExpr>,
+    ) -> RuleFormula {
+        RuleFormula {
+            description,
+            formula,
+        }
+    }
     /// Create a RuleFormula from combined string representing both description and command
     /// in the form ^ desc^ command
+    #[allow(dead_code)]
     pub(crate) fn new_from_raw(combined_formula: &str) -> RuleFormula {
         let mut sz = 0;
         let desc = if let Some(display_str) = combined_formula.strip_prefix('^') {

@@ -11,20 +11,20 @@ use std::vec::Drain;
 use crossbeam::channel::{Receiver, Sender};
 use log::debug;
 use nom::AsBytes;
-use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::MappedRwLockReadGuard;
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pathdiff::diff_paths;
 
 use decode::{
-    BufferObjects, GlobPath, GroupPathDescriptor, InputResolvedType, normalize_path, NormalPath,
-    OutputHolder, PathBuffers, PathDescriptor, PathSearcher, ResolvedLink, ResolvePaths,
-    RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
+    normalize_path, BufferObjects, GlobPath, GlobPathDescriptor, GroupPathDescriptor,
+    InputResolvedType, NormalPath, OutputHolder, PathBuffers, PathDescriptor, PathSearcher,
+    ResolvePaths, ResolvedLink, RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
 };
-use errors::{Error as Err, Error};
 use errors::Error::RootNotFound;
+use errors::{Error as Err, Error};
 use glob::Candidate;
-use parser::{parse_statements_until_eof, parse_tupfile, Span};
 use parser::locate_tuprules;
+use parser::{parse_statements_until_eof, parse_tupfile, Span};
 use platform::*;
 use scriptloader::parse_script;
 use statements::*;
@@ -80,7 +80,7 @@ impl ParseState {}
 fn init_env() -> Env {
     let mut def_exported = HashMap::new();
     #[cfg(target_os = "windows")]
-        let keys: Vec<&str> = vec![
+    let keys: Vec<&str> = vec![
         /* NOTE: Please increment PARSER_VERSION if these are modified */
         "PATH",
         "HOME",
@@ -214,8 +214,8 @@ trait ExpandRun {
         path_buffers: &mut impl PathBuffers,
         loc: &Loc,
     ) -> Result<Vec<Self>, Error>
-        where
-            Self: Sized;
+    where
+        Self: Sized;
 }
 
 impl ExpandRun for Statement {
@@ -274,14 +274,14 @@ impl ExpandRun for Statement {
                                         path_buffers.get_path(ofile.path_descriptor()).as_path(),
                                         parse_state.get_tup_dir(),
                                     )
-                                        .unwrap_or_else(|| {
-                                            panic!(
-                                                "Failed to diff path{:?} with base:{:?}",
-                                                path_buffers
-                                                    .get_path(ofile.path_descriptor())
-                                                    .as_path(),
-                                                parse_state.get_tup_dir()
-                                            )
+                                    .unwrap_or_else(|| {
+                                        panic!(
+                                            "Failed to diff path{:?} with base:{:?}",
+                                            path_buffers
+                                                .get_path(ofile.path_descriptor())
+                                                .as_path(),
+                                            parse_state.get_tup_dir()
+                                        )
                                     });
                                     cmd.arg(
                                         p.to_string_lossy().to_string().as_str().replace('\\', "/"),
@@ -375,8 +375,8 @@ impl ExpandRun for Vec<LocatedStatement> {
         path_buffers: &mut impl PathBuffers,
         _: &Loc,
     ) -> Result<Vec<Self>, Error>
-        where
-            Self: Sized,
+    where
+        Self: Sized,
     {
         self.iter()
             .map(|l| -> Result<Vec<LocatedStatement>, Error> {
@@ -393,8 +393,8 @@ pub(crate) trait Subst {
         parse_state: &mut ParseState,
         path_buffers: &mut impl PathBuffers,
     ) -> Result<Self, Err>
-        where
-            Self: Sized;
+    where
+        Self: Sized;
 }
 
 /// trait to substitute macro references in rules
@@ -628,8 +628,8 @@ fn intersperse_sp1(val: &[String]) -> Vec<PathExpr> {
 
 trait SubstPEs {
     fn subst_pe(&self, m: &mut ParseState) -> Self
-        where
-            Self: Sized;
+    where
+        Self: Sized;
 }
 
 impl SubstPEs for Vec<PathExpr> {
@@ -767,10 +767,7 @@ impl ExpandMacro for Link {
         Ok(Link {
             source,
             target,
-            rule_formula: RuleFormula {
-                description: desc,
-                formula: formulae,
-            },
+            rule_formula: RuleFormula::new_from_parts(desc, formulae),
             pos,
         })
     }
@@ -964,8 +961,8 @@ impl LocatedStatement {
                     PathExpr::DollarExpr("TUP_CWD".to_owned()),
                     PathExpr::Literal("/".to_owned()),
                 ]
-                    .subst_pe(parse_state)
-                    .cat();
+                .subst_pe(parse_state)
+                .cat();
                 let subst_right: Vec<String> = right
                     .split(|x| x == &PathExpr::Sp1)
                     .map(|x| prefix.clone() + x.to_vec().subst_pe(parse_state).cat().as_str())
@@ -1316,16 +1313,16 @@ impl ReadWriteBufferObjects {
     }
     /// iterate over all the (grouppath, groupid) pairs stored in buffers during parsing
     pub fn for_each_group<F>(&self, f: F)
-        where
-            F: FnMut((&NormalPath, &GroupPathDescriptor)),
+    where
+        F: FnMut((&NormalPath, &GroupPathDescriptor)),
     {
         let r = self.get_mut();
         r.group_iter().for_each(f);
     }
     /// Iterate over group ids
     pub fn map_group_desc<F>(&self, f: F) -> Vec<(GroupPathDescriptor, i64)>
-        where
-            F: FnMut(&GroupPathDescriptor) -> (GroupPathDescriptor, i64),
+    where
+        F: FnMut(&GroupPathDescriptor) -> (GroupPathDescriptor, i64),
     {
         self.bo.deref().read().get_group_descs().map(f).collect()
     }
@@ -1348,6 +1345,15 @@ impl ReadWriteBufferObjects {
     pub fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor> {
         let r = self.get();
         r.get_parent_id(pd)
+    }
+
+    /// return the path corresponding id of the glob path
+    pub fn get_glob_path(&self, gd: &GlobPathDescriptor) -> PathBuf {
+        let r = self.get();
+        let i: usize = (*gd).into();
+        let pd = PathDescriptor::new(i);
+        let np = r.get_path(&pd);
+        np.clone().to_path_buf()
     }
 
     /// Returns the tup file path corresponding to its id
@@ -1440,16 +1446,16 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     }
 
     pub(crate) fn with_path_buffers_do<F, R>(&self, f: F) -> R
-        where
-            F: FnOnce(&mut BufferObjects) -> R,
+    where
+        F: FnOnce(&mut BufferObjects) -> R,
     {
         let mut bo = self.borrow_mut_ref();
         f(&mut bo)
     }
 
     pub(crate) fn with_path_searcher_do<F, R>(&self, f: F) -> R
-        where
-            F: FnOnce(&mut Q) -> R,
+    where
+        F: FnOnce(&mut Q) -> R,
     {
         let mut bo = self.get_mut_searcher();
         f(&mut bo)
