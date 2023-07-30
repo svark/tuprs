@@ -213,7 +213,8 @@ trait ExpandRun {
         path_searcher: &impl PathSearcher,
         path_buffers: &mut impl PathBuffers,
         loc: &Loc,
-    ) -> Result<Vec<Self>, Error>
+        res: &mut Vec<LocatedStatement>,
+    ) -> Result<(), Error>
     where
         Self: Sized;
 }
@@ -227,14 +228,13 @@ impl ExpandRun for Statement {
         path_searcher: &impl PathSearcher,
         path_buffers: &mut impl PathBuffers,
         loc: &Loc,
-    ) -> Result<Vec<Statement>, Error> {
-        let mut vs: Vec<Statement> = Vec::new();
+        res: &mut Vec<LocatedStatement>,
+    ) -> Result<(), Error> {
         let rule_ref = RuleRef::new(&parse_state.cur_file_desc, loc);
         match self {
             Statement::Preload(v) => {
                 let dir = v.cat();
                 let p = Path::new(dir.as_str());
-
                 let (dirid, _) = path_buffers.add_path_from(parse_state.get_tup_dir(), p);
                 {
                     parse_state.load_dirs.push(dirid);
@@ -328,59 +328,51 @@ impl ExpandRun for Statement {
                             "contents: \n {}",
                             String::from_utf8(contents.clone()).unwrap_or_default()
                         );
-                        debug!(
-                            "cx: \n {}",
-                            String::from_utf8(output.stderr).unwrap_or_default()
+                        let err = String::from_utf8(output.stderr.clone()).unwrap_or_default();
+                        if err.len() > 0 {
+                            log::error!(
+                            "error from executing run statement \n {} \n in Tupfile in dir: {:?} at pos:{:?}",
+                            String::from_utf8(output.stderr).unwrap_or_default(),
+                            dir.as_os_str(),
+                            loc
                         );
+                        }
 
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
                             .expect("failed to parse output of tup run");
                         let mut lstmts = lstmts
                             .subst(parse_state, path_buffers)
                             .expect("subst failure in generated tup rules");
-                        vs.extend(lstmts.drain(..).map(LocatedStatement::move_statement));
+                        res.extend(lstmts.drain(..));
                     } else {
                         eprintln!("Warning tup run arguments are empty in Tupfile in dir:{:?} at pos:{:?}", dir, loc);
                     }
                 }
             }
-            _ => vs.push(self.clone()),
+            _ => {}
         }
-        Ok(vs)
+        Ok(())
     }
-}
-
-fn expand_statement(
-    l: &LocatedStatement,
-    parse_state: &mut ParseState,
-    path_searcher: &(impl PathSearcher + Sized),
-    path_buffers: &mut (impl PathBuffers + Sized),
-) -> Result<Vec<LocatedStatement>, Error> {
-    let loc = l.getloc();
-    let stmts = l
-        .get_statement()
-        .expand_run(parse_state, path_searcher, path_buffers, loc)?;
-    Ok(stmts
-        .iter()
-        .map(|s| LocatedStatement::new(s.clone(), *l.getloc()))
-        .collect())
 }
 
 impl ExpandRun for Vec<LocatedStatement> {
     /// discover more rules to add by running shell commands
     fn expand_run(
         &self,
-        m: &mut ParseState,
+        parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
         path_buffers: &mut impl PathBuffers,
         _: &Loc,
-    ) -> Result<Vec<Self>, Error>
+        res: &mut Vec<LocatedStatement>,
+    ) -> Result<(), Error>
     where
         Self: Sized,
     {
         self.iter()
-            .map(|l| -> Result<Vec<LocatedStatement>, Error> {
-                expand_statement(l, m, path_searcher, path_buffers)
+            .map(|l| -> Result<(), Error> {
+                let loc = l.get_loc();
+                l.get_statement()
+                    .expand_run(parse_state, path_searcher, path_buffers, loc, res)
             })
             .collect()
     }
@@ -436,7 +428,7 @@ impl PathExpr {
                     log::warn!("dollarexpr {} not found", x);
                     vec![self.clone()]
                 } else {
-                    debug!("delay subst of {}", x);
+                    log::warn!("No substitution found for {}", x);
                     vec![PathExpr::from("".to_owned())] // postpone subst until placeholders are fixed
                 }
             }
@@ -904,7 +896,7 @@ impl LocatedStatement {
         path_buffers: &mut (impl PathBuffers + Sized),
     ) -> Result<Vec<LocatedStatement>, Error> {
         let mut newstats = Vec::new();
-        let loc = self.getloc();
+        let loc = self.get_loc();
         match self.get_statement() {
             Statement::LetExpr {
                 left,
@@ -1080,7 +1072,7 @@ impl LocatedStatement {
                 } else {
                     return Err(Error::PathNotFound(
                         p.to_string_lossy().to_string(),
-                        RuleRef::new(parse_state.get_cur_file_desc(), self.getloc()),
+                        RuleRef::new(parse_state.get_cur_file_desc(), self.get_loc()),
                     ));
                 }
             }
@@ -1465,7 +1457,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     /// Upon success the parser returns `Artifacts` that holds  references to all the resolved outputs by their ids
     /// The parser currently also allows you to read its buffers (id-object pairs) and even update it based on externally saved data via `ReadBufferObjects` and `WriteBufObjects`
     /// See [Artifacts]
-    pub fn send_tupfile<P: AsRef<Path>>(
+    pub fn parse_tupfile<P: AsRef<Path>>(
         &mut self,
         tup_file_path: P,
         sender: Sender<StatementsToResolve>,
@@ -1491,7 +1483,9 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             let stmts = parse_tupfile(tup_file_path)?;
             sender
                 .send(StatementsToResolve::new(stmts, parse_state))
-                .unwrap();
+                .map_err(|e| {
+                    Error::PathSearchError(format!("Error sending statements to resolver: {}", e))
+                })?; // send the statements to the resolver
             Ok(())
         }
     }
@@ -1564,14 +1558,20 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
                 for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
                     let vs = stmt.subst(&mut parse_state, bo_ref_mut)?;
                     // create a vector generator over the statements
-                    for v in vs {
-                        let mut r = expand_statement(
-                            &v,
+                    if vs
+                        .iter()
+                        .map(|l| l.get_statement())
+                        .any(|s| matches!(s, Statement::Run(_)))
+                    {
+                        vs.expand_run(
                             &mut parse_state,
                             self.get_path_searcher().deref(),
                             bo_ref_mut,
+                            &Loc::new(0, 0),
+                            &mut res,
                         )?;
-                        res.extend(r.drain(..));
+                    } else {
+                        res.extend(vs);
                     }
                 }
                 Ok(res)

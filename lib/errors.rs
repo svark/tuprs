@@ -63,6 +63,9 @@ pub enum Error {
     /// Tuprules file could not be located from current Tupfile
     #[error("Include path {0} referred in {1} could not be located")]
     PathNotFound(String, RuleRef),
+    /// Rule creates a directory
+    #[error("Output path is a directory: {0} defined at {1}")]
+    OutputIsDir(String, RuleRef),
     /// input file could not be resolved
     #[error("Error resolving an input: {0} at {1}")]
     UnResolvedFile(String, RuleRef),
@@ -86,8 +89,7 @@ pub struct ErrorContext {
     p: TupPathDescriptor,
 }
 
-impl ErrorContext
-{
+impl ErrorContext {
     ///Create a new error context
     pub fn new(e: Error, p: TupPathDescriptor) -> Self {
         Self { e, p }
@@ -129,8 +131,7 @@ impl Error {
             let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
             let path = path_buffers.get_path(&PathDescriptor::new(num));
             path.as_path().to_string_lossy().to_string()
-        }).to_string()
+        })
+        .to_string()
     }
 }
-
-
