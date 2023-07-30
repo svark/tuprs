@@ -61,7 +61,7 @@ pub trait PathSearcher {
     fn get_outs(&self) -> &OutputHolder;
 
     /// Merge outputs from previous outputs
-    fn merge(&mut self, o: &impl OutputHandler) -> Result<(), Error>;
+    fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error>;
 }
 
 /// Methods to store and retrieve paths, groups, bins, rules from in-memory buffers
@@ -788,39 +788,55 @@ impl GeneratedFiles {
     }
 
     /// Merge paths of different groups from new_outputs into current group path container
-    fn merge_group_tags(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err> {
+    fn merge_group_tags(
+        &mut self,
+        path_buffers: &impl PathBuffers,
+        new_outputs: &impl OutputHandler,
+    ) -> Result<(), Err> {
         for (k, new_paths) in new_outputs.get_groups().iter() {
             self.groups
                 .entry(*k)
                 .or_insert_with(HashSet::new)
                 .extend(new_paths.iter().cloned());
-            self.merge_parent_rules(&new_outputs.get_parent_rules(), new_paths)?;
+            self.merge_parent_rules(path_buffers, &new_outputs.get_parent_rules(), new_paths)?;
         }
         Ok(())
     }
     /// Merge bins from its new outputs
-    fn merge_bin_tags(&mut self, other: &impl OutputHandler) -> Result<(), Err> {
+    fn merge_bin_tags(
+        &mut self,
+        path_buffers: &impl PathBuffers,
+        other: &impl OutputHandler,
+    ) -> Result<(), Err> {
         for (k, new_paths) in other.get_bins().iter() {
             self.bins
                 .entry(*k)
                 .or_insert_with(HashSet::new)
                 .extend(new_paths.iter().cloned());
-            self.merge_parent_rules(&other.get_parent_rules(), new_paths)?;
+            self.merge_parent_rules(path_buffers, &other.get_parent_rules(), new_paths)?;
         }
         Ok(())
     }
     /// merge groups , outputs and bins from other `OutputHandler`
     ///  erorr-ing out if unique parent rule
     /// of an output is not found
-    fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err> {
-        self.merge_group_tags(out)?;
-        self.merge_output_files(out)?;
-        self.merge_bin_tags(out)
+    fn merge(
+        &mut self,
+        path_buffers: &impl PathBuffers,
+        out: &impl OutputHandler,
+    ) -> Result<(), Err> {
+        self.merge_group_tags(path_buffers, out)?;
+        self.merge_output_files(path_buffers, out)?;
+        self.merge_bin_tags(path_buffers, out)
     }
 
     /// extend the list of outputs. Update children of directories with new outputs. Update also the parent rules of each of the output files.
     /// The last step can error out if the same output is found to have different parent rules.
-    fn merge_output_files(&mut self, new_outputs: &impl OutputHandler) -> Result<(), Err> {
+    fn merge_output_files(
+        &mut self,
+        path_buffers: &impl PathBuffers,
+        new_outputs: &impl OutputHandler,
+    ) -> Result<(), Err> {
         self.output_files
             .extend(new_outputs.get_output_files().iter().cloned());
         for (dir, ch) in new_outputs.get_children().iter() {
@@ -830,6 +846,7 @@ impl GeneratedFiles {
                 .extend(ch.iter());
         }
         self.merge_parent_rules(
+            path_buffers,
             &new_outputs.get_parent_rules(),
             &new_outputs.get_output_files(),
         )
@@ -838,25 +855,42 @@ impl GeneratedFiles {
     /// of an output is not found
     fn merge_parent_rules(
         &mut self,
+        path_buffers: &impl PathBuffers,
         new_parent_rule: &HashMap<PathDescriptor, RuleRef>,
         new_path_descs: &HashSet<PathDescriptor>,
     ) -> Result<(), Err> {
         for new_path_desc in new_path_descs.iter() {
-            let newparent = new_parent_rule
+            let new_parent = new_parent_rule
                 .get(new_path_desc)
                 .expect("parent rule not found");
+            log::warn!(
+                "Setting parent for  path: {:?} to rule:{:?}:{:?}",
+                path_buffers.get_path(new_path_desc),
+                path_buffers.get_tup_path(new_parent.get_tupfile_desc()),
+                new_parent.get_line()
+            );
             match self.parent_rule.entry(*new_path_desc) {
                 Entry::Occupied(pe) => {
-                    if pe.get() != newparent {
+                    if pe.get() != new_parent {
+                        let old_parent = pe.get();
+                        let old_rule_path =
+                            path_buffers.get_tup_path(old_parent.get_tupfile_desc());
+                        let old_rule_line = old_parent.get_line();
+                        log::warn!(
+                            "path {:?} is an output of a previous rule at:{:?}:{:?}",
+                            path_buffers.get_path(new_path_desc),
+                            old_rule_path,
+                            old_rule_line
+                        );
                         return Err(Err::MultipleRulesToSameOutput(
                             *new_path_desc,
+                            new_parent.clone(),
                             pe.get().clone(),
-                            newparent.clone(),
                         ));
                     }
                 }
                 Entry::Vacant(pe) => {
-                    pe.insert(newparent.clone());
+                    pe.insert(new_parent.clone());
                 }
             }
         }
@@ -906,7 +940,7 @@ pub trait OutputHandler {
     /// merge groups, outputs and bins from other `OutputHandler`
     ///  erorr-ing out if unique parent rule
     /// of an output is not found
-    fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err>;
+    fn merge(&mut self, p: &impl PathBuffers, out: &impl OutputHandler) -> Result<(), Err>;
 }
 
 impl PathSearcher for OutputHolder {
@@ -931,8 +965,8 @@ impl PathSearcher for OutputHolder {
         &self
     }
 
-    fn merge(&mut self, o: &impl OutputHandler) -> Result<(), Error> {
-        self.get_mut().merge(o)
+    fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error> {
+        self.get_mut().merge(p, o)
     }
 }
 impl OutputHandler for OutputHolder {
@@ -996,8 +1030,8 @@ impl OutputHandler for OutputHolder {
         self.get_mut().add_bin_entry(bin_desc, pd)
     }
 
-    fn merge(&mut self, out: &impl OutputHandler) -> Result<(), Err> {
-        self.get_mut().merge(out)
+    fn merge(&mut self, p: &impl PathBuffers, out: &impl OutputHandler) -> Result<(), Err> {
+        self.get_mut().merge(p, out)
     }
 }
 
@@ -1517,8 +1551,8 @@ impl PathSearcher for DirSearcher {
         &self.output_holder
     }
 
-    fn merge(&mut self, o: &impl OutputHandler) -> Result<(), Error> {
-        OutputHandler::merge(&mut self.output_holder, o)
+    fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error> {
+        OutputHandler::merge(&mut self.output_holder, p, o)
     }
 }
 
@@ -2607,11 +2641,19 @@ impl GatherOutputs for ResolvedLink {
         }
         let mut children = Vec::new();
         for path_desc in self.get_targets() {
-            debug!(
-                "adding parent for: {:?} as {:?}",
-                path_buffers.get_path(path_desc),
-                &rule_ref
+            let path = path_buffers.get_path(path_desc);
+            log::warn!(
+                "adding parent for: {:?} to {:?}:{}",
+                path,
+                path_buffers.get_tup_path(rule_ref.get_tupfile_desc()),
+                rule_ref.get_line()
             );
+            if path.as_path().is_dir() {
+                return Err(Err::OutputIsDir(
+                    path_buffers.get_path(path_desc).to_string(),
+                    rule_ref.clone(),
+                ));
+            }
             let rule_ref_inserted = output_handler.add_parent_rule(*path_desc, rule_ref.clone());
             if &rule_ref_inserted != rule_ref {
                 return Err(Err::MultipleRulesToSameOutput(
@@ -2787,7 +2829,7 @@ impl ResolvePaths for ResolvedLink {
         } */
         let mut out = OutputHolder::new();
         self.gather_outputs(&mut out, path_buffers)?;
-        path_searcher.merge(&mut out)?;
+        path_searcher.merge(path_buffers, &mut out)?;
         Ok(Artifacts::from(vec![rlink]))
     }
 }
@@ -2886,7 +2928,7 @@ impl LocatedStatement {
                 delink.gather_outputs(&mut output, path_buffers)?;
                 deglobbed.push(delink);
             }
-            path_searcher.merge(&mut output)?;
+            path_searcher.merge(path_buffers, &mut output)?;
         }
         Ok((Artifacts::from(deglobbed), output))
     }

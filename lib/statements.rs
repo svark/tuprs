@@ -152,10 +152,7 @@ impl LocatedStatement {
     pub(crate) fn get_statement(&self) -> &Statement {
         &self.statement
     }
-    pub(crate) fn move_statement(self) -> Statement {
-        self.statement
-    }
-    pub(crate) fn getloc(&self) -> &Loc {
+    pub(crate) fn get_loc(&self) -> &Loc {
         &self.loc
     }
     pub(crate) fn is_comment(&self) -> bool {
