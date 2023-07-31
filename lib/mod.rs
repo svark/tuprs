@@ -30,9 +30,9 @@ pub use decode::PathDescriptor;
 pub use decode::ResolvedLink;
 pub use decode::RuleDescriptor;
 pub use decode::TupPathDescriptor;
-pub use transform::Artifacts;
 pub use transform::load_conf_vars;
 pub use transform::locate_file;
+pub use transform::Artifacts;
 pub use transform::ReadWriteBufferObjects;
 pub use transform::TupParser;
 
@@ -136,16 +136,19 @@ fn test_op() {
                     },
                     target: Target {
                         primary: vec![],
-                        secondary: vec![Sp1, Literal("command.pch".to_string()), Sp1, ExcludePattern("exclude_pattern.*".to_string())],
+                        secondary: vec![
+                            Sp1,
+                            Literal("command.pch".to_string()),
+                            Sp1,
+                            ExcludePattern("exclude_pattern.*".to_string()),
+                        ],
                         group: None,
                         bin: Some(Bin("objs".to_string())),
                     },
                     rule_formula: RuleFormula {
                         description: vec![],
                         formula: vec![
-                            Quoted(
-                                vec![Literal("visual studio/cl".to_string())],
-                            ),
+                            Quoted(vec![Literal("visual studio/cl".to_string())]),
                             Sp1,
                             Literal("%f".to_string()),
                             Sp1,
@@ -254,21 +257,36 @@ fn test_parse() {
         let res2 = parser::parse_statements_until_eof(letexpr).unwrap();
         assert_eq!(res2.len(), 2);
         use statements::Ident;
-        assert_eq!(res2[0].statement, Statement::LetExpr {
-            left: Ident { name: "ROOT".to_string() },
-            right: vec![Literal(".".to_string())],
-            is_append: false,
-            is_empty_assign: false,
-        });
-        assert_eq!(res2[1].statement,
-                   Statement::LetExpr {
-                       left: Ident { name: "INCS".to_string() },
-                       right: vec![Literal("-I".to_string()), DollarExpr("ROOT".to_string()), Literal("/inc1".to_string()), Sp1,
-                                   Literal("-I".to_string()), DollarExpr("ROOT".to_string()),
-                                   Literal("/inc2".to_string())],
-                       is_append: false,
-                       is_empty_assign: false,
-                   });
+        assert_eq!(
+            res2[0].statement,
+            Statement::LetExpr {
+                left: Ident {
+                    name: "ROOT".to_string()
+                },
+                right: vec![Literal(".".to_string())],
+                is_append: false,
+                is_empty_assign: false,
+            }
+        );
+        assert_eq!(
+            res2[1].statement,
+            Statement::LetExpr {
+                left: Ident {
+                    name: "INCS".to_string()
+                },
+                right: vec![
+                    Literal("-I".to_string()),
+                    DollarExpr("ROOT".to_string()),
+                    Literal("/inc1".to_string()),
+                    Sp1,
+                    Literal("-I".to_string()),
+                    DollarExpr("ROOT".to_string()),
+                    Literal("/inc2".to_string())
+                ],
+                is_append: false,
+                is_empty_assign: false,
+            }
+        );
     }
     {
         let sp = Span::new(b" ifneq($(DEBUG), 20)\n");
@@ -404,7 +422,12 @@ fn test_parse() {
     let mut dir_searcher = DirSearcher::new();
     let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
     let (decodedrule, _outs) = LocatedStatement::new(rule, Loc::new(0, 0))
-        .resolve_paths(Path::new("./Tupfile"), &mut dir_searcher, &mut bo, &tup_desc)
+        .resolve_paths(
+            Path::new("./Tupfile"),
+            &mut dir_searcher,
+            &mut bo,
+            &tup_desc,
+        )
         .unwrap();
     use statements::Cat;
     if let Some(deglobbed_link) = decodedrule.get_resolved_links().first() {
@@ -444,7 +467,7 @@ fn parse_x()
     let root = "c:/ws/fegeomscratch";
     std::env::set_current_dir(root).unwrap();
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new()).unwrap();
-    let arts = parser.parse("./hm/swmesh/shrinkwrapinput/Tupfile").unwrap();
+    let arts = parser.parse("./devtools/dtcore/cont/Tupfile").unwrap();
     assert_eq!(arts.get_resolved_links().len(), 375);
 }
  */
