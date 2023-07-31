@@ -863,7 +863,7 @@ impl GeneratedFiles {
             let new_parent = new_parent_rule
                 .get(new_path_desc)
                 .expect("parent rule not found");
-            log::warn!(
+            log::debug!(
                 "Setting parent for  path: {:?} to rule:{:?}:{:?}",
                 path_buffers.get_path(new_path_desc),
                 path_buffers.get_tup_path(new_parent.get_tupfile_desc()),
@@ -1526,7 +1526,7 @@ impl PathSearcher for DirSearcher {
             .filter_map(|e| e.ok())
             .filter(|entry| {
                 let match_path = normalize_path(entry.path());
-                globs.is_match(match_path.path().to_str_lossy().as_ref())
+                entry.path().is_file() && globs.is_match(match_path.path().to_str_lossy().as_ref())
             });
         let mut pes = Vec::new();
         for matching in filtered_paths {
@@ -2054,7 +2054,7 @@ pub fn decode_group_captures(
     rule_ref: &RuleRef,
     rule_id: i64,
     dirid: i64,
-    d: &String,
+    rule_str: &str,
 ) -> Result<String, Error> {
     let replacer = |caps: &Captures| {
         let c = caps
@@ -2065,7 +2065,7 @@ pub fn decode_group_captures(
             .ok_or_else(|| Err::StaleGroupRef(c.as_str().to_string(), rule_ref.clone()))
     };
     let reps: Result<Vec<_>, _> = GRPRE
-        .captures(d.as_str())
+        .captures(rule_str)
         .iter()
         .inspect(|x| {
             debug!(
@@ -2084,7 +2084,7 @@ pub fn decode_group_captures(
     let mut i = 0;
 
     let d = GRPRE
-        .replace(d.as_str(), |_: &Captures| {
+        .replace(rule_str, |_: &Captures| {
             let r = &reps[i];
             i += 1;
             r.as_str()
@@ -2642,7 +2642,7 @@ impl GatherOutputs for ResolvedLink {
         let mut children = Vec::new();
         for path_desc in self.get_targets() {
             let path = path_buffers.get_path(path_desc);
-            log::warn!(
+            log::debug!(
                 "adding parent for: {:?} to {:?}:{}",
                 path,
                 path_buffers.get_tup_path(rule_ref.get_tupfile_desc()),

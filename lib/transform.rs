@@ -1484,7 +1484,10 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             sender
                 .send(StatementsToResolve::new(stmts, parse_state))
                 .map_err(|e| {
-                    Error::PathSearchError(format!("Error sending statements to resolver: {}", e))
+                    Error::new_path_search_error(format!(
+                        "Error sending statements to resolver: {}",
+                        e
+                    ))
                 })?; // send the statements to the resolver
             Ok(())
         }
