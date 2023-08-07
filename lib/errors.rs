@@ -81,6 +81,10 @@ pub enum Error {
     /// User error
     #[error("User error: {0} at {1}")]
     UserError(String, RuleRef),
+
+    /// negative index specific for word
+    #[error("Negative index {0} in word at {1}")]
+    NegativeIndex(i32, RuleRef),
 }
 
 /// Error along with the tupfile path where it occurred

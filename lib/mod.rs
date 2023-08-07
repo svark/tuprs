@@ -232,7 +232,7 @@ fn test_parse() {
     use statements::CleanupPaths;
     //use statements::PathExpr;
     use statements::LocatedStatement;
-    use statements::PathExpr::DollarExpr;
+    use statements::DollarExprs;
     use statements::PathExpr::Group;
     use statements::PathExpr::Literal;
     use statements::PathExpr::Sp1;
@@ -246,7 +246,7 @@ fn test_parse() {
         let sp0 = Span::new(b" ifeq($(DEBUG), 20)\n");
         let res1 = parser::parse_eq(sp0);
         let prog1 = EqCond {
-            lhs: vec![DollarExpr("DEBUG".to_string())],
+            lhs: vec![PathExpr::from(DollarExprs::DollarExpr("DEBUG".to_string()))],
             rhs: vec![Literal("20".to_string())],
             not_cond: false,
         };
@@ -276,11 +276,11 @@ fn test_parse() {
                 },
                 right: vec![
                     Literal("-I".to_string()),
-                    DollarExpr("ROOT".to_string()),
+                    PathExpr::from(DollarExprs::DollarExpr("ROOT".to_string())),
                     Literal("/inc1".to_string()),
                     Sp1,
                     Literal("-I".to_string()),
-                    DollarExpr("ROOT".to_string()),
+                    PathExpr::from(DollarExprs::DollarExpr("ROOT".to_string())),
                     Literal("/inc2".to_string())
                 ],
                 is_append: false,
@@ -292,7 +292,7 @@ fn test_parse() {
         let sp = Span::new(b" ifneq($(DEBUG), 20)\n");
         let res1 = parser::parse_eq(sp);
         let prog1 = EqCond {
-            lhs: vec![DollarExpr("DEBUG".to_string())],
+            lhs: vec![PathExpr::from(DollarExprs::DollarExpr("DEBUG".to_string()))],
             rhs: vec![Literal("20".to_string())],
             not_cond: true,
         };
@@ -455,7 +455,32 @@ fn test_parse() {
         assert_eq!(rf.get_formula().cat(), rule_exp);
     }
 
+    // test
+    let stmt = parser::parse_statement(Span::new(b"SOURCES = $(foreach suffix,*.cxx *.c, $(wildcard _private/$(suffix)))\n"))
+        .unwrap().1;
+    let mut m = ParseState::default();
+    let mut bo = BufferObjects::new(Path::new("."));
+    use transform::Subst;
+    let stmt = stmt.subst(&mut m, &mut bo).expect("subst failure");
+    let stmt2 = parser::parse_statement(Span::new(b"SOURCES = private/*.cxx private/*.c\n")).unwrap().1;
+    let mut m = ParseState::default();
+    let mut bo = BufferObjects::new(Path::new("."));
+
+    let stmt2 = stmt2.subst(&mut m, &mut bo).expect("subst falure");
+    let mut m = ParseState::default();
+    let mut bo = BufferObjects::new(Path::new("."));
+    let stmt = stmt.subst(&mut m, &mut bo).expect("subst failure");
+    assert_eq!(stmt, stmt2);
     // assert_eq!(deglob(&prog[0]).len(), 18);
+
+    let stmts  =
+        parser::parse_statements_until_eof(Span::new(b"CXX_FLAGS := -W3\n $(eval CXX_FLAGS \
+         := $(subst -W3,-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505,$(CXX_FLAGS)));")).expect("parse failure");
+    let mut m = ParseState::default();
+    let mut bo = BufferObjects::new(Path::new("."));
+    stmts.subst(&mut m, &mut bo).expect("subst failure");
+    assert_eq!(m.expr_map.get("CXX_FLAGS").unwrap().join(""),  "-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505");
+
 }
 /*
 #[test]

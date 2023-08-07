@@ -283,8 +283,8 @@ impl std::fmt::Display for RuleRef {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{:?}: {:?}, {:?}",
-            self.tup_path_desc, self.loc.line, self.loc.offset
+            "{:?}: {}",
+            self.tup_path_desc, self.loc
         )
     }
 }
@@ -300,8 +300,17 @@ impl RuleRef {
     }
     /// Line of Tupfile where portion of rule is found
     pub fn get_line(&self) -> u32 {
-        self.loc.line
+        self.loc.get_line()
     }
+    /// Get the column of Tupfile where portion of rule is found
+    pub fn get_col(&self) -> u32 {
+        self.loc.get_col()
+    }
+    /// Get the span of the region in Tupfile where rule is found
+    pub fn get_span(&self) -> u32 {
+        self.loc.get_span()
+    }
+
     /// Directory
     pub fn get_tupfile_desc(&self) -> &TupPathDescriptor {
         &self.tup_path_desc
@@ -2361,7 +2370,7 @@ fn paths_from_exprs(
     p: &[PathExpr],
     path_buffers: &mut impl PathBuffers,
 ) -> Vec<OutputType> {
-    p.split(|x| matches!(x, &PathExpr::Sp1) || matches!(x, &PathExpr::ExcludePattern(_)))
+    p.split(|x| matches!(x, &PathExpr::Sp1) || matches!(x, &PathExpr::ExcludePattern(_) ))
         .filter(|x| !x.is_empty())
         .map(|x| {
             let path = PathBuf::new().join(x.to_vec().cat());
