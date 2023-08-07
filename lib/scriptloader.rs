@@ -363,7 +363,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         let env = self.parse_state.cur_env_desc.clone();
         let statement = LocatedStatement {
             statement: Rule(l, env),
-            loc: Loc::new(lineno, 0),
+            loc: Loc::new(lineno, 0, 0),
         };
         let (arts, outs) = statement
             .resolve_paths(
@@ -410,7 +410,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         //self.links.push((l,env));
         let statement = LocatedStatement {
             statement: Rule(l, env),
-            loc: Loc::new(lineno, 0),
+            loc: Loc::new(lineno, 0, 0),
         };
         let (arts, outs) = statement
             .resolve_paths(

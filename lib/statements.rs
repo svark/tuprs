@@ -1,6 +1,23 @@
 //! This module has datastructures that capture parsed tupfile expressions
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
+use std::hash::Hasher;
+use std::path::Path;
+use std::sync::Arc;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Program(String);
+impl Program {
+    pub fn new(s: String) -> Self {
+        Self(s)
+    }
+}
+impl nom::AsBytes for Program {
+    fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
 
 //use std::path::Path;
 // rvalue typically appears on the right side of assignment statement
@@ -13,27 +30,12 @@ pub(crate) enum PathExpr {
     Sp1,
     /// Quoted string
     Quoted(Vec<PathExpr>),
-    /// Exclude patterns at the end of rules to avoid tracking some outputs
+    /// Exclude patterns to avoid  passing some inputs or tracking some outputs
     ExcludePattern(String),
+    /// Include patterns to filter inputs
+    IncludePattern(String),
     /// $(EXPR)
-    DollarExpr(String),
-    /// $(addprefix prefix, EXPR)
-    /// prefix is added to each path in EXPR
-    AddPrefix(Vec<PathExpr>, Vec<PathExpr>),
-    /// $(addsuffix suffix, EXPR)
-    /// suffix is added to each path in EXPR
-    AddSuffix(Vec<PathExpr>, Vec<PathExpr>),
-    /// $(subst from, to, EXPR)
-    Subst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
-    /// $(filter pattern, EXPR)
-    Filter(Vec<PathExpr>, Vec<PathExpr>),
-    /// $(filter-out pattern, EXPR)
-    FilterOut(Vec<PathExpr>, Vec<PathExpr>),
-    /// $(foreach var, list, EXPR)
-    /// var is replaced by each element in list
-    ForEach(String, Vec<PathExpr>, Vec<PathExpr>),
-    /// $(findstring pattern, EXPR)
-    FindString(Vec<PathExpr>, Vec<PathExpr>),
+    DollarExprs(DollarExprs),
     ///  @(EXPR)
     AtExpr(String),
     /// &(Expr)
@@ -45,7 +47,186 @@ pub(crate) enum PathExpr {
     /// !macro_name reference to a macro to be expanded
     MacroRef(String),
 }
+/// Variable tracking location of Statement (usually a rule) in a Tupfile
+/// see also [RuleRef] that keeps track of file in which the location is referred
+#[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash)]
+pub(crate) struct FineLoc {
+    line: u32,
+    col: u32,
+    span: u32,
+}
 
+impl FineLoc {
+    pub fn get_line(&self) -> u32 {
+        self.line
+    }
+    pub fn get_col(&self) -> u32 {
+        self.col
+    }
+    pub fn get_span(&self) -> u32 {
+        self.span
+    }
+
+    pub(crate) fn new(line: u32, col: u32, span: u32) -> FineLoc {
+        FineLoc{ line, col, span}
+    }
+}
+
+
+
+impl From<crate::parser::Span<'_>> for FineLoc {
+    fn from(span: crate::parser::Span) -> FineLoc {
+        FineLoc { line: span.location_line(), col: span.location_offset() as _,
+            span: span.fragment().len() as u32 }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct Continuation(Arc<dyn Fn(&[PathExpr]) -> Vec<PathExpr>>, FineLoc);
+impl Continuation {
+    pub fn new(s: crate::parser::Span) -> Continuation {
+        Self { 1: s.into(), ..Default::default()}
+    }
+
+    pub fn get(&self) -> &dyn Fn(&[PathExpr]) -> Vec<PathExpr> {
+        self.0.as_ref()
+    }
+
+    pub fn from(func: impl Fn(&[PathExpr]) -> Vec<PathExpr>, loc: FineLoc) -> Continuation {
+       Self {0: Arc::new(func), 1:loc}
+    }
+
+    pub fn composed_from(func: impl Fn(&[PathExpr]) -> Vec<PathExpr>, outer: &Continuation) -> Continuation {
+        let mut c = Self {0: Arc::new(func), 1:outer.1.clone()};
+        c.compose(outer.get());
+        c
+    }
+
+    pub fn compose(&mut self, func: impl Fn(&[PathExpr]) -> Vec<PathExpr>) {
+        let old = self.0.clone().as_ref();
+        self.0 = Arc::new(move |x| func(&*old(x)))
+    }
+
+    pub fn apply1(&self, path: &PathExpr) -> Vec<PathExpr> {
+        (self.0)(std::slice::from_ref(path))
+    }
+
+    pub fn apply(&self, paths: &[PathExpr]) -> Vec<PathExpr> {
+        (self.0)(paths)
+    }
+
+    pub fn get_loc(&self) -> FineLoc {
+        self.1
+    }
+}
+
+impl std::hash::Hash for Continuation {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.1.hash(state)
+    }
+}
+
+impl Default for Continuation {
+    fn default() -> Self {
+        Self { 0: Arc::new(|x| x.to_vec()), 1: FineLoc::default()}
+    }
+}
+impl PartialEq for Continuation {
+    fn eq(&self, other: &Self) -> bool {
+        //todo!()
+        self.1 == other.1
+    }
+    fn ne(&self, other: &Self) -> bool {
+        self.1 != other.1
+    }
+}
+impl Eq for Continuation {
+
+}
+
+impl std::fmt::Debug for Continuation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(" at line {} col {} span {}", self.1.line, self.1.col, self.1.span))
+    }
+}
+
+#[derive(PartialEq, Debug, Clone, Hash, Eq)]
+pub(crate) enum DollarExprs {
+    /// $(EXPR)
+    DollarExpr(String, Continuation),
+/// $(addprefix prefix, EXPR)
+    /// prefix is added to each path in EXPR
+    AddPrefix(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    /// $(addsuffix suffix, EXPR)
+    /// suffix is added to each path in EXPR
+    AddSuffix(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    /// $(subst from, to, EXPR)
+    Subst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    /// $(patsubst pattern, replacement, EXPR) --- pattern is a wildcard pattern with %p, replacement is a string
+    PatSubst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    /// $(filter pattern, EXPR)
+    Filter(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    /// $(filter-out pattern, EXPR)
+    FilterOut(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    /// $(foreach var, list, EXPR)
+    /// var is replaced by each element in list
+    ForEach(String, Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    /// $(findstring pattern, EXPR)
+    FindString(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    /// $(wildcard EXPR)
+    WildCard(Vec<PathExpr>, Continuation),
+    /// $(strip EXPR)
+    Strip(Vec<PathExpr>, Continuation),
+    /// $(notdir EXPR)
+    NotDir(Vec<PathExpr>, Continuation),
+    /// $(dir EXPR)
+    Dir(Vec<PathExpr>, Continuation),
+    /// $(abspath EXPR)
+    AbsPath(Vec<PathExpr>, Continuation),
+    /// $(basename EXPR)
+    BaseName(Vec<PathExpr>, Continuation),
+    /// $(realpath EXPR)
+    RealPath(Vec<PathExpr>, Continuation),
+    /// $(word n, EXPR)
+    Word(i32, Vec<PathExpr>, Continuation),
+    /// $(firstword EXPR)
+    FirstWord(Vec<PathExpr>, Continuation),
+    /// $(if cond, then, else)
+    If(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    // $(call name, arg1, arg2, ...)
+    Call(Vec<PathExpr>, Vec<Vec<PathExpr>>, Continuation),
+    // $(eval body)
+    Eval(EvalBody, Continuation),
+    // deferred evaluation of a list of path expressions
+    Deferred(Vec<PathExpr>, Continuation),
+}
+
+#[derive(PartialEq, Debug, Clone, Hash, Eq)]
+pub(crate) struct EvalBody {
+    pes: Vec<PathExpr>,
+    raw: Program,
+}
+
+impl AsRef<str> for Program {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl EvalBody {
+    pub  fn new(pes: Vec<PathExpr>, raw: String) -> Self {
+        Self { pes, raw: Program::new(raw)}
+    }
+   pub fn as_str(&self) -> &str {
+        self.raw.as_ref()
+    }
+    pub fn get_first(&self) -> Option<&PathExpr> {
+        self.pes.first()
+    }
+    pub fn get_body(&self) -> &Program {
+        &self.raw
+    }
+}
 /// represents the equality condition in if(n)eq (LHS,RHS)
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) struct EqCond {
@@ -61,6 +242,11 @@ pub(crate) struct Ident {
     pub name: String,
 }
 
+impl ToString for Ident {
+    fn to_string(&self) -> String {
+        self.name.clone()
+    }
+}
 /// variable being checked for defined
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) struct CheckedVar(pub Ident, pub bool);
@@ -105,33 +291,11 @@ pub(crate) struct Link {
     pub pos: (u32, usize),
 }
 
-/// Variable tracking location of Statement (usually a rule) in a Tupfile
-/// see also `RuleRef' that keeps track of file in which the location is referred
-#[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash)]
-pub struct Loc {
-    /// Line where rule was found
-    pub line: u32,
-    /// column where rule/pathexpr was found
-    pub offset: u32,
-}
+pub type Loc = FineLoc;
 /// Implement Display for a location useful for displaying error  s
-impl Display for Loc {
+impl Display for FineLoc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "line:{}, offset:{}", self.line, self.offset)
-    }
-}
-impl Loc {
-    /// A new loc from line and offset
-    pub fn new(line: u32, offset: u32) -> Loc {
-        Loc { line, offset }
-    }
-    /// line in Tupfile where a statement is found occurs
-    pub fn get_line(&self) -> u32 {
-        self.line
-    }
-    /// column of Tupfile where statement portion is found
-    pub fn get_offset(&self) -> u32 {
-        self.offset
+        write!(f, "line:{},  begin:{}, end:{}", self.get_line(), self.get_col(), self.get_col() + self.get_span())
     }
 }
 
@@ -174,7 +338,7 @@ impl Env {
         });
         Env { set: bt }
     }
-    /// add a env var (note: we dont the values corresponding to keys as it is just a function call away)
+    /// add an env var (note: we don't keep the values corresponding to keys as it is just a function call away)
     pub fn add(&mut self, k: String) -> bool {
         self.set.insert(k)
     }
@@ -274,6 +438,12 @@ pub(crate) enum Statement {
     Run(Vec<PathExpr>),
     Comment,
     GitIgnore,
+    /// Define a multi-line variable
+    /// define name { body }
+    /// body is a list of statements
+    Define(Ident, String),
+    /// Evaluate a Vec of PathExpr
+    DollarBlock(Vec<PathExpr>),
 }
 
 // we could have used `Into' or 'ToString' trait
@@ -417,6 +587,12 @@ impl Cat for &Vec<PathExpr> {
 impl From<String> for PathExpr {
     fn from(s: String) -> PathExpr {
         PathExpr::Literal(s)
+    }
+}
+
+impl From<DollarExprs> for PathExpr {
+    fn from(d: DollarExprs) -> PathExpr {
+        PathExpr::DollarExprs(d)
     }
 }
 

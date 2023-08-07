@@ -1,15 +1,11 @@
-//! Module that uses nom to parse a Tupfile
 use std::collections::VecDeque;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use nom::{
-    branch::alt,
-    bytes::complete::{tag, take, take_until, take_while},
-    character::complete::{char, one_of},
-};
+use nom::{branch::alt, bytes::complete::{tag, take, take_until, take_while}, character::complete::{char, one_of}};
 use nom::AsBytes;
 use nom::bytes::complete::{is_a, is_not};
-use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
+use nom::character::complete::{ line_ending, multispace0, multispace1, space0, space1};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::Err;
 use nom::error::{context, ErrorKind};
@@ -17,8 +13,8 @@ use nom::IResult;
 use nom::multi::{many0, many1, many_till};
 use nom::sequence::{delimited, preceded};
 use nom_locate::{LocatedSpan, position};
-
 use statements::*;
+use statements::DollarExprs;
 
 use crate::transform;
 
@@ -30,12 +26,6 @@ fn to_lval(name: String) -> Ident {
 }
 fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
-}
-impl Loc {
-    /// construct a Loc from a span
-    pub fn from_span(span: &Span) -> Loc {
-        Loc::new(span.location_line(), span.get_column() as u32)
-    }
 }
 lazy_static! {
     static ref BRKTOKSINNER: &'static str = "\\\n$&";
@@ -87,6 +77,7 @@ fn parse_pathexpr_raw_angle(input: Span) -> IResult<Span, Span> {
     preceded(is_not(*BRKTAGS), tag("<"))(input)
 }
 
+
 // parse expession wrapped inside dollar or at
 fn parse_pathexpr_ref_raw(input: Span) -> IResult<Span, String> {
     let (s, _) = alt((tag("$("), tag("@("), tag("&(")))(input)?;
@@ -95,6 +86,14 @@ fn parse_pathexpr_ref_raw(input: Span) -> IResult<Span, String> {
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
     Ok((s, raw.to_owned()))
 }
+fn parse_pathexpr_ref_raw_curl(input: Span) -> IResult<Span, String> {
+    let (s, _) = alt((tag("${"), tag("@{"), tag("&{")))(input)?;
+    let (s, r) = take_while(is_ident_perc)(s)?;
+    let (s, _) = tag("}")(s)?;
+    let raw = std::str::from_utf8(r.as_bytes()).unwrap();
+    Ok((s, raw.to_owned()))
+}
+
 
 // read a ! followed by macro name
 fn parse_pathexpr_raw_macroref(i: Span) -> IResult<Span, String> {
@@ -113,6 +112,7 @@ fn parse_pathexpr_raw_bin(i: Span) -> IResult<Span, String> {
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
     Ok((s, raw.to_owned()))
 }
+// parse the beginning of an exclude pattern (starts with ^)
 fn parse_pathexpr_hat(i: Span) -> IResult<Span, String> {
     let (s, _) = tag("^")(i)?;
     let (s, r) = is_not(" \t\n\r")(s)?;
@@ -132,30 +132,112 @@ fn parse_pathexpr_angle(i: Span) -> IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)
     //let v0 = v0.map(|x| x.0);
     Ok((s, (v0.0, v.0)))
 }
+
 // parse rvalue at expression eg $(H) for config vars
 fn parse_pathexpr_at(i: Span) -> IResult<Span, PathExpr> {
     context(
         "config(@) expression",
-        cut(map(parse_pathexpr_ref_raw, PathExpr::AtExpr)),
-    )(i)
-}
-// parse rvalue dollar expression eg $(H)
-fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
-    context(
-        "dollar expression",
-        alt((
-            complete(parse_pathexpr_addprefix),
-            complete(parse_pathexpr_addsuffix),
-            complete(parse_pathexpr_subst),
-            complete(parse_pathexpr_findstring),
-            complete(parse_pathexpr_foreach),
-            complete(parse_pathexpr_filter_out),
-            complete(parse_pathexpr_filter),
-            complete(map(parse_pathexpr_ref_raw, PathExpr::DollarExpr)),
-        )))(i)
+        alt ( (
+        complete(map(parse_pathexpr_ref_raw, PathExpr::AtExpr)),
+            complete(map(parse_pathexpr_ref_raw_curl, PathExpr::AtExpr)),
+        )
+    ))(i)
 }
 
 // parse rvalue dollar expression eg $(H)
+pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
+    let (_, peekchars) = peek(take(3usize))(i)?;
+    let parse_pathexpr_fallback = |i|
+        map(parse_pathexpr_ref_raw, |
+            x| PathExpr::from(DollarExprs::DollarExpr(x, Continuation::new(i))))(i);
+    match peekchars.as_bytes() {
+        b"$(a" | b"$(b" => context("dollar expression (class 1)",
+                                   // select among parsers that process dollar exprs with first char 'a' or 'b'
+                                   alt((
+                                       complete(parse_pathexpr_addprefix),
+                                       complete(parse_pathexpr_addsuffix),
+                                       complete(parse_pathexpr_abspath),
+                                       complete(parse_pathexpr_basename),
+                                       complete(parse_pathexpr_fallback),
+                                   )))(i),
+        b"$(c" | b"$(d" | b"$(e" => context("dollar expression (class 2)",
+                                            // select among parsers that process dollar exprs with first char 'c', 'd' or 'e'
+                                            alt((
+                                                complete(parse_pathexpr_call),
+                                                complete(parse_pathexpr_dir),
+                                                complete(parse_pathexpr_eval),
+                                                complete(parse_pathexpr_fallback),
+                                            )))(i),
+        b"$(f" => context("dollar expression (class 3)",
+                          // select among parsers that process dollar exprs with first char 'f'
+                          alt((
+                              complete(parse_pathexpr_filter),
+                              complete(parse_pathexpr_filter_out),
+                              complete(parse_pathexpr_findstring),
+                              complete(parse_pathexpr_foreach),
+                              complete(parse_pathexpr_firstword),
+                              complete(parse_pathexpr_fallback),
+                          )))(i),
+        b"$(i" | b"$(n" | b"$(p" | b"$(r" =>
+            context("dollar expression (class 4)",
+// select among parsers that process dollar exprs with first char 'i'... 'r'
+                    alt((
+                        complete(parse_pathexpr_if),
+                        complete(parse_pathexpr_nodir),
+                        complete(parse_pathexpr_patsubst),
+                        complete(parse_pathexpr_realpath),
+                        complete(parse_pathexpr_fallback),
+                    )))(i),
+
+        b"$(s" | b"$(w" =>
+            context("dollar expression (class 5)",
+//  select among parsers that process dollar exprs with first char 's'... 'w'
+                                                     alt((
+                                                         complete(parse_pathexpr_strip),
+                                                         complete(parse_pathexpr_subst),
+                                                         complete(parse_pathexpr_word),
+                                                         complete(parse_pathexpr_wildcard),
+                                                         complete(parse_pathexpr_fallback),
+                                                     )))(i),
+        _ => context("dollar expression general", parse_pathexpr_fallback)(i)
+    }
+}
+/*context(
+    "dollar expression",
+    alt((
+        complete(parse_pathexpr_addprefix),
+        complete(parse_pathexpr_addsuffix),
+        complete(parse_pathexpr_subst),
+        complete(parse_pathexpr_findstring),
+        complete(parse_pathexpr_foreach),
+        complete(parse_pathexpr_filter),
+        complete(parse_pathexpr_filter_out),
+        complete(parse_pathexpr_file_filter_out),
+        complete(parse_pathexpr_patsubst),
+        complete(parse_pathexpr_file_filter),
+        complete(parse_pathexpr_wildcard),
+        complete(parse_pathexpr_firstword),
+        complete(parse_pathexpr_word),
+        complete(parse_pathexpr_strip),
+        complete(parse_pathexpr_dir),
+        complete(parse_pathexpr_nodir),
+        complete(parse_pathexpr_if),
+        complete(parse_pathexpr_call),
+        complete(parse_pathexpr_eval),
+        complete(parse_pathexpr_realpath),
+        complete(map(parse_pathexpr_ref_raw, PathExpr::DollarExpr)),
+    )))(i) */
+
+// parse rvalue dollar expression with curlies eg ${H}
+fn parse_pathexpr_dollar_curl(i: Span) -> IResult<Span, PathExpr> {
+    context(
+        "dollar expression with curlies",
+        alt((
+            complete(map(parse_pathexpr_ref_raw_curl, |x| PathExpr::from(DollarExprs::DollarExpr(x, Continuation::new(i))) )),
+        )))(i)
+}
+
+// parse rvalue ampersand expression eg &(H)
 fn parse_pathexpr_amp(i: Span) -> IResult<Span, PathExpr> {
     context(
         "ampersand expression",
@@ -163,12 +245,15 @@ fn parse_pathexpr_amp(i: Span) -> IResult<Span, PathExpr> {
     )(i)
 }
 
+// parse a references to a macro
 fn parse_pathexpr_macroref(i: Span) -> IResult<Span, PathExpr> {
     context(
         "reference to macro",
         map(parse_pathexpr_raw_macroref, PathExpr::MacroRef),
     )(i)
 }
+
+// parse an exclude pattern
 fn parse_pathexpr_exclude_pattern(i: Span) -> IResult<Span, PathExpr> {
     context(
         "exclude pattern",
@@ -176,6 +261,7 @@ fn parse_pathexpr_exclude_pattern(i: Span) -> IResult<Span, PathExpr> {
     )(i)
 }
 
+// parse a group path/<group>
 fn parse_pathexpr_group(i: Span) -> IResult<Span, PathExpr> {
     context(
         "group",
@@ -235,7 +321,15 @@ fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
         b"$(" => parse_pathexpr_dollar(s),
         b"@(" => parse_pathexpr_at(s),
         b"&(" => parse_pathexpr_amp(s),
-        _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))), //fixme: what errorkind should we return?
+        _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))),
+    }
+}
+// parse basic special expressions (dollar, at, ampersand) with curlies
+fn parse_pathexprbasic_curly(i: Span) -> IResult<Span, PathExpr> {
+    let (s, r) = peek(take(2_usize))(i)?;
+    match r.as_bytes() {
+        b"${" => parse_pathexpr_dollar_curl(s),
+        _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))),
     }
 }
 
@@ -249,7 +343,7 @@ fn parse_pathexpr_addsuffix(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed add suffix: {:?} {:?}", suffix, list);
    // log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
-    Ok((s, PathExpr::AddSuffix(suffix, list)))
+    Ok((s, PathExpr::from(DollarExprs::AddSuffix(suffix, list, Continuation::new(i)))))
 }
 
 /// parse $(addprefix prefix, list)
@@ -262,7 +356,7 @@ fn parse_pathexpr_addprefix(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed add prefix: {:?} {:?}", prefix, list);
     //  log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
-    Ok((s, PathExpr::AddPrefix(prefix, list)))
+    Ok((s, PathExpr::from(DollarExprs::AddPrefix(prefix, list, Continuation::new(i)))))
 }
 
 /// parse $(subst from,to,text)
@@ -270,13 +364,26 @@ fn parse_pathexpr_addprefix(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_subst(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(subst")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (from, _)) = cut(|s| parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS))(s)?;
+    let (s, (from, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, (to, _)) = cut(|s| parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS))(s)?;
+    let (s, (to, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
-    Ok((s, PathExpr::Subst(from, to, text)))
+    Ok((s, PathExpr::from(DollarExprs::Subst(from, to, text, Continuation::new(i)))))
+}
+
+/// $(patsubst from,to,text) is a function that replaces all occurrences of from with to in text.
+fn parse_pathexpr_patsubst(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(patsubst")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (from, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS))(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (to, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS))(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (text, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::PatSubst(from, to, text, Continuation::new(i)))))
 }
 
 /// parse $(finstring find, in)
@@ -288,7 +395,7 @@ fn parse_pathexpr_findstring(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (in_, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
-    Ok((s, PathExpr::FindString(find, in_)))
+    Ok((s, PathExpr::from(DollarExprs::FindString(find, in_, Continuation::new(i)))))
 }
 
 /// parse $(foreach var,list,text)
@@ -299,11 +406,12 @@ fn parse_pathexpr_foreach(i: Span) -> IResult<Span, PathExpr> {
     let (s, r) = take_while(is_ident)(s)?;
     let var = std::str::from_utf8(r.as_bytes()).unwrap().to_string();
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, (list, _)) = parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS)?;
+    let (s, _) = tag(",")(s)?;
+    let (s, (list, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKSIO)?;
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
-    Ok((s, PathExpr::ForEach(var, list, text)))
+    Ok((s, PathExpr::from(DollarExprs::ForEach(var, list, text, Continuation::new(i)))))
 }
 
 /// parse $(filter pattern...,text)
@@ -315,10 +423,11 @@ fn parse_pathexpr_filter(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
-    Ok((s, PathExpr::Filter(patterns, text)))
+    Ok((s, PathExpr::from(DollarExprs::Filter(patterns, text, Continuation::new(i)))))
 }
 
-/// parse $(filter-out pattern...,text)
+
+// parse $(filter-out pattern...,text)
 /// $(filter-out pattern...,text) is a function that returns the words in text that do not match any of the given patterns.
 fn parse_pathexpr_filter_out(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(filter-out")(i)?;
@@ -327,10 +436,149 @@ fn parse_pathexpr_filter_out(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
-    Ok((s, PathExpr::FilterOut(patterns, text)))
+    Ok((s, PathExpr::from(DollarExprs::FilterOut(patterns, text, Continuation::new(i)))))
 }
 
+fn be_32(s: Span) -> IResult<Span, i32> {
+    nom::number::complete::i32(nom::number::Endianness::Big)(s)
+}
 
+/// parse $(word n,text)
+/// $(word n,text) is a function that returns the nth word of text.
+fn parse_pathexpr_word(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(word")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, n) = be_32(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::Word(n, text, Continuation::new(i)))))
+}
+
+// parse $(call variable, param...)
+fn parse_pathexpr_call(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(call")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (var, _)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
+    let mut params = Vec::new();
+    while let (s, Some(_)) = opt(tag(","))(s)? {
+        let (s, (p, _)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
+        let (_, _) = opt(parse_ws)(s)?;
+        params.push(p);
+    }
+    Ok((s, PathExpr::from(DollarExprs::Call(var, params, Continuation::new(i)))))
+}
+
+/// parse $(eval string)
+fn parse_pathexpr_eval(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(eval")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (pes, r)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let mut frag = r.fragment().clone();
+    let mut buf = String::new();
+    frag.read_to_string(&mut buf).unwrap_or_else(|_| panic!("failed to read string"));
+
+    Ok((s, PathExpr::from(DollarExprs::Eval(EvalBody::new(pes, buf), Continuation::new(i)))))
+}
+
+/// parse wild card $(wildcard pattern...)
+/// $(wildcard pattern...) is a function that returns the names of all files that match one of the given patterns.
+fn parse_pathexpr_wildcard(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(wildcard")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::WildCard(pattern, Continuation::new(i)))))
+}
+
+/// parse $(firstword names...)
+/// $(firstword names...) is a function that returns the first word of names.
+fn parse_pathexpr_firstword(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(firstword")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::FirstWord(pattern, Continuation::new(i)))))
+}
+
+/// parse $(dir names...)
+/// $(dir names...) is a function that returns the directory-part of each file name in names.
+fn parse_pathexpr_dir(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(dir")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::Dir(pattern, Continuation::new(i)))))
+}
+
+/// parse $(nodir names...)
+/// $(nodir names...) is a function that returns the non-directory-part of each file name in names.
+fn parse_pathexpr_nodir(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(nodir")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::NotDir(pattern, Continuation::new(i)))))
+}
+
+/// parse $(abspath names...)
+/// $(abspath names...) is a function that returns the absolute file names of the given file names.
+fn parse_pathexpr_abspath(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(abspath")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::AbsPath(pattern, Continuation::new(i)))))
+}
+
+/// parse $(if condition, then-part\[,else-part\])
+/// $(if condition, then-part\[,else-part\]) is a function that evaluates condition as the contents of a make variable would be evaluated as a conditional
+/// (see Syntax of Conditionals). If condition is true, then-part is evaluated and becomes the result of the function.
+/// Otherwise, else-part is evaluated and becomes the result of the function. If else-part is omitted, it is treated as an empty string.
+fn parse_pathexpr_if(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(if")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (condition, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
+    let (s, (then_part, _)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
+    let (s, o) = opt(tag(","))(s)?;
+    if o == None {
+        return Ok((s, PathExpr::from(DollarExprs::If(condition, then_part,
+                                                     Vec::new(), Continuation::new(i)))));
+    }
+    let (s, (else_part, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::If(condition, then_part, else_part, Continuation::new(i)))))
+}
+
+/// parse $(realpath names...)
+/// $(realpath names...) is a function that returns the canonical absolute names of the given file names.
+fn parse_pathexpr_realpath(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(realpath")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::RealPath(pattern, Continuation::new(i)))))
+}
+
+/// parse $(basename names...)
+/// $(basename names...) is a function that returns the non-directory-part of each file name without extension in names.
+fn parse_pathexpr_basename(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(basename")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::BaseName(pattern, Continuation::new(i)))))
+}
+
+/// parse $(strip names...)
+/// $(strip names...) is a function that returns the non-directory-part of each file name without extension in names.
+fn parse_pathexpr_strip(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(strip")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::from(DollarExprs::Strip(pattern, Continuation::new(i)))))
+}
 /// process whitespace
 fn parse_ws(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = is_a(" \t")(i)?;
@@ -345,7 +593,7 @@ fn parse_quote(i: Span) -> IResult<Span, PathExpr> {
     Ok((s, PathExpr::Quoted(inner)))
 }
 
-/// eat up the (dollar or at) that dont parse to (dollar or at) expression
+/// eat up the (dollar or at) that don't parse to (dollar or at) expression
 fn parse_delim(i: Span) -> IResult<Span, Span> {
     if !test_pathexpr_ref(i) {
         return Err(Err::Error(error_position!(i, ErrorKind::Escaped)));
@@ -377,6 +625,7 @@ pub(crate) fn parse_pathexpr_ws<'a, 'b>(
         complete(parse_quote),
         complete(parse_ws),
         complete(parse_pathexprbasic),
+        complete(parse_pathexprbasic_curly),
         complete(map_res(
             |i| parse_misc_bits(i, delim, pathexpr_toks),
             from_str,
@@ -391,6 +640,7 @@ fn parse_pathexpr_no_ws<'a, 'b>(
     alt((
         complete(parse_escaped),
         complete(parse_pathexprbasic),
+        complete(parse_pathexprbasic_curly),
         complete(map_res(
             |i| parse_misc_bits(i, delim, pathexpr_toks),
             from_str,
@@ -436,6 +686,10 @@ fn parse_pathexpr_list_until_ws_plus(input: Span) -> IResult<Span, (Vec<PathExpr
     many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n", &BRKTOKS), ws1)(input)
 }
 
+pub(crate) fn parse_lines(input: Span) -> IResult<Span, Vec<(Vec<PathExpr>, Span)>> {
+    many0(complete(parse_pelist_till_line_end_with_ws))(input)
+}
+
 // parse a lvalue ref to a ident
 fn parse_lvalue_ref(input: Span) -> IResult<Span, Ident> {
     let (s, _) = char('&')(input)?;
@@ -448,7 +702,7 @@ fn parse_lvalue(input: Span) -> IResult<Span, Ident> {
 
 impl From<(Statement, Span<'_>)> for LocatedStatement {
     fn from((stmt, i): (Statement, Span<'_>)) -> Self {
-        LocatedStatement::new(stmt, Loc::from_span(&i))
+        LocatedStatement::new(stmt, i.into())
     }
 }
 
@@ -470,6 +724,7 @@ fn parse_error(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, r) = context("error expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
     Ok((s, (Statement::Err(r.0), i).into()))
 }
+
 
 // parse export expression
 // export VARIABLE
@@ -561,17 +816,23 @@ fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
 // parse an assignment expression
 fn parse_let_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
-    let (s, l) = parse_lvalue(s)?;
+    // parse the left side of the assignment
+    let (s, left) = parse_lvalue(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, op) = alt((complete(tag("=")), complete(tag(":=")), complete(tag("?=")), complete(tag("+="))))(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
+    let c  = Continuation::default();
+    let right = if op.as_bytes() == b"=" {
+        vec![PathExpr::from(DollarExprs::Deferred(r.0,c))]}
+    else
+    { r.0 };
     Ok((
         s,
         (
             Statement::LetExpr {
-                left: l,
-                right: r.0,
+                left,
+                right,
                 is_append: (op.as_bytes() == b"+="),
                 is_empty_assign: (op.as_bytes() == b"?="),
             },
@@ -579,6 +840,32 @@ fn parse_let_expr(i: Span) -> IResult<Span, LocatedStatement> {
         )
             .into(),
     ))
+}
+
+/// parse a define statement and its body until enddef occurs
+fn parse_define_expr(i:Span) -> IResult<Span, LocatedStatement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("define")(s)?;
+    let (s, _) = sp1(s)?;
+    let (s, name) = context("define expression", cut(map_res(take_while(is_ident), from_utf8)))(s)?;
+    let (s, _) = multispace0(s)?;
+
+    // take until enddef or endef occurs
+    let (s, body) = context("define expression", cut(map_res(take_until("enddef"), from_utf8)))(s)?;
+    let (s, _) = multispace0(s)?;
+    let (s, _) = tag("enddef")(s)?;
+    Ok((s, (Statement::Define(to_lval(name), body), i).into()))
+}
+
+fn parse_dollar_block(i:Span)-> IResult<Span, LocatedStatement> {
+    let (s, _) = multispace0(i)?;
+    let (s, c) = peek(take(7_usize))(s)?;
+    if !matches!(*c, b"$(") {
+        Err(Err::Error(error_position!(i, ErrorKind::Eof)))
+    }else {
+        let (s, pe) = parse_pathexpr_eval(s)?;
+        Ok((s, (Statement::DollarBlock(vec![pe]), i).into()))
+    }
 }
 
 // parse an assignment expression
@@ -869,6 +1156,8 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_preload),
         complete(parse_import),
         complete(parse_gitignore),
+        complete(parse_define_expr),
+        complete(parse_dollar_block),
     ))(i)
 }
 
@@ -888,15 +1177,15 @@ pub(crate) fn parse_statements_until_eof(
 ) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
     many0(parse_statement)(i).map(|v| v.1).map_err(|e| match e {
         Err::Incomplete(_) => {
-            crate::errors::Error::ParseError("Incomplete data found".to_string(), Loc::new(0, 0))
+            crate::errors::Error::ParseError("Incomplete data found".to_string(), Loc::default())
         }
         Err::Error(e) => crate::errors::Error::ParseError(
             format!("Parse Error {:?}", e.code),
-            Loc::from_span(&e.input),
+            Loc::from(e.input),
         ),
         Err::Failure(e) => crate::errors::Error::ParseError(
             format!("Parse Failure {:?}", e.code),
-            Loc::from_span(&e.input),
+            Loc::from(e.input),
         ),
     })
 }
@@ -1023,10 +1312,10 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
     use errors::Error as Err;
     use std::fs::File;
     use std::io::prelude::*;
-    let mut file = File::open(filename).map_err(|e| Err::IoError(e, Loc::new(0, 0)))?;
+    let mut file = File::open(filename).map_err(|e| Err::IoError(e, Loc::default()))?;
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)
-        .map_err(|e| Err::IoError(e, Loc::new(0, 0)))?;
+        .map_err(|e| Err::IoError(e, Loc::default()))?;
     //contents.retain( |e| *e != b'\r');
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
