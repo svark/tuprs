@@ -155,6 +155,9 @@ impl NormalPath {
             NormalPath { inner: p }
         }
     }
+    pub fn new_from_cow(p: Cow<Path>) -> NormalPath {
+        NormalPath::new(p.into_owned())
+    }
     /// Construct a `NormalPath' by joining tup_cwd with path
     pub fn absolute_from(path: &Path, tup_cwd: &Path) -> Self {
         let p1 = Self::cleanup(path, tup_cwd);
@@ -281,11 +284,7 @@ impl RuleFormulaUsage {
 
 impl std::fmt::Display for RuleRef {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{:?}: {}",
-            self.tup_path_desc, self.loc
-        )
+        write!(f, "{:?}: {}", self.tup_path_desc, self.loc)
     }
 }
 
@@ -424,10 +423,10 @@ where
     T: Eq + Clone + Hash + From<usize> + std::fmt::Display,
 {
     /// Construct  that stores paths and its descriptors as a `BiMap' relative to root_dir
-    pub fn new(root_dir: &Path) -> Self {
+    pub fn new<P: AsRef<Path>>(root_dir: P) -> Self {
         GenPathBufferObject {
             descriptor: BiMap::new(),
-            root: root_dir.to_path_buf(),
+            root: root_dir.as_ref().to_path_buf(),
         }
     }
 
@@ -645,13 +644,17 @@ impl GeneratedFiles {
         path_desc: &PathDescriptor,
         base_path_desc: &PathDescriptor,
         vs: &mut Vec<MatchingPath>,
+        path_buffers: &impl PathBuffers,
     ) {
         let mut hs = HashSet::new();
         hs.extend(vs.iter().map(MatchingPath::path_descriptor));
         let mut found = false;
         if let Some(children) = self.children.get(base_path_desc) {
             if children.contains(path_desc) {
-                vs.push(MatchingPath::new(*path_desc));
+                vs.push(MatchingPath::new(
+                    *path_desc,
+                    path_buffers.get_path(path_desc).clone(),
+                ));
                 found = true;
             }
         }
@@ -664,7 +667,10 @@ impl GeneratedFiles {
                 .filter(|v| v.contains(path_desc));
             for _ in bins_groups {
                 if hs.insert(*path_desc) {
-                    vs.push(MatchingPath::new(*path_desc));
+                    vs.push(MatchingPath::new(
+                        *path_desc,
+                        path_buffers.get_path(path_desc).clone(),
+                    ));
                     found = true;
                     break;
                 }
@@ -681,7 +687,7 @@ impl GeneratedFiles {
     /// discover outputs matching glob in the same tupfile
     pub(crate) fn outputs_matching_glob(
         &self,
-        path_buffers: &mut impl PathBuffers,
+        path_buffers: &impl PathBuffers,
         glob_path: &GlobPath,
         vs: &mut Vec<MatchingPath>,
     ) {
@@ -701,6 +707,7 @@ impl GeneratedFiles {
                     if glob_path.is_match(p) && hs.insert(*pd) {
                         vs.push(MatchingPath::with_captures(
                             *pd,
+                            p.to_path_buf(),
                             glob_path.get_glob_desc(),
                             glob_path.group(p),
                         ))
@@ -721,6 +728,7 @@ impl GeneratedFiles {
                         if glob_path.is_match(p) && hs.insert(*pd) {
                             vs.push(MatchingPath::with_captures(
                                 *pd,
+                                p.to_path_buf(),
                                 glob_path.get_glob_desc(),
                                 glob_path.group(p),
                             ))
@@ -961,8 +969,12 @@ impl PathSearcher for OutputHolder {
         let mut vs = Vec::new();
         if !glob_path.has_glob_pattern() {
             let path_desc: PathDescriptor = glob_path.get_path_desc().0.into();
-            self.get()
-                .outputs_with_desc(&path_desc, glob_path.get_base_desc(), &mut vs);
+            self.get().outputs_with_desc(
+                &path_desc,
+                glob_path.get_base_desc(),
+                &mut vs,
+                path_buffers,
+            );
         } else {
             self.get()
                 .outputs_matching_glob(path_buffers, &glob_path, &mut vs);
@@ -1045,10 +1057,12 @@ impl OutputHandler for OutputHolder {
 }
 
 /// A Matching path id discovered using glob matcher along with captured groups
-#[derive(Debug, Default, Eq, PartialEq, Clone)]
+#[derive(Debug, Default, Eq, PartialEq, Clone, Hash)]
 pub struct MatchingPath {
     /// path that matched a glob
     path_descriptor: PathDescriptor,
+    /// path that matched a glob
+    path: NormalPath,
     /// id of the glob pattern that matched this path
     glob_descriptor: Option<GlobPathDescriptor>,
     /// first glob match in the above path
@@ -1135,9 +1149,10 @@ impl MyGlob {
 }
 impl MatchingPath {
     ///Create a bare matching path with no captured groups
-    pub fn new(path: PathDescriptor) -> MatchingPath {
+    pub fn new(path_descriptor: PathDescriptor, path: NormalPath) -> MatchingPath {
         MatchingPath {
-            path_descriptor: path,
+            path_descriptor,
+            path,
             glob_descriptor: None,
             captured_globs: vec![],
         }
@@ -1145,19 +1160,26 @@ impl MatchingPath {
 
     /// Create a `MatchingPath` with captured glob strings.
     pub fn with_captures(
-        path: PathDescriptor,
+        path_descriptor: PathDescriptor,
+        path: PathBuf,
         glob: &GlobPathDescriptor,
         captured_globs: Vec<String>,
     ) -> MatchingPath {
         MatchingPath {
-            path_descriptor: path,
+            path_descriptor,
+            path: NormalPath::new(path),
             glob_descriptor: Some(*glob),
             captured_globs,
         }
     }
-    /// Get path represented by this entry
+    /// Get path descriptor represented by this entry
     pub fn path_descriptor(&self) -> &PathDescriptor {
         &self.path_descriptor
+    }
+
+    // Get Path represented by this entry
+    pub fn get_path(&self) -> &Path {
+        self.path.as_path()
     }
 
     /// Get id of the glob pattern that matched this path
@@ -1324,10 +1346,10 @@ impl<T> IdedPath<T>
 where
     T: From<usize>,
 {
-    pub fn new(p: NormalPath, id: PathDescriptor) -> Self {
+    pub fn new<U: Into<usize>>(p: NormalPath, id: U) -> Self {
         IdedPath::<T> {
             p,
-            id: (id.0.into()),
+            id: (id.into()).into(),
         }
     }
     pub fn as_path(&self) -> &Path {
@@ -1346,7 +1368,7 @@ where
 
 /// Buffers to store files, groups, bins, env with its id.
 /// Each sub-buffer is a bimap from names to a unique id which simplifies storing references.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BufferObjects {
     pbo: PathBufferObject,    //< paths by id
     gbo: GroupBufferObject,   //< groups by id
@@ -1355,6 +1377,21 @@ pub struct BufferObjects {
     ebo: EnvBufferObject,     //< environment variables by id
     rbo: RuleBufferObject,    //< Rules by id
 }
+
+impl Default for BufferObjects {
+    fn default() -> Self {
+        let root = Path::new(".");
+        BufferObjects {
+            pbo: PathBufferObject::new(root),
+            bbo: BinBufferObject::new(root),
+            gbo: GroupBufferObject::new(root),
+            tbo: TupPathBufferObject::new(root),
+            ebo: EnvBufferObject::default(),
+            rbo: RuleBufferObject::default(),
+        }
+    }
+}
+
 /// Accessors and modifiers for BufferObjects
 impl BufferObjects {
     /// Construct Buffer object using tup (most) root directory where Tupfile.ini is found
@@ -1506,10 +1543,13 @@ impl PathSearcher for DirSearcher {
         );
         if !glob_path.has_glob_pattern() {
             let mut pes = Vec::new();
-            let path_desc = glob_path.get_path_desc().0;
+            let path_desc = glob_path.get_path_desc();
             debug!("looking for child {:?}", to_match);
             if to_match.is_file() {
-                pes.push(MatchingPath::new(path_desc.into()));
+                pes.push(MatchingPath::new(
+                    path_desc,
+                    path_buffers.get_path(&path_desc).clone(),
+                ));
             } else {
                 // discover inputs from previous outputs
                 pes.extend(self.output_holder.discover_paths(path_buffers, glob_path)?);
@@ -1543,6 +1583,7 @@ impl PathSearcher for DirSearcher {
             let (path_desc, _) = path_buffers.add_abs(path);
             pes.push(MatchingPath::with_captures(
                 path_desc,
+                path.to_path_buf(),
                 glob_path.get_glob_desc(),
                 globs.group(path),
             ));
@@ -1630,7 +1671,7 @@ impl PathBuffers for BufferObjects {
     /// Returns parent id for the path
     fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor> {
         let p = self.pbo.try_get(pd)?;
-        let np = NormalPath::new(get_parent(p.as_path()));
+        let np = NormalPath::new_from_cow(get_parent(p.as_path()));
         self.get_id(&np).copied()
     }
 
@@ -1789,6 +1830,9 @@ impl DecodeInputPaths for PathExpr {
                 } else {
                     return Err(Error::StaleBinRef(b.clone(), rule_ref.clone()));
                 }
+            }
+            PathExpr::DeGlob(mp) => {
+                vs.push(InputResolvedType::Deglob(mp.clone()));
             }
             _ => {}
         }
@@ -2340,7 +2384,7 @@ impl DecodeOutputPlaceHolders for PathExpr {
     }
 }
 
-fn normalized_path(x: &PathExpr) -> PathBuf {
+pub(crate) fn normalized_path(x: &PathExpr) -> PathBuf {
     //  backslashes with forward slashes
     let pbuf = PathBuf::new().join(x.cat_ref().replace('\\', "/").as_str());
     pbuf
@@ -2370,7 +2414,7 @@ fn paths_from_exprs(
     p: &[PathExpr],
     path_buffers: &mut impl PathBuffers,
 ) -> Vec<OutputType> {
-    p.split(|x| matches!(x, &PathExpr::Sp1) || matches!(x, &PathExpr::ExcludePattern(_) ))
+    p.split(|x| matches!(x, &PathExpr::Sp1) || matches!(x, &PathExpr::ExcludePattern(_)))
         .filter(|x| !x.is_empty())
         .map(|x| {
             let path = PathBuf::new().join(x.to_vec().cat());

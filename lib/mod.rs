@@ -30,6 +30,7 @@ pub use decode::PathDescriptor;
 pub use decode::ResolvedLink;
 pub use decode::RuleDescriptor;
 pub use decode::TupPathDescriptor;
+use statements::Loc;
 pub use transform::load_conf_vars;
 pub use transform::locate_file;
 pub use transform::Artifacts;
@@ -102,12 +103,12 @@ fn test_op() {
             parse_state.conf_map.get("CVAR").and_then(|x| x.first()),
             Some(&"1".to_owned())
         );
-        use decode::BufferObjects;
+        use decode::DirSearcher;
         use statements::EnvDescriptor;
 
-        let mut bo = BufferObjects::new(Path::new("."));
-        set_cwd(tuppath, &mut parse_state, &mut bo);
-        let mut stmts_ = stmts.subst(&mut parse_state, &mut bo).unwrap();
+        parse_state.set_cwd(tuppath).unwrap();
+        let path_searcher = DirSearcher::new();
+        let mut stmts_ = stmts.subst(&mut parse_state, &path_searcher).unwrap();
         stmts_.cleanup();
         assert_eq!(stmts_.len(), 3);
         let resolvedexpr = [
@@ -159,7 +160,7 @@ fn test_op() {
                             Literal("%<grp2>".to_string()),
                         ],
                     },
-                    pos: (3, 3),
+                    pos: Loc::new(3, 3, 0),
                 },
                 EnvDescriptor::default(),
             ),
@@ -189,7 +190,7 @@ fn test_op() {
                         ],
                         //formula: vec![Literal("type %f > file.txt ".to_string())],
                     },
-                    pos: (6, 2),
+                    pos: Loc::new(6, 2, 0),
                 },
                 EnvDescriptor::default(),
             ),
@@ -214,7 +215,7 @@ fn test_op() {
                             Literal("./src/main.rs".to_string()),
                         ],
                     },
-                    pos: (8, 2),
+                    pos: Loc::new(8, 2, 0),
                 },
                 EnvDescriptor::default(),
             ),
@@ -231,8 +232,8 @@ fn test_parse() {
     use nom_locate::LocatedSpan;
     use statements::CleanupPaths;
     //use statements::PathExpr;
-    use statements::LocatedStatement;
     use statements::DollarExprs;
+    use statements::LocatedStatement;
     use statements::PathExpr::Group;
     use statements::PathExpr::Literal;
     use statements::PathExpr::Sp1;
@@ -319,14 +320,14 @@ fn test_parse() {
         .statement;
     let res7 = parser::parse_statement(Span::new(
         b"ifeq ($(DEBUG),1)\n: foreach $(SRCS) |>\
-                                 !CC %<grp> %<grp2> |> $(addprefix %B, $(addsuffix .o,  ))\
+                                 !CC %<grp> %<grp2> |> $(addprefix %B, $(addsuffix o, .))\
                                   | command.pch ../<grp3>\nelse\nx+=eere\nendif\n",
     ))
     .unwrap()
     .1
     .statement;
 
-    let loc = Loc::new(0, 0);
+    let loc = Loc::new(0, 0, 0);
     let stmts_raw = vec![res64, res65, res66, res67, res68, res7];
     let mut stmtsloc: Vec<_> = stmts_raw
         .into_iter()
@@ -335,12 +336,12 @@ fn test_parse() {
     use std::path::Path;
     stmtsloc.cleanup();
 
-    let mut map = ParseState::default();
-    map.tup_base_path = std::path::PathBuf::from("./Tupfile");
-    let mut bo = BufferObjects::new(".");
-    set_cwd(Path::new("./Tupfile"), &mut map, &mut bo);
+    let mut parse_state = ParseState::default();
+    parse_state.tup_base_path = std::path::PathBuf::from("./Tupfile");
+    parse_state.set_cwd(Path::new("./Tupfile")).unwrap();
+    let path_searcher = DirSearcher::new();
     let stmts_ = stmtsloc
-        .subst(&mut map, &mut bo)
+        .subst(&mut parse_state, &path_searcher)
         .expect("subst failure")
         .into_iter()
         .map(|x| x.statement)
@@ -381,7 +382,7 @@ fn test_parse() {
                                                     //Group(vec![Literal("%grp2".to_string())]),
                 ],
             },
-            pos: (2, 2),
+            pos: Loc::new(2, 2, 0),
         },
         EnvDescriptor::default(),
     )];
@@ -410,7 +411,7 @@ fn test_parse() {
                         Sp1
                     ],
                 },
-                pos: (1, 2),
+                pos: Loc::new(1, 2, 0),
                 ..Default::default()
             },
             EnvDescriptor::default()
@@ -421,7 +422,7 @@ fn test_parse() {
     let mut bo = BufferObjects::new(Path::new("."));
     let mut dir_searcher = DirSearcher::new();
     let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
-    let (decodedrule, _outs) = LocatedStatement::new(rule, Loc::new(0, 0))
+    let (decodedrule, _outs) = LocatedStatement::new(rule, Loc::new(0, 0, 0))
         .resolve_paths(
             Path::new("./Tupfile"),
             &mut dir_searcher,
@@ -445,7 +446,7 @@ fn test_parse() {
     use std::io::Write;
     file.write_all("-".as_bytes()).expect("file write error");
     let mut dir = DirSearcher::new();
-    let (decodedrule1, _outs) = LocatedStatement::new(rule1, Loc::new(0, 0))
+    let (decodedrule1, _outs) = LocatedStatement::new(rule1, Loc::new(0, 0, 0))
         .resolve_paths(Path::new("file.txt"), &mut dir, &mut bo, &tup_desc)
         .unwrap();
     if let Some(deglobbed_link) = decodedrule1.get_resolved_links().first() {
@@ -454,33 +455,38 @@ fn test_parse() {
         rule_exp.push_str("type file.txt");
         assert_eq!(rf.get_formula().cat(), rule_exp);
     }
+    let mut d = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    d.push("tests/tuptest");
 
     // test
-    let stmt = parser::parse_statement(Span::new(b"SOURCES = $(foreach suffix,*.cxx *.c, $(wildcard _private/$(suffix)))\n"))
-        .unwrap().1;
-    let mut m = ParseState::default();
-    let mut bo = BufferObjects::new(Path::new("."));
+    let stmt = parser::parse_statement(Span::new(
+        b"SOURCES = $(foreach suffix,*.cxx *.c, $(wildcard a/$(suffix)))\n",
+    ))
+    .unwrap()
+    .1;
+    let mut m = ParseState::new_at(d.join("Tupfile").as_path());
     use transform::Subst;
-    let stmt = stmt.subst(&mut m, &mut bo).expect("subst failure");
-    let stmt2 = parser::parse_statement(Span::new(b"SOURCES = private/*.cxx private/*.c\n")).unwrap().1;
+    let stmt = stmt.subst(&mut m, &path_searcher).expect("subst failure");
+    let stmt2 = parser::parse_statement(Span::new(b"SOURCES = t1.cxx t2.c\n"))
+        .unwrap()
+        .1;
     let mut m = ParseState::default();
-    let mut bo = BufferObjects::new(Path::new("."));
 
-    let stmt2 = stmt2.subst(&mut m, &mut bo).expect("subst falure");
-    let mut m = ParseState::default();
-    let mut bo = BufferObjects::new(Path::new("."));
-    let stmt = stmt.subst(&mut m, &mut bo).expect("subst failure");
+    let stmt2 = stmt2.subst(&mut m, &path_searcher).expect("subst falure");
     assert_eq!(stmt, stmt2);
     // assert_eq!(deglob(&prog[0]).len(), 18);
 
-    let stmts  =
-        parser::parse_statements_until_eof(Span::new(b"CXX_FLAGS := -W3\n $(eval CXX_FLAGS \
-         := $(subst -W3,-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505,$(CXX_FLAGS)));")).expect("parse failure");
+    let stmts = parser::parse_statements_until_eof(Span::new(
+        b"CXX_FLAGS := -W3\nCXX_FLAGS \
+         := $(subst -W3,-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505,$(CXX_FLAGS))\n",
+    ))
+    .expect("parse failure");
     let mut m = ParseState::default();
-    let mut bo = BufferObjects::new(Path::new("."));
-    stmts.subst(&mut m, &mut bo).expect("subst failure");
-    assert_eq!(m.expr_map.get("CXX_FLAGS").unwrap().join(""),  "-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505");
-
+    stmts.subst(&mut m, &path_searcher).expect("subst failure");
+    assert_eq!(
+        m.expr_map.get("CXX_FLAGS").unwrap().join(""),
+        "-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505"
+    );
 }
 /*
 #[test]

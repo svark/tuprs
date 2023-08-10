@@ -6,19 +6,19 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::Arc;
 
-use log::{debug, log_enabled};
 use log::Level::Debug;
+use log::{debug, log_enabled};
+use mlua::Error::SyntaxError;
 use mlua::{AnyUserData, HookTriggers, Lua, MultiValue, StdLib, ToLua, Value, Variadic};
 use mlua::{UserData, UserDataMethods};
-use mlua::Error::SyntaxError;
 use nom::{AsBytes, InputTake};
 use parking_lot::RwLock;
 
 use decode::{GlobPath, OutputHandler, PathBuffers, PathSearcher};
 use errors::Error as Err;
 use parser::locate_tuprules;
-use statements::*;
 use statements::Statement::Rule;
+use statements::*;
 use transform::{Artifacts, ParseState};
 
 lazy_static! {
@@ -358,7 +358,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             source,
             target,
             rule_formula,
-            pos: (lineno, 0),
+            pos: Loc::new(lineno, 0, 0),
         };
         let env = self.parse_state.cur_env_desc.clone();
         let statement = LocatedStatement {
@@ -385,8 +385,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
                     .to_string(),
             );
         }
-        self.arts
-            .extend(arts);
+        self.arts.extend(arts);
         Ok(paths)
     }
 
@@ -404,7 +403,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             source,
             target,
             rule_formula,
-            pos: (lineno, 0),
+            pos: Loc::new(lineno, 0, 0),
         };
         let env = self.parse_state.cur_env_desc.clone();
         //self.links.push((l,env));
@@ -425,8 +424,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             let path = self.bo_as_mut().get_path_str(i);
             paths.push(path);
         }
-        self.arts
-            .extend(arts);
+        self.arts.extend(arts);
         Ok(paths)
     }
 
@@ -870,7 +868,8 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                     Path::new(scriptctx.get_cwd().as_str()),
                     Path::new(path),
                     scriptctx.bo_as_mut().deref_mut(),
-                ).map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
+                )
+                .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
                 path_searcher
                     .discover_paths(scriptctx.bo_as_mut().deref_mut(), glob_path)
                     .expect("Glob expansion failed")

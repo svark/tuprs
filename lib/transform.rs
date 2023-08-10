@@ -2,7 +2,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::hash::Hash;
 use std::ops::{AddAssign, Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -12,22 +11,23 @@ use std::vec::Drain;
 use crossbeam::channel::{Receiver, Sender};
 use log::debug;
 use nom::AsBytes;
-use nom_locate::LocatedSpan;
 use parking_lot::MappedRwLockReadGuard;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pathdiff::diff_paths;
 
-use decode::{normalize_path, BufferObjects, GlobPath, GlobPathDescriptor, GroupPathDescriptor, InputResolvedType, NormalPath, OutputHolder, PathBuffers, PathDescriptor, PathSearcher, ResolvePaths, ResolvedLink, RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor, MyGlob};
+use decode::{
+    normalize_path, BufferObjects, GlobPath, GlobPathDescriptor, GroupPathDescriptor,
+    InputResolvedType, MyGlob, NormalPath, OutputHolder, PathBuffers, PathDescriptor, PathSearcher,
+    ResolvePaths, ResolvedLink, RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
+};
 use errors::Error::RootNotFound;
 use errors::{Error as Err, Error};
 use glob::Candidate;
-use parser::{locate_tuprules, parse_lines, parse_statement};
+use parser::locate_tuprules;
 use parser::{parse_statements_until_eof, parse_tupfile, Span};
 use platform::*;
 use scriptloader::parse_script;
-use statements::PathExpr::{ExcludePattern, IncludePattern};
 use statements::*;
-use statements::DollarExprs::DollarExpr;
 
 /// Statements to resolve with their current parse state
 pub struct StatementsToResolve {
@@ -57,9 +57,9 @@ pub(crate) struct ParseState {
     /// tupfile reference variables to be substituted
     pub(crate) rexpr_map: HashMap<String, Vec<String>>,
     // defined functions
-    pub (crate) func_map: HashMap<String, String>,
+    pub(crate) func_map: HashMap<String, String>,
     // defered variables that will be substituted at the call site
-    pub (crate) defered_expr_map : HashMap<String, PathExpr>,
+    //pub (crate) defered_expr_map : HashMap<String, PathExpr>,
     /// configuration values read from tup.config
     pub(crate) conf_map: HashMap<String, Vec<String>>,
     /// Macro assignments waiting for subst
@@ -76,9 +76,9 @@ pub(crate) struct ParseState {
     pub(crate) cur_env_desc: EnvDescriptor,
     /// Cache of statements from previously read Tupfiles
     pub(crate) statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
+    /// Buffers to store files, groups, bins, env with its id.
+    pub(crate) path_buffers: Arc<RwLock<BufferObjects>>,
 }
-
-impl ParseState {}
 
 // Default Env to feed into every tupfile
 fn init_env() -> Env {
@@ -144,6 +144,7 @@ impl ParseState {
     ) -> Self {
         let mut def_vars = HashMap::new();
         let dir = get_parent_str(cur_file).to_string();
+        let pbuffers = Arc::new(RwLock::new(BufferObjects::new(dir.as_str())));
         def_vars.insert("TUP_CWD".to_owned(), vec![dir]);
 
         ParseState {
@@ -154,6 +155,7 @@ impl ParseState {
             cur_file_desc,
             cur_env_desc,
             statement_cache: statement_cache.clone(),
+            path_buffers: pbuffers,
             ..ParseState::default()
         }
     }
@@ -172,6 +174,79 @@ impl ParseState {
         v
     }
 
+    pub fn with_mut_path_buffers_do<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut BufferObjects) -> R,
+    {
+        let mut pb = self.path_buffers.write();
+        f(pb.deref_mut())
+    }
+
+    pub fn switch_tupfile_and_process(
+        &mut self,
+        tupfile: &Path,
+        process: impl FnOnce(&mut Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let old_cur_file = self.get_cur_file().to_path_buf();
+        self.set_cwd(tupfile)?;
+        let res = process(self);
+        self.set_cwd(old_cur_file.as_path())?;
+        res
+    }
+
+    pub fn new_at(cur_file: &Path) -> Self {
+        let mut def_vars = HashMap::new();
+        let pbuffers = Arc::new(RwLock::new(BufferObjects::new(get_parent(cur_file))));
+        let cur_file_desc = pbuffers.write().add_tup(cur_file).0;
+        let cur_file = pbuffers.read().get_tup_path(&cur_file_desc).to_path_buf();
+        let dir = get_parent_str(cur_file.as_path()).to_string().to_string();
+        def_vars.insert("TUP_CWD".to_owned(), vec![dir]);
+
+        ParseState {
+            expr_map: def_vars,
+            cur_file: cur_file.clone(),
+            tup_base_path: cur_file.clone(),
+            cur_file_desc,
+            path_buffers: pbuffers,
+            ..ParseState::default()
+        }
+    }
+    /// set the current TUP_CWD in expression map in ParseState as we switch to reading an included file
+    pub fn set_cwd(&mut self, tupfile: &Path) -> Result<(), Error> {
+        (self.cur_file_desc, _) = self.path_buffers.write().add_tup(tupfile);
+        self.cur_file = self
+            .path_buffers
+            .read()
+            .get_tup_path(&self.cur_file_desc)
+            .to_path_buf();
+        let tupdir = get_parent(self.tup_base_path.as_path());
+        debug!(
+            "diffing:{:?} with base: {:?}",
+            self.cur_file.as_path(),
+            tupdir
+        );
+        let diff = diff_paths(self.cur_file.as_path(), tupdir.as_ref())
+            .map(|x| Ok(x))
+            .unwrap_or_else(|| {
+                Err(Error::new_path_search_error(format!(
+                    "failed diffing:{:?} with base: {:?}",
+                    self.cur_file.as_path(),
+                    tupdir.as_ref()
+                )))
+            })?;
+        debug!("switching to diff:{:?}", diff);
+        let parent = diff
+            .parent()
+            .unwrap_or_else(|| panic!("unexpected diff:{:?}", diff));
+        if parent.eq(Path::new("")) {
+            self.replace_tup_cwd(".");
+        } else {
+            let p = get_path_str(parent);
+            self.replace_tup_cwd(p.to_cow_str().as_ref());
+        }
+        Ok(())
+    }
+
     pub(crate) fn set_env(&mut self, ed: EnvDescriptor) {
         self.cur_env_desc = ed;
     }
@@ -182,15 +257,17 @@ impl ParseState {
     }
 
     /// return the folder containing Tupfile being parsed
-    pub(crate) fn get_tup_dir(&self) -> &Path {
-        self.cur_file
-            .parent()
-            .expect("could not find current tup dir")
+    pub(crate) fn get_tup_dir(&self) -> Cow<Path> {
+        get_parent(self.cur_file.as_path())
     }
 
     /// Get folder that hosts tup file as a descriptor
     pub(crate) fn get_cur_file_desc(&self) -> &TupPathDescriptor {
         &self.cur_file_desc
+    }
+
+    fn get_env_desc(&self) -> EnvDescriptor {
+        self.cur_env_desc.clone()
     }
 
     /// Add statements to cache.
@@ -239,7 +316,7 @@ impl ExpandRun for Statement {
             Statement::Preload(v) => {
                 let dir = v.cat();
                 let p = Path::new(dir.as_str());
-                let (dirid, _) = path_buffers.add_path_from(parse_state.get_tup_dir(), p);
+                let (dirid, _) = path_buffers.add_path_from(parse_state.get_tup_dir().as_ref(), p);
                 {
                     parse_state.load_dirs.push(dirid);
                 }
@@ -248,7 +325,7 @@ impl ExpandRun for Statement {
                 if let Some(script) = script_args.first() {
                     let mut acnt = 0;
                     let mut cmd = if !cfg!(windows)
-                        || Path::new(script.cat_ref()).extension() == Some(OsStr::new("sh"))
+                        || Path::new(script.cat().as_str()).extension() == Some(OsStr::new("sh"))
                         || script.cat_ref() == "sh"
                     {
                         acnt = (script.cat_ref() == "sh").into();
@@ -263,7 +340,7 @@ impl ExpandRun for Statement {
                             let arg_path = Path::new(arg);
                             {
                                 let ref glob_path = GlobPath::new(
-                                    parse_state.get_tup_dir(),
+                                    parse_state.get_tup_dir().as_ref(),
                                     arg_path,
                                     path_buffers,
                                 )?;
@@ -345,7 +422,7 @@ impl ExpandRun for Statement {
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
                             .expect("failed to parse output of tup run");
                         let mut lstmts = lstmts
-                            .subst(parse_state, path_buffers)
+                            .subst(parse_state, path_searcher)
                             .expect("subst failure in generated tup rules");
                         res.extend(lstmts.drain(..));
                     } else {
@@ -387,7 +464,7 @@ pub(crate) trait Subst {
     fn subst(
         &self,
         parse_state: &mut ParseState,
-        path_buffers: &mut impl PathBuffers,
+        path_searcher: &impl PathSearcher,
     ) -> Result<Self, Err>
     where
         Self: Sized;
@@ -401,55 +478,6 @@ pub(crate) trait ExpandMacro {
     fn expand(&self, m: &mut ParseState) -> Result<Self, Err>
     where
         Self: Sized;
-}
-
-trait Compose {
-    fn compose(&mut self, c : Continuation);
-}
-
-impl Compose for Vec<PathExpr> {
-    fn compose(&mut self, c: Continuation) {
-        for p in self {
-            if p.is_literal() {
-                c.apply1(p);
-            }  else if let PathExpr::DollarExprs(d) = p {
-                d.compose(c.clone());
-            } else {
-            }
-        }
-    }
-}
-impl DollarExprs {
-    fn get_mut_continuation(&mut self) -> &mut Continuation {
-        match self {
-            DollarExprs::AddPrefix(_, _, ref mut c) => c,
-            DollarExprs::AddSuffix(_, _, ref mut c) => c,
-            DollarExprs::Subst(_, _, _, ref mut c) => c,
-            DollarExprs::PatSubst(_, _, _, ref mut c) => c,
-            DollarExprs::Filter(_, _, ref mut c) => c,
-            DollarExprs::FilterOut(_, _, ref mut c) => c,
-            DollarExprs::ForEach(_, _, _, ref mut c) => c,
-            DollarExprs::FindString(_, _, ref mut c) => c,
-            DollarExprs::WildCard(_, ref mut c) => c,
-            DollarExprs::Strip(_, ref mut c) => c,
-            DollarExprs::NotDir(_, ref mut c) => c,
-            DollarExprs::Dir(_, ref mut c) => c,
-            DollarExprs::DollarExpr(_, ref mut c) => c,
-            DollarExprs::AbsPath(_, ref mut c) => { c }
-            DollarExprs::BaseName(_, ref mut c) => { c }
-            DollarExprs::RealPath(_, ref mut c) => { c }
-            DollarExprs::Word(_, _, ref mut c) => { c }
-            DollarExprs::FirstWord(_, ref mut c) => { c }
-            DollarExprs::If(_, _, _, ref mut c) => { c }
-            DollarExprs::Call(_, _, ref mut c) => { c }
-            DollarExprs::Eval(_, ref mut c) => { c }
-        }
-    }
-}
-impl Compose for DollarExprs {
-    fn compose(&mut self, next: Continuation) {
-        self.get_mut_continuation().compose(next);
-    }
 }
 
 /// Check if a PathExpr is empty
@@ -472,11 +500,9 @@ impl PathExpr {
     /// substitute a single pathexpr into an array of literal pathexpr
     /// SFINAE holds
 
-    fn subst(&self, m: &mut ParseState) -> Vec<PathExpr> {
+    fn subst(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Vec<PathExpr> {
         match self {
-            PathExpr::DollarExprs(ref x) => {
-                x.subst(m)
-            }
+            PathExpr::DollarExprs(ref x) => x.subst(m, path_searcher),
             PathExpr::AtExpr(ref x) => {
                 if let Some(val) = m.conf_map.get(x.as_str()) {
                     intersperse_sp1(val)
@@ -501,11 +527,11 @@ impl PathExpr {
             }
 
             PathExpr::Quoted(ref x) => {
-                vec![PathExpr::Quoted(x.subst_pe(m))]
+                vec![PathExpr::Quoted(x.subst_pe(m, path_searcher))]
             }
             PathExpr::Group(ref xs, ref ys) => {
-                let newxs = xs.subst_pe(m);
-                let newys = ys.subst_pe(m);
+                let newxs = xs.subst_pe(m, path_searcher);
+                let newys = ys.subst_pe(m, path_searcher);
                 debug!("grpdir:{:?} grpname:{:?}", newxs, newys);
                 vec![PathExpr::Group(newxs, newys)]
             }
@@ -515,13 +541,12 @@ impl PathExpr {
     }
 }
 
-impl   DollarExprs {
-    fn subst(&self, m: &mut ParseState) -> Vec<PathExpr> {
+impl DollarExprs {
+    fn subst(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Vec<PathExpr> {
         match self {
-            DollarExprs::DollarExpr(x, c) => {
+            DollarExprs::DollarExpr(x) => {
                 if let Some(val) = m.expr_map.get(x.as_str()) {
-                    let mut vs = intersperse_sp1(val);
-                    vs.compose(c.clone());
+                    let vs = intersperse_sp1(val);
                     vs
                 } else if x.contains('%') {
                     log::warn!("dollarexpr {} not found", x);
@@ -531,37 +556,38 @@ impl   DollarExprs {
                     vec![PathExpr::from("".to_owned())] // postpone subst until placeholders are fixed
                 }
             }
-            DollarExprs::Subst(ref from, ref to, ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                let to = to.subst_pe(m);
+            DollarExprs::Subst(ref from, ref to, ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                let to = to.subst_pe(m, path_searcher);
                 let to = to.cat();
                 let from = from
                     .iter()
-                    .flat_map(|x| x.subst(m))
+                    .flat_map(|x| x.subst(m, path_searcher))
                     .collect::<Vec<PathExpr>>();
                 let from = from.cat();
-                let replacer = |x: &[PathExpr]|  {
-                    x.iter().map(|x| {
-                        if let PathExpr::Literal(s) = x {
-                            PathExpr::from(s.replace(from.as_str(), to.as_str()))
-                        } else {
-                            x.clone()
-                        }
-                    }).collect::<Vec<PathExpr>>()
+                let replacer = |x: &[PathExpr]| {
+                    x.iter()
+                        .filter_map(|x| {
+                            let s = x.cat_ref();
+                            if !s.is_empty() {
+                                Some(PathExpr::from(s.replace(from.as_str(), to.as_str())))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<PathExpr>>()
                 };
-                let mut next_continuation
-                    = Continuation::composed_from(replacer, c);
-                vs.compose(next_continuation);
-                vs
+                replacer(&vs)
             }
 
-            DollarExprs::Filter(ref filter, ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                let filter: Vec<PathExpr> = filter.subst_pe(m);
+            DollarExprs::Filter(ref filter, ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
                 let next = |x: &[PathExpr]| -> Vec<PathExpr> {
                     let mut vs = x.to_vec();
                     vs.retain(|x| {
-                        if let PathExpr::Literal(ref s) = x {
+                        let s = x.cat_ref();
+                        if !s.is_empty() {
                             for f in filter.iter() {
                                 if let PathExpr::Literal(ref f) = f {
                                     if s.contains(f.as_str()) {
@@ -574,16 +600,16 @@ impl   DollarExprs {
                     });
                     vs
                 };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation)
+                next(&vs)
             }
-            DollarExprs::FilterOut(ref filter, ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                let filter: Vec<PathExpr> = filter.subst_pe(m);
+            DollarExprs::FilterOut(ref filter, ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
                 let next = |x: &[PathExpr]| -> Vec<PathExpr> {
                     let mut vs = x.to_vec();
                     vs.retain(|x| {
-                        if let PathExpr::Literal(ref s) = x {
+                        let s = x.cat_ref();
+                        if !s.is_empty() {
                             for f in filter.iter() {
                                 if let PathExpr::Literal(ref f) = f {
                                     if s.contains(f.as_str()) {
@@ -596,12 +622,10 @@ impl   DollarExprs {
                     });
                     vs
                 };
-                let next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
+                next(&vs)
             }
-            DollarExprs::ForEach(var, list, body, c) => {
-                let mut list = list.subst_pe(m);
+            DollarExprs::ForEach(var, list, body) => {
+                let mut list = list.subst_pe(m, path_searcher);
                 if list.is_empty() {
                     log::warn!("Empty suffix values for {} in {:?}", var, m.get_cur_file());
                     return vec![];
@@ -614,9 +638,8 @@ impl   DollarExprs {
 
                         let b = &mut body
                             .iter()
-                            .flat_map(|x| x.subst(m))
+                            .flat_map(|x| x.subst(m, path_searcher))
                             .collect::<Vec<PathExpr>>();
-                        b.compose(c.clone());
                         vs.append(b);
                         vs.push(PathExpr::Sp1);
                         m.expr_map.remove(var);
@@ -632,319 +655,316 @@ impl   DollarExprs {
                 vs
             }
 
-            DollarExprs::WildCard(glob, c) => {
+            DollarExprs::WildCard(glob) => {
                 // wild cards are not expanded in the substitution phase
-                vec![PathExpr::DollarExprs( DollarExprs::WildCard(glob.subst_pe(m), c.clone()))]
+
+                let gstr = glob.subst_pe(m, path_searcher).cat();
+                let dir = m.get_tup_dir().to_path_buf();
+                m.with_mut_path_buffers_do(|path_buffers_mut| {
+                    let glob_path =
+                        GlobPath::new(dir.as_path(), Path::new(gstr.as_str()), path_buffers_mut)
+                            .unwrap();
+                    let paths = path_searcher
+                        .discover_paths(path_buffers_mut, &glob_path)
+                        .unwrap_or_else(|e| {
+                            log::warn!("Error while globbing {:?}: {}", glob_path, e);
+                            vec![]
+                        });
+                    paths.into_iter().map(|x| PathExpr::DeGlob(x)).collect()
+                })
             }
-            DollarExprs::Strip(ref vs, c) => {
+            DollarExprs::Strip(ref vs) => {
                 // strip trailing and leading spaces
-                let vs: Vec<_>
-                    = vs.subst_pe(m).into_iter().rev().skip_while(|x| matches!(x, PathExpr::Sp1)).collect();
-                vs.into_iter().rev().skip_while(|x| matches!(x, PathExpr::Sp1)).collect()
+                let vs: Vec<_> = vs
+                    .subst_pe(m, path_searcher)
+                    .into_iter()
+                    .rev()
+                    .skip_while(|x| matches!(x, PathExpr::Sp1))
+                    .collect();
+                vs.into_iter()
+                    .rev()
+                    .skip_while(|x| matches!(x, PathExpr::Sp1))
+                    .collect()
             }
 
-            DollarExprs::FindString(ref needle, ref text, c) => {
-                let mut vs = text.subst_pe(m);
-                let needle = needle.subst_pe(m)
+            DollarExprs::FindString(ref needle, ref text) => {
+                let vs = text.subst_pe(m, path_searcher);
+                let needle = needle
+                    .subst_pe(m, path_searcher)
                     .drain(..)
                     .filter(PathExpr::is_literal)
                     .collect::<Vec<_>>();
                 if needle.is_empty() {
                     return vec![];
                 }
-                let next = move |x : &[PathExpr]|  -> Vec<PathExpr> {
-                    let maybe_has = x.iter().find(|x| {
-                        if let PathExpr::Literal(ref s) = x {
-                            for f in needle.iter() {
-                                if let PathExpr::Literal(ref f) = f {
-                                    if s.contains(f.as_str()) {
-                                        return true;
-                                    }
+                let maybe_has = vs.iter().find(|x| {
+                    let s = x.cat_ref();
+                    if !s.is_empty() {
+                        for f in needle.iter() {
+                            if let PathExpr::Literal(ref f) = f {
+                                if s.contains(f.as_str()) {
+                                    return true;
                                 }
                             }
                         }
-                        false
-                    });
-                    if maybe_has.is_some() {
-                        needle
-                    } else {
-                        vec![]
                     }
-                };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
-
-            }
-            DollarExprs::RealPath(ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                let tup_dir = m.get_tup_dir().to_path_buf();
-                let next = |x : &[PathExpr]| -> Vec<PathExpr> {
-                    x.iter().filter_map(|x|  {
-                        if let PathExpr::Literal(ref mut s) = x {
-                            let p = Path::new(s);
-                            let real_path = path_dedot::ParseDot::parse_dot_from(p, tup_dir.as_path()).unwrap_or_else(|x| {
-                                panic!("failed to parse dot in path: {:?} {:?}", p, x)
-                            });
-                            Some(real_path.to_string_lossy().to_string())
-                        }else {
-                            None
-                        }
-                    }).collect()
-                };
-
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
-            }
-            DollarExprs::BaseName(ref vs ,c) => {
-                let mut vs = vs.subst_pe(m);
-                let next = |x: &[PathExpr]| -> Vec<PathExpr> {
-                    x.iter().filter_map(|v|  {
-                        if let PathExpr::Literal(s) = v {
-                            let p = Path::new(s);
-                            let base_name = p.file_name().unwrap_or_else(|| {
-                                panic!("failed to get base name from path: {:?}", p)
-                            });
-                            Some( base_name.to_string_lossy().to_string())
-                        } else {
-                            None
-                        }
-                    }).collect()
-                };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
-            }
-            DollarExprs::AbsPath(ref vs, c) => {
-                DollarExprs::RealPath(vs.clone, c.clone()).subst(m)
-            }
-            DollarExprs::NotDir(ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                let next = |x:&[PathExpr]| -> Vec<PathExpr> {
-                    let vs = x.iter().filter_map(|v| if let PathExpr::Literal(ref mut s) = v {
-                        let p = Path::new(s);
-                        let p = path_dedot::ParseDot::parse_dot_from(p, m.get_tup_dir()).unwrap_or_else(|x| {
-                            panic!("failed to parse dot in path: {:?} {:?}", p, x)
-                        });
-                        if p.is_dir() {
-                            Some( "".to_string())
-                        } else {
-                            let base_name = p.file_name().unwrap_or_else(|| {
-                                panic!("failed to get base name from path: {:?}", p)
-                            });
-                            Some(base_name.to_string_lossy().to_string())
-                        }
-                    }else {
-                        None
-                    }).collect();
-                    vs
-                };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
-
-            }
-            DollarExprs::Dir(ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                let tup_dir = m.get_tup_dir().to_path_buf();
-                let next = |x:&[PathExpr]| -> Vec<PathExpr> {
-                    let vs = x.iter().filter_map(|v| if let PathExpr::Literal(ref mut s) = v {
-                        let p = Path::new(s);
-                        let p = path_dedot::ParseDot::parse_dot_from(p, tup_dir.as_path()).unwrap_or_else(|x| {
-                            panic!("failed to parse dot in path: {:?} {:?}", p, x)
-                        });
-                        if p.is_dir() {
-                            Some( "".to_string())
-                        } else {
-                            let base_name = p.file_name().unwrap_or_else(|| {
-                                panic!("failed to get base name from path: {:?}", p)
-                            });
-                            Some(base_name.to_string_lossy().to_string())
-                        }
-                    }else {
-                        None
-                    }).collect();
-                    vs
-                };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
-            }
-
-            DollarExprs::FirstWord(ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                let mut found = false;
-                let next = |x:&[PathExpr]|-> Vec<PathExpr> {
-                  let s = x.to_vec().cat();
-                    // find the index-th word in s
-                    let mut words = s.split_whitespace();
-                    let mut word = words.nth(0usize).unwrap_or_else(|| {
-                        log::warn!("failed to get first word from path: {:?}", s);
-                        ""
-                    });
-                    vec![PathExpr::from(word.to_string())]
-                };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
-            }
-            DollarExprs::Word(index, ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                if index < &0 {
-                    panic!("negative index in word");
+                    false
+                });
+                if maybe_has.is_some() {
+                    needle
+                } else {
+                    vec![]
                 }
-                let mut found = false;
+            }
+            DollarExprs::RealPath(ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                let tup_dir = m.get_tup_dir().to_path_buf();
+                vs.iter()
+                    .filter_map(|v| {
+                        let s = v.cat_ref();
+                        if !s.is_empty() {
+                            let p = Path::new(s.as_ref());
+                            let real_path =
+                                path_dedot::ParseDot::parse_dot_from(p, tup_dir.as_path())
+                                    .unwrap_or_else(|x| {
+                                        panic!("failed to parse dot in path: {:?} {:?}", p, x)
+                                    });
+                            Some(real_path.to_string_lossy().to_string().into())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }
+            DollarExprs::BaseName(ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                vs.iter()
+                    .filter_map(|v| {
+                        let s = v.cat_ref();
+                        if !s.is_empty() {
+                            let p = Path::new(s.as_ref());
+                            let base_name = p.file_name().unwrap_or_else(|| {
+                                panic!("failed to get base name from path: {:?}", p)
+                            });
+                            Some(base_name.to_string_lossy().to_string().into())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }
+            DollarExprs::AbsPath(ref vs) => {
+                DollarExprs::RealPath(vs.clone()).subst(m, path_searcher)
+            }
+            DollarExprs::NotDir(ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                vs.iter()
+                    .filter_map(|v| {
+                        let s = v.cat_ref();
+                        if !s.is_empty() {
+                            let p = Path::new(s.as_ref());
+                            let p = path_dedot::ParseDot::parse_dot_from(p, m.get_tup_dir())
+                                .unwrap_or_else(|x| {
+                                    panic!("failed to parse dot in path: {:?} {:?}", p, x)
+                                });
+                            if p.is_dir() {
+                                Some("".to_string().into())
+                            } else {
+                                let base_name = p.file_name().unwrap_or_else(|| {
+                                    panic!("failed to get base name from path: {:?}", p)
+                                });
+                                Some(base_name.to_string_lossy().to_string().into())
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }
+            DollarExprs::Dir(ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                let tup_dir = m.get_tup_dir().to_path_buf();
+
+                let vs = vs
+                    .iter()
+                    .filter_map(|v| {
+                        let s = v.cat_ref();
+                        if !s.is_empty() {
+                            let p = Path::new(s.as_ref());
+                            let p = path_dedot::ParseDot::parse_dot_from(p, tup_dir.as_path())
+                                .unwrap_or_else(|x| {
+                                    panic!("failed to parse dot in path: {:?} {:?}", p, x)
+                                });
+                            if p.is_dir() {
+                                Some("".to_string().into())
+                            } else {
+                                let base_name = p.file_name().unwrap_or_else(|| {
+                                    panic!("failed to get base name from path: {:?}", p)
+                                });
+                                Some(base_name.to_string_lossy().to_string().into())
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                vs
+            }
+
+            DollarExprs::FirstWord(ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
                 let next = |x: &[PathExpr]| -> Vec<PathExpr> {
                     let s = x.to_vec().cat();
                     // find the index-th word in s
                     let mut words = s.split_whitespace();
-                    let mut word = words.nth(*index as usize).unwrap_or_else(|| {
+                    let word: Vec<PathExpr> = words
+                        .nth(0usize)
+                        .map(|x| vec![x.to_string().into()])
+                        .unwrap_or_else(|| {
+                            log::warn!("failed to get first word from path: {:?}", s);
+                            vec![]
+                        });
+                    word
+                };
+                next(&vs)
+            }
+            DollarExprs::Word(index, ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                if index < &0 {
+                    panic!("negative index in word");
+                }
+                let next = |x: &[PathExpr]| -> Vec<PathExpr> {
+                    let s = x.to_vec().cat();
+                    // find the index-th word in s
+                    let mut words = s.split_whitespace();
+                    let word = words.nth(*index as usize).unwrap_or_else(|| {
                         log::warn!("failed to get {}-th word from path: {:?}", index, s);
                         ""
                     });
-                    vec![PathExpr::from(word.to_string())]
+                    if word.is_empty() {
+                        vec![]
+                    } else {
+                        vec![PathExpr::from(word.to_string())]
+                    }
                 };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
+                next(&vs)
             }
 
-            DollarExprs::AddPrefix(ref prefix, ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                let prefix = prefix.subst_pe(m);
+            DollarExprs::AddPrefix(ref prefix, ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                let prefix = prefix.subst_pe(m, path_searcher);
                 let prefix: String = prefix
                     .cat()
                     .chars()
                     .take_while(|x| !x.is_whitespace())
                     .collect();
-                let next = |x:&[PathExpr]| -> Vec<PathExpr> {
-                    let vs = x.iter().filter_map( |v| {
-                        if let PathExpr::Literal(ref mut s) = v {
-                            let mut prefixed = prefix.clone();
-                            prefixed.push_str(s);
-                           Some(PathExpr::from(prefixed))
-                        } else {
-                            None
-                        }
-                    }).collect();
-                    if vs.is_empty() {
-                        vs.push(PathExpr::from(prefix));
-                    }
+                let next = |x: &[PathExpr]| -> Vec<PathExpr> {
+                    let vs = x
+                        .iter()
+                        .filter_map(|v| {
+                            if let PathExpr::Literal(s) = v {
+                                let mut prefixed = prefix.clone();
+                                prefixed.push_str(s);
+                                Some(PathExpr::from(prefixed))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
                     vs
                 };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
-
+                next(&vs)
             }
-            DollarExprs::AddSuffix(ref suffix, ref vs, c) => {
-                let mut vs = vs.subst_pe(m);
-                let sfx = suffix.subst_pe(m);
+            DollarExprs::AddSuffix(ref suffix, ref vs) => {
+                let vs = vs.subst_pe(m, path_searcher);
+                let sfx = suffix.subst_pe(m, path_searcher);
                 let sfx: String = sfx
                     .cat()
                     .chars()
                     .take_while(|x| !x.is_whitespace())
                     .collect();
-                let next = |x:&[PathExpr]| -> Vec<PathExpr> {
-                    let vs = x.iter().filter_map( |v| {
-                        if let PathExpr::Literal( s) = v {
-                            let mut s = s.clone();
-                            s.push_str(sfx.as_str());
-                            Some(PathExpr::from(s))
-                        } else {
-                            None
-                        }
-                    }).collect();
-                    if vs.is_empty() {
-                        vs.push(PathExpr::from(sfx));
-                    }
+                let next = |x: &[PathExpr]| -> Vec<PathExpr> {
+                    let vs = x
+                        .iter()
+                        .filter_map(|v| {
+                            if let PathExpr::Literal(s) = v {
+                                let mut s = s.clone();
+                                s.push_str(sfx.as_str());
+                                Some(PathExpr::from(s))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
                     vs
                 };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                vs.compose(next_continuation);
-                vs
+
+                next(&vs)
             }
-            DollarExprs::PatSubst(pat, rep, target, c) => {
-                let pat = pat.subst_pe(m);
-                let rep = rep.subst_pe(m);
-                let mut target = target.subst_pe(m);
-                let pat: String = pat
-                    .cat()
-                    .chars()
-                    .map(|x| if x == '%' { '*' } else { x })
-                    .collect();
+            DollarExprs::PatSubst(pat, rep, target) => {
+                let pat = pat.subst_pe(m, path_searcher);
+                let rep = rep.subst_pe(m, path_searcher);
+                let target = target.subst_pe(m, path_searcher);
+                let pat: String = pat.cat().replace('%', "*");
+                let rep: String = rep.cat().replace("%", "$1");
 
-                let rep: String = rep
-                    .cat()
-                    .chars()
-                    .map(|ref x| if x == '%' { "$1" } else { std::slice::from_ref(x) })
-                    .flat_map(|x| x.chars())
-                    .collect();
-
-                let next = |x:&[PathExpr]| -> Vec<PathExpr> {
-                    let glob = MyGlob::new(Candidate::new(pat.as_str()))?;
-                    glob.re().captures_iter(target.cat().as_bytes()).map(|cap| {
-                        let mut s = rep.cat();
+                let glob = MyGlob::new(Candidate::new(pat.as_str())).unwrap();
+                glob.re()
+                    .captures_iter(target.cat().as_bytes())
+                    .map(|cap| {
+                        let mut s = rep.clone();
                         for i in 0..cap.len() {
-                            let s = s.replace(&format!("${}", i+1), cap.get(i).unwrap().as_str());
+                            s = s.replace(
+                                &format!("${}", i + 1),
+                                std::str::from_utf8(cap.get(i).unwrap().as_bytes()).unwrap_or(""),
+                            )
                         }
                         PathExpr::from(s)
-                    }).collect()
-                };
-                let mut next_continuation = Continuation::composed_from(next, c);
-                target.compose(next_continuation);
-                target
+                    })
+                    .collect()
             }
-            DollarExprs::Call(ref name,  args, c) => {
-                let args: Vec<_> = args.iter().map(|x| x.subst_pe(m)).collect();
-                let name = name.subst_pe(m);
+            DollarExprs::Call(ref name, args) => {
+                let args: Vec<_> = args.iter().map(|x| x.subst_pe(m, path_searcher)).collect();
+                let name = name.subst_pe(m, path_searcher);
                 let name: String = name
                     .cat()
                     .chars()
                     .take_while(|x| !x.is_whitespace())
                     .collect();
-                let body = m.func_map.get(&name).unwrap_or_else(|| {
-                    panic!("failed to find function: {}", name)
-                });
+                let body = m
+                    .func_map
+                    .get(&name)
+                    .unwrap_or_else(|| panic!("failed to find function: {}", name));
                 let mut m = m.clone();
                 m.expr_map.insert("0".to_string(), vec![name]);
                 for (i, arg) in args.iter().enumerate() {
                     m.expr_map.insert(format!("{}", i + 1), vec![arg.cat()]);
                 }
-                let (_, mut lines) = crate::parser::parse_lines(Span::new(body.as_bytes())).unwrap_or_else(|x| {
-                    panic!("failed to parse function body: {:?}", x)
-                });
-                lines.drain(..).map(|(l, s)| l.subst_pe(&mut m)).flatten().collect()
+                let (_, mut lines) = crate::parser::parse_lines(Span::new(body.as_bytes()))
+                    .unwrap_or_else(|x| panic!("failed to parse function body: {:?}", x));
+                lines
+                    .drain(..)
+                    .map(|(l, _)| l.subst_pe(&mut m, path_searcher))
+                    .flatten()
+                    .collect()
             }
 
-            DollarExprs::Eval(s, c) => {
-// this implementation differs from make behavior when it appears inside a rule because make evaluates it when the rule is executed and not during parse
-                vec![self.]
-            }
-
-            DollarExprs::If(cond, then_part, else_part, c) => {
-                let cond = cond.subst_pe(m);
+            DollarExprs::If(cond, then_part, else_part) => {
+                let cond = cond.subst_pe(m, path_searcher);
                 let cond = cond.cat();
                 if cond.is_empty() {
-                    let mut else_part = else_part.subst_pe(m);
-                    else_part.compose(c.clone());
+                    let else_part = else_part.subst_pe(m, path_searcher);
                     else_part
                 } else {
-                    let mut then_part = then_part.subst_pe(m);
-                    then_part.compose(c.clone());
+                    let then_part = then_part.subst_pe(m, path_searcher);
                     then_part
                 }
-            }
-            DollarExprs::Deferred(v, c) => {
-                let mut vs = v.subst_pe(m);
-                vs.compose(c.clone());
-                vs
             }
         }
     }
 }
-/// creates `PathExpr' array separated by PathExpr::Sp1
+
+/// creates [PathExpr] array separated by PathExpr::Sp1
 fn intersperse_sp1(val: &[String]) -> Vec<PathExpr> {
     let mut vs = Vec::new();
     for pe in val.iter().map(|x| PathExpr::from(x.clone())) {
@@ -956,17 +976,17 @@ fn intersperse_sp1(val: &[String]) -> Vec<PathExpr> {
 }
 
 trait SubstPEs {
-    fn subst_pe(&self, m: &mut ParseState) -> Self
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self
     where
         Self: Sized;
 }
 
 impl SubstPEs for Vec<PathExpr> {
     /// call subst on each path expr and flatten/cleanup the output.
-    fn subst_pe(&self, m: &mut ParseState) -> Self {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         let mut newpe: Vec<_> = self
             .iter()
-            .flat_map(|x| x.subst(m))
+            .flat_map(|x| x.subst(m, path_searcher))
             .filter(|x| !is_empty(x))
             .collect();
         newpe.cleanup();
@@ -976,11 +996,11 @@ impl SubstPEs for Vec<PathExpr> {
 
 impl SubstPEs for Source {
     /// call subst on each path expr and flatten/cleanup the input.
-    fn subst_pe(&self, m: &mut ParseState) -> Self {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         Source {
-            primary: self.primary.subst_pe(m),
+            primary: self.primary.subst_pe(m, path_searcher),
             for_each: self.for_each,
-            secondary: self.secondary.subst_pe(m),
+            secondary: self.secondary.subst_pe(m, path_searcher),
         }
     }
 }
@@ -1015,9 +1035,13 @@ impl AddAssign for Target {
 }
 
 /// substitute only first pathexpr using ParseState
-fn takefirst(o: &Option<PathExpr>, m: &mut ParseState) -> Result<Option<PathExpr>, Err> {
+fn takefirst(
+    o: &Option<PathExpr>,
+    m: &mut ParseState,
+    path_searcher: &impl PathSearcher,
+) -> Result<Option<PathExpr>, Err> {
     if let &Some(ref pe) = o {
-        Ok(pe.subst(m).first().cloned())
+        Ok(pe.subst(m, path_searcher).first().cloned())
     } else {
         Ok(None)
     }
@@ -1025,9 +1049,9 @@ fn takefirst(o: &Option<PathExpr>, m: &mut ParseState) -> Result<Option<PathExpr
 
 impl SubstPEs for Target {
     /// run variable substitution on `Target'
-    fn subst_pe(&self, m: &mut ParseState) -> Self {
-        let primary = self.primary.subst_pe(m);
-        let secondary = self.secondary.subst_pe(m);
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
+        let primary = self.primary.subst_pe(m, path_searcher);
+        let secondary = self.secondary.subst_pe(m, path_searcher);
         debug!(
             "subst_pe: primary: {:?}, secondary: {:?}",
             primary, secondary
@@ -1035,17 +1059,17 @@ impl SubstPEs for Target {
         Target {
             primary,
             secondary,
-            group: takefirst(&self.group, m).unwrap_or_default(),
-            bin: takefirst(&self.bin, m).unwrap_or_default(),
+            group: takefirst(&self.group, m, path_searcher).unwrap_or_default(),
+            bin: takefirst(&self.bin, m, path_searcher).unwrap_or_default(),
         }
     }
 }
 impl SubstPEs for RuleFormula {
     /// run variable substitution on `RuleFormula'
-    fn subst_pe(&self, m: &mut ParseState) -> Self {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         RuleFormula {
             description: self.description.clone(), // todo : convert to rval and subst here as well,
-            formula: self.formula.subst_pe(m),
+            formula: self.formula.subst_pe(m, path_searcher),
         }
     }
 }
@@ -1086,7 +1110,7 @@ impl ExpandMacro for Link {
                     } else {
                         return Err(Err::UnknownMacroRef(
                             name.clone(),
-                            RuleRef::new(m.get_cur_file_desc(), &Loc::new(pos.0, pos.1 as u32)),
+                            RuleRef::new(m.get_cur_file_desc(), &pos),
                         ));
                     }
                 }
@@ -1101,20 +1125,21 @@ impl ExpandMacro for Link {
         })
     }
 }
-
 /// parent folder path for a given tupfile
-pub(crate) fn get_parent(cur_file: &Path) -> PathBuf {
-    if cur_file.eq(OsStr::new("/")) {
-        return PathBuf::from(".");
+pub(crate) fn get_parent(cur_file: &Path) -> Cow<Path> {
+    if cur_file.eq(OsStr::new("/"))
+        || cur_file.eq(OsStr::new("."))
+        || cur_file.as_os_str().is_empty()
+    {
+        return Cow::Owned(PathBuf::from("."));
     }
     let p = cur_file
         .parent()
-        .unwrap_or_else(|| panic!("unable to find parent folder for tup file:{:?}", cur_file))
-        .to_path_buf();
+        .unwrap_or_else(|| panic!("unable to find parent folder for tup file:{:?}", cur_file));
     if p.as_os_str().is_empty() {
-        PathBuf::from(".")
+        return Cow::Owned(PathBuf::from("."));
     } else {
-        p
+        Cow::Borrowed(p)
     }
 }
 
@@ -1180,47 +1205,13 @@ pub fn load_conf_vars(filename: &Path) -> Result<HashMap<String, Vec<String>>, E
     Ok(conf_vars)
 }
 
-/// set the current TUP_CWD in expression map in ParseState as we switch to reading a included file
-pub(crate) fn set_cwd(filename: &Path, m: &mut ParseState, bo: &mut impl PathBuffers) -> PathBuf {
-    debug!("reading {:?}", filename);
-    let cf = switch_to_reading(filename, m, bo);
-    let tupdir = m.tup_base_path.parent().unwrap();
-
-    debug!("diffing:{:?} with base: {:?}", m.cur_file.as_path(), tupdir);
-    let diff = diff_paths(m.cur_file.as_path(), tupdir).expect("Could not diff");
-    debug!("switching to diff:{:?}", diff);
-    let parent = diff
-        .parent()
-        .unwrap_or_else(|| panic!("unexpected diff:{:?}", diff));
-    if parent.eq(Path::new("")) {
-        m.replace_tup_cwd(".");
-    } else {
-        let p = get_path_str(parent);
-        m.replace_tup_cwd(p.to_cow_str().as_ref());
-    }
-    cf
-}
-
-/// update `ParseState' to point to newer file that is being read (like in include statement)
-fn switch_to_reading(
-    filename: &Path,
-    parse_state: &mut ParseState,
-    path_buffers: &mut impl PathBuffers,
-) -> PathBuf {
-    let cf = parse_state.cur_file.clone();
-    let (d, _) = path_buffers.add_tup(filename);
-    parse_state.cur_file = path_buffers.get_tup_path(&d).to_path_buf();
-    parse_state.cur_file_desc = d;
-    cf
-}
-
 impl SubstPEs for Link {
     /// recursively substitute variables inside a link
-    fn subst_pe(&self, m: &mut ParseState) -> Self {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         Link {
-            source: self.source.subst_pe(m),
-            target: self.target.subst_pe(m),
-            rule_formula: self.rule_formula.subst_pe(m),
+            source: self.source.subst_pe(m, path_searcher),
+            target: self.target.subst_pe(m, path_searcher),
+            rule_formula: self.rule_formula.subst_pe(m, path_searcher),
             pos: self.pos,
         }
     }
@@ -1230,7 +1221,7 @@ impl LocatedStatement {
     pub(crate) fn subst(
         &self,
         parse_state: &mut ParseState,
-        path_buffers: &mut (impl PathBuffers + Sized),
+        path_searcher: &impl PathSearcher,
     ) -> Result<Vec<LocatedStatement>, Error> {
         let mut newstats = Vec::new();
         let loc = self.get_loc();
@@ -1242,14 +1233,14 @@ impl LocatedStatement {
                 is_empty_assign,
             } => {
                 let &app = is_append;
-                let is_defered = matches!(right.first(), Some(PathExpr::Deferred));
-
-                if is_defered {
-                    parse_state.defered_expr_map.insert(left.name.clone(), right.first().unwrap().clone());
-                }
-                else {
-                    Self::UpdateAssign(parse_state, left, right, is_empty_assign, app);
-                }
+                Self::update_assign(
+                    parse_state,
+                    path_searcher,
+                    left,
+                    right,
+                    is_empty_assign,
+                    app,
+                );
             }
             Statement::LetRefExpr {
                 left,
@@ -1259,14 +1250,20 @@ impl LocatedStatement {
             } => {
                 let &app = is_append;
                 let prefix = vec![
-                    PathExpr::from(DollarExpr("TUP_CWD".to_owned())),
+                    PathExpr::from(DollarExprs::DollarExpr("TUP_CWD".to_owned())),
                     PathExpr::Literal("/".to_owned()),
                 ]
-                .subst_pe(parse_state)
+                .subst_pe(parse_state, path_searcher)
                 .cat();
                 let subst_right: Vec<String> = right
                     .split(|x| x == &PathExpr::Sp1)
-                    .map(|x| prefix.clone() + x.to_vec().subst_pe(parse_state).cat().as_str())
+                    .map(|x| {
+                        prefix.clone()
+                            + x.to_vec()
+                                .subst_pe(parse_state, path_searcher)
+                                .cat()
+                                .as_str()
+                    })
                     .collect();
 
                 let curright = if app {
@@ -1303,8 +1300,8 @@ impl LocatedStatement {
                 else_statements,
             } => {
                 let e = EqCond {
-                    lhs: eq.lhs.subst_pe(parse_state),
-                    rhs: eq.rhs.subst_pe(parse_state),
+                    lhs: eq.lhs.subst_pe(parse_state, path_searcher),
+                    rhs: eq.rhs.subst_pe(parse_state, path_searcher),
                     not_cond: eq.not_cond,
                 };
                 debug!("testing {:?} == {:?}", e.lhs, e.rhs);
@@ -1314,9 +1311,9 @@ impl LocatedStatement {
                     (then_statements, else_statements)
                 };
                 if e.lhs.cat().eq(&e.rhs.cat()) {
-                    newstats.append(&mut ts.subst(parse_state, path_buffers)?);
+                    newstats.append(&mut ts.subst(parse_state, path_searcher)?);
                 } else {
-                    newstats.append(&mut es.subst(parse_state, path_buffers)?);
+                    newstats.append(&mut es.subst(parse_state, path_searcher)?);
                 }
             }
             Statement::IfDef {
@@ -1326,10 +1323,10 @@ impl LocatedStatement {
             } => {
                 let cvar = PathExpr::AtExpr(checked_var.0.name.clone());
                 debug!("testing ifdef {:?}", cvar);
-                if cvar.subst(parse_state).iter().any(is_empty) == checked_var.1 {
-                    newstats.append(&mut then_statements.subst(parse_state, path_buffers)?);
+                if cvar.subst(parse_state, path_searcher).iter().any(is_empty) == checked_var.1 {
+                    newstats.append(&mut then_statements.subst(parse_state, path_searcher)?);
                 } else {
-                    newstats.append(&mut else_statements.subst(parse_state, path_buffers)?);
+                    newstats.append(&mut else_statements.subst(parse_state, path_searcher)?);
                 }
             }
 
@@ -1340,12 +1337,16 @@ impl LocatedStatement {
                 // locate tupfiles up the heirarchy from the current Tupfile folder
                 for f in locate_tuprules(parent) {
                     debug!("reading tuprules {:?}", f);
-                    let (tup_desc, _) = path_buffers.add_tup(f.as_path());
-                    let include_stmts = get_or_insert_parsed_statement(parse_state, &tup_desc, &f)?;
-                    let cf = set_cwd(f.as_path(), parse_state, path_buffers);
-                    newstats.append(&mut include_stmts.subst(parse_state, path_buffers)?);
-                    set_cwd(cf.as_path(), parse_state, path_buffers);
-                    found = true;
+                    parse_state.switch_tupfile_and_process(
+                        f.as_path(),
+                        |parse_state| -> Result<(), Error> {
+                            //let cf = switch_to_reading(tup_desc, tup_path, m, bo);
+                            let include_stmts = get_or_insert_parsed_statement(parse_state)?;
+                            newstats.append(&mut include_stmts.subst(parse_state, path_searcher)?);
+                            found = true;
+                            Ok(())
+                        },
+                    )?;
                 }
                 if !found {
                     return Err(Error::TupRulesNotFound(RuleRef::new(
@@ -1356,11 +1357,11 @@ impl LocatedStatement {
             }
             Statement::Include(s) => {
                 debug!("Include:{:?}", s.cat());
-                let s = s.subst_pe(parse_state);
+                let s = s.subst_pe(parse_state, path_searcher);
                 let scat = &s.cat();
                 let longp = get_parent(parse_state.cur_file.as_path());
                 let pscat = Path::new(scat.as_str());
-                let fullp = NormalPath::absolute_from(pscat, longp.as_path());
+                let fullp = NormalPath::absolute_from(pscat, longp.as_ref());
 
                 let p = if pscat.is_relative() {
                     fullp.as_path()
@@ -1370,14 +1371,17 @@ impl LocatedStatement {
                 debug!(
                     "cur path to include:{:?} at {:?}",
                     p,
-                    std::env::current_dir()
+                    parse_state.get_cur_file()
                 );
                 if p.is_file() {
-                    let (tup_desc, _) = path_buffers.add_tup(p);
-                    let include_stmmts = get_or_insert_parsed_statement(parse_state, &tup_desc, p)?;
-                    let cf = set_cwd(p, parse_state, path_buffers);
-                    newstats.append(&mut include_stmmts.subst(parse_state, path_buffers)?);
-                    set_cwd(cf.as_path(), parse_state, path_buffers);
+                    parse_state.switch_tupfile_and_process(
+                        p,
+                        |parse_state| -> Result<(), Error> {
+                            let include_stmts = get_or_insert_parsed_statement(parse_state)?;
+                            newstats.append(&mut include_stmts.subst(parse_state, path_searcher)?);
+                            Ok(())
+                        },
+                    )?;
                 } else {
                     return Err(Error::PathNotFound(
                         p.to_string_lossy().to_string(),
@@ -1392,7 +1396,7 @@ impl LocatedStatement {
                 }
                 let env_desc = parse_state.cur_env_desc.clone();
                 newstats.push(LocatedStatement::new(
-                    Statement::Rule(l.subst_pe(parse_state), env_desc),
+                    Statement::Rule(l.subst_pe(parse_state, path_searcher), env_desc),
                     *loc,
                 ));
             }
@@ -1403,7 +1407,7 @@ impl LocatedStatement {
                 parse_state.rule_map.insert(name.clone(), l);
             }
             Statement::Err(v) => {
-                let v = v.subst_pe(parse_state);
+                let v = v.subst_pe(parse_state, path_searcher);
                 eprintln!("{}\n", &v.cat().as_str());
                 return Err(Error::UserError(
                     v.cat().as_str().to_string(),
@@ -1412,12 +1416,14 @@ impl LocatedStatement {
             }
             Statement::Preload(v) => {
                 newstats.push(LocatedStatement::new(
-                    Statement::Preload(v.subst_pe(parse_state)),
+                    Statement::Preload(v.subst_pe(parse_state, path_searcher)),
                     *loc,
                 ));
             }
             Statement::Export(var) => {
-                let id = path_buffers.add_env_var(var.clone(), &parse_state.cur_env_desc);
+                let env_desc = parse_state.get_env_desc();
+                let id = parse_state
+                    .with_mut_path_buffers_do(|bo| bo.add_env_var(var.clone(), &env_desc));
                 parse_state.set_env(id);
             }
             Statement::Import(var, envval) => {
@@ -1432,7 +1438,7 @@ impl LocatedStatement {
             }
             Statement::Run(r) => {
                 newstats.push(LocatedStatement::new(
-                    Statement::Run(r.subst_pe(parse_state)),
+                    Statement::Run(r.subst_pe(parse_state, path_searcher)),
                     *loc,
                 ));
             }
@@ -1442,30 +1448,25 @@ impl LocatedStatement {
             Statement::GitIgnore => {
                 newstats.push(LocatedStatement::new(Statement::GitIgnore, loc.clone()))
             }
-            Statement::Define(name,val) => {
-                parse_state.func_map.insert(name.to_string(),val.clone());
+            Statement::Define(name, val) => {
+                parse_state.func_map.insert(name.to_string(), val.clone());
                 //newstats.push(LocatedStatement::new(Statement::Define(name.clone(),val.clone()), loc.clone()))
-            }
-            Statement::DollarBlock(v) => {
-                let vs = v.subst_pe(parse_state);
-                for pe in vs {
-                    if let PathExpr::Eval(EvalBody::Tokenized(pes)) = pe {
-                        newstats.extend(parse_statements_until_eof(pes)?);
-                    }
-                }
-            }
-            Statement::ForEachBlock(v) => {
-                let vs = v.subst_pe(parse_state);
-                newstats.extend(parse_statements_until_eof(Span::new(vs.cat().as_bytes())))
             }
         }
         Ok(newstats)
     }
 
-    fn UpdateAssign(parse_state: &mut ParseState, left: &Ident, right: &Vec<PathExpr>, is_empty_assign: &bool, app: bool) {
+    fn update_assign(
+        parse_state: &mut ParseState,
+        path_searcher: &impl PathSearcher,
+        left: &Ident,
+        right: &Vec<PathExpr>,
+        is_empty_assign: &bool,
+        app: bool,
+    ) {
         let subst_right_pe: Vec<_> = right
             .iter()
-            .flat_map(|x| x.subst(parse_state))
+            .flat_map(|x| x.subst(parse_state, path_searcher))
             //.filter_map(|x| if !matches!(x, PathExpr::Sp1) { Some(x.cat())} else { None})
             .collect();
         let subst_right: Vec<String> = subst_right_pe
@@ -1487,17 +1488,17 @@ impl LocatedStatement {
             subst_right
         };
         debug!(
-                    "let expr: {:?} {}= {:?}",
-                    left.name,
-                    if *is_empty_assign {
-                        "?"
-                    } else if app {
-                        "+"
-                    } else {
-                        ""
-                    },
-                    curright
-                );
+            "let expr: {:?} {}= {:?}",
+            left.name,
+            if *is_empty_assign {
+                "?"
+            } else if app {
+                "+"
+            } else {
+                ""
+            },
+            curright
+        );
         parse_state.expr_map.insert(left.name.clone(), curright);
     }
 }
@@ -1509,11 +1510,11 @@ impl Subst for Vec<LocatedStatement> {
     fn subst(
         &self,
         parse_state: &mut ParseState,
-        path_buffers: &mut impl PathBuffers,
+        path_searcher: &impl PathSearcher,
     ) -> Result<Self, Err> {
         let mut stats = Vec::new();
         for statement in self.iter() {
-            let newstats = statement.subst(parse_state, path_buffers)?;
+            let newstats = statement.subst(parse_state, path_searcher)?;
             stats.extend(newstats);
         }
         Ok(stats)
@@ -1522,17 +1523,19 @@ impl Subst for Vec<LocatedStatement> {
 
 fn get_or_insert_parsed_statement(
     parse_state: &mut ParseState,
-    tup_desc: &TupPathDescriptor,
-    f: &Path,
 ) -> Result<Vec<LocatedStatement>, Error> {
-    if let Some(vs) = parse_state.get_statements_from_cache(tup_desc) {
-        debug!("Reusing cached statements for {:?}", f);
+    let tup_desc = *parse_state.get_cur_file_desc();
+    if let Some(vs) = parse_state.get_statements_from_cache(&tup_desc) {
+        debug!(
+            "Reusing cached statements for {:?}",
+            parse_state.get_cur_file()
+        );
         Ok(vs)
     } else {
-        debug!("Parsing {:?}", f);
-        let res = parse_tupfile(f)?;
+        debug!("Parsing {:?}", parse_state.get_cur_file());
+        let res = parse_tupfile(parse_state.get_cur_file())?;
         debug!("Got: {:?} statements", res.len());
-        parse_state.add_statements_to_cache(tup_desc, res.clone());
+        parse_state.add_statements_to_cache(&tup_desc, res.clone());
         Ok(res)
     }
 }
@@ -1923,7 +1926,8 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
                 let mut res = Vec::new();
                 // create a transform function that will substitute variables in the statements
                 for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
-                    let vs = stmt.subst(&mut parse_state, bo_ref_mut)?;
+                    let searcher = self.get_path_searcher();
+                    let vs = stmt.subst(&mut parse_state, searcher.deref())?;
                     // create a vector generator over the statements
                     if vs
                         .iter()
@@ -1934,7 +1938,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
                             &mut parse_state,
                             self.get_path_searcher().deref(),
                             bo_ref_mut,
-                            &Loc::new(0, 0),
+                            &Loc::new(0, 0, 0),
                             &mut res,
                         )?;
                     } else {
