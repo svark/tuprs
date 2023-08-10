@@ -1,9 +1,10 @@
 //! This module has datastructures that capture parsed tupfile expressions
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
-use std::hash::Hasher;
-use std::path::Path;
-use std::sync::Arc;
+
+use decode::MatchingPath;
+use transform;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Program(String);
@@ -18,7 +19,6 @@ impl nom::AsBytes for Program {
     }
 }
 
-
 //use std::path::Path;
 // rvalue typically appears on the right side of assignment statement
 // in general they can be constituents of any tup expression that is not on lhs of assignment
@@ -32,8 +32,6 @@ pub(crate) enum PathExpr {
     Quoted(Vec<PathExpr>),
     /// Exclude patterns to avoid  passing some inputs or tracking some outputs
     ExcludePattern(String),
-    /// Include patterns to filter inputs
-    IncludePattern(String),
     /// $(EXPR)
     DollarExprs(DollarExprs),
     ///  @(EXPR)
@@ -46,11 +44,13 @@ pub(crate) enum PathExpr {
     Bin(String),
     /// !macro_name reference to a macro to be expanded
     MacroRef(String),
+    // resolved glob references
+    DeGlob(MatchingPath),
 }
 /// Variable tracking location of Statement (usually a rule) in a Tupfile
 /// see also [RuleRef] that keeps track of file in which the location is referred
 #[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash)]
-pub(crate) struct FineLoc {
+pub struct FineLoc {
     line: u32,
     col: u32,
     span: u32,
@@ -68,165 +68,67 @@ impl FineLoc {
     }
 
     pub(crate) fn new(line: u32, col: u32, span: u32) -> FineLoc {
-        FineLoc{ line, col, span}
+        FineLoc { line, col, span }
     }
 }
-
-
 
 impl From<crate::parser::Span<'_>> for FineLoc {
     fn from(span: crate::parser::Span) -> FineLoc {
-        FineLoc { line: span.location_line(), col: span.location_offset() as _,
-            span: span.fragment().len() as u32 }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct Continuation(Arc<dyn Fn(&[PathExpr]) -> Vec<PathExpr>>, FineLoc);
-impl Continuation {
-    pub fn new(s: crate::parser::Span) -> Continuation {
-        Self { 1: s.into(), ..Default::default()}
-    }
-
-    pub fn get(&self) -> &dyn Fn(&[PathExpr]) -> Vec<PathExpr> {
-        self.0.as_ref()
-    }
-
-    pub fn from(func: impl Fn(&[PathExpr]) -> Vec<PathExpr>, loc: FineLoc) -> Continuation {
-       Self {0: Arc::new(func), 1:loc}
-    }
-
-    pub fn composed_from(func: impl Fn(&[PathExpr]) -> Vec<PathExpr>, outer: &Continuation) -> Continuation {
-        let mut c = Self {0: Arc::new(func), 1:outer.1.clone()};
-        c.compose(outer.get());
-        c
-    }
-
-    pub fn compose(&mut self, func: impl Fn(&[PathExpr]) -> Vec<PathExpr>) {
-        let old = self.0.clone().as_ref();
-        self.0 = Arc::new(move |x| func(&*old(x)))
-    }
-
-    pub fn apply1(&self, path: &PathExpr) -> Vec<PathExpr> {
-        (self.0)(std::slice::from_ref(path))
-    }
-
-    pub fn apply(&self, paths: &[PathExpr]) -> Vec<PathExpr> {
-        (self.0)(paths)
-    }
-
-    pub fn get_loc(&self) -> FineLoc {
-        self.1
-    }
-}
-
-impl std::hash::Hash for Continuation {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.1.hash(state)
-    }
-}
-
-impl Default for Continuation {
-    fn default() -> Self {
-        Self { 0: Arc::new(|x| x.to_vec()), 1: FineLoc::default()}
-    }
-}
-impl PartialEq for Continuation {
-    fn eq(&self, other: &Self) -> bool {
-        //todo!()
-        self.1 == other.1
-    }
-    fn ne(&self, other: &Self) -> bool {
-        self.1 != other.1
-    }
-}
-impl Eq for Continuation {
-
-}
-
-impl std::fmt::Debug for Continuation {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!(" at line {} col {} span {}", self.1.line, self.1.col, self.1.span))
+        FineLoc {
+            line: span.location_line(),
+            col: span.get_column() as _,
+            span: span.fragment().len() as u32,
+        }
     }
 }
 
 #[derive(PartialEq, Debug, Clone, Hash, Eq)]
 pub(crate) enum DollarExprs {
     /// $(EXPR)
-    DollarExpr(String, Continuation),
-/// $(addprefix prefix, EXPR)
+    DollarExpr(String),
+    /// $(addprefix prefix, EXPR)
     /// prefix is added to each path in EXPR
-    AddPrefix(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    AddPrefix(Vec<PathExpr>, Vec<PathExpr>),
     /// $(addsuffix suffix, EXPR)
     /// suffix is added to each path in EXPR
-    AddSuffix(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    AddSuffix(Vec<PathExpr>, Vec<PathExpr>),
     /// $(subst from, to, EXPR)
-    Subst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    Subst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
     /// $(patsubst pattern, replacement, EXPR) --- pattern is a wildcard pattern with %p, replacement is a string
-    PatSubst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    PatSubst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
     /// $(filter pattern, EXPR)
-    Filter(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    Filter(Vec<PathExpr>, Vec<PathExpr>),
     /// $(filter-out pattern, EXPR)
-    FilterOut(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    FilterOut(Vec<PathExpr>, Vec<PathExpr>),
     /// $(foreach var, list, EXPR)
     /// var is replaced by each element in list
-    ForEach(String, Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    ForEach(String, Vec<PathExpr>, Vec<PathExpr>),
     /// $(findstring pattern, EXPR)
-    FindString(Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    FindString(Vec<PathExpr>, Vec<PathExpr>),
     /// $(wildcard EXPR)
-    WildCard(Vec<PathExpr>, Continuation),
+    WildCard(Vec<PathExpr>),
     /// $(strip EXPR)
-    Strip(Vec<PathExpr>, Continuation),
+    Strip(Vec<PathExpr>),
     /// $(notdir EXPR)
-    NotDir(Vec<PathExpr>, Continuation),
+    NotDir(Vec<PathExpr>),
     /// $(dir EXPR)
-    Dir(Vec<PathExpr>, Continuation),
+    Dir(Vec<PathExpr>),
     /// $(abspath EXPR)
-    AbsPath(Vec<PathExpr>, Continuation),
+    AbsPath(Vec<PathExpr>),
     /// $(basename EXPR)
-    BaseName(Vec<PathExpr>, Continuation),
+    BaseName(Vec<PathExpr>),
     /// $(realpath EXPR)
-    RealPath(Vec<PathExpr>, Continuation),
+    RealPath(Vec<PathExpr>),
     /// $(word n, EXPR)
-    Word(i32, Vec<PathExpr>, Continuation),
+    Word(i32, Vec<PathExpr>),
     /// $(firstword EXPR)
-    FirstWord(Vec<PathExpr>, Continuation),
+    FirstWord(Vec<PathExpr>),
     /// $(if cond, then, else)
-    If(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>, Continuation),
+    If(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
     // $(call name, arg1, arg2, ...)
-    Call(Vec<PathExpr>, Vec<Vec<PathExpr>>, Continuation),
-    // $(eval body)
-    Eval(EvalBody, Continuation),
-    // deferred evaluation of a list of path expressions
-    Deferred(Vec<PathExpr>, Continuation),
+    Call(Vec<PathExpr>, Vec<Vec<PathExpr>>),
 }
 
-#[derive(PartialEq, Debug, Clone, Hash, Eq)]
-pub(crate) struct EvalBody {
-    pes: Vec<PathExpr>,
-    raw: Program,
-}
-
-impl AsRef<str> for Program {
-    fn as_ref(&self) -> &str {
-        self.0.as_ref()
-    }
-}
-
-impl EvalBody {
-    pub  fn new(pes: Vec<PathExpr>, raw: String) -> Self {
-        Self { pes, raw: Program::new(raw)}
-    }
-   pub fn as_str(&self) -> &str {
-        self.raw.as_ref()
-    }
-    pub fn get_first(&self) -> Option<&PathExpr> {
-        self.pes.first()
-    }
-    pub fn get_body(&self) -> &Program {
-        &self.raw
-    }
-}
 /// represents the equality condition in if(n)eq (LHS,RHS)
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) struct EqCond {
@@ -282,20 +184,28 @@ pub(crate) struct RuleFormula {
     /// Rule Formula  holds the command to be executed. It appears here in raw or subst-ed form but without % symbols decoded
     pub formula: Vec<PathExpr>,
 }
+
+pub type Loc = FineLoc;
+
 /// combined representation of a tup rule consisting of source/target and rule formula
 #[derive(PartialEq, Debug, Clone, Default)]
 pub(crate) struct Link {
     pub source: Source,
     pub target: Target,
     pub rule_formula: RuleFormula,
-    pub pos: (u32, usize),
+    pub pos: Loc,
 }
 
-pub type Loc = FineLoc;
 /// Implement Display for a location useful for displaying error  s
 impl Display for FineLoc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "line:{},  begin:{}, end:{}", self.get_line(), self.get_col(), self.get_col() + self.get_span())
+        write!(
+            f,
+            "line:{},  begin:{}, end:{}",
+            self.get_line(),
+            self.get_col(),
+            self.get_col() + self.get_span()
+        )
     }
 }
 
@@ -442,8 +352,6 @@ pub(crate) enum Statement {
     /// define name { body }
     /// body is a list of statements
     Define(Ident, String),
-    /// Evaluate a Vec of PathExpr
-    DollarBlock(Vec<PathExpr>),
 }
 
 // we could have used `Into' or 'ToString' trait
@@ -453,7 +361,7 @@ pub(crate) trait Cat {
 }
 
 pub(crate) trait CatRef {
-    fn cat_ref(&self) -> &str;
+    fn cat_ref(&self) -> Cow<str>;
 }
 
 pub(crate) trait CleanupPaths {
@@ -476,7 +384,7 @@ impl CleanupPaths for Vec<PathExpr> {
                 was_lit = false;
             } else if matches!(pe, PathExpr::Literal(_)) {
                 let s = pe.cat_ref();
-                newpes += s;
+                newpes += s.as_ref();
                 was_lit = true;
             } else if was_lit {
                 newpesall.push(PathExpr::Literal(newpes));
@@ -579,7 +487,7 @@ impl Cat for &Vec<PathExpr> {
     fn cat(self) -> String {
         self.iter()
             .map(|x| x.cat_ref())
-            .fold(String::new(), |x, y| x + y)
+            .fold(String::new(), |x, y| x + y.as_ref())
     }
 }
 
@@ -603,17 +511,19 @@ impl Cat for &PathExpr {
             PathExpr::Sp1 => " ".to_string(),
             PathExpr::Quoted(v) => format!("\"{}\"", v.cat()),
             PathExpr::Group(p, g) => format!("{}<{}>", p.cat(), g.cat()),
+            PathExpr::DeGlob(mp) => format!("{:?}", transform::get_path_str(mp.get_path())),
             _ => String::new(),
         }
     }
 }
 
 impl CatRef for PathExpr {
-    fn cat_ref(&self) -> &str {
+    fn cat_ref(&self) -> Cow<str> {
         match self {
-            PathExpr::Literal(x) => x.as_str(),
-            PathExpr::Sp1 => " ",
-            _ => "",
+            PathExpr::Literal(x) => Cow::Borrowed(x.as_str()),
+            PathExpr::DeGlob(mp) => mp.get_path().to_string_lossy(),
+            PathExpr::Sp1 => Cow::Borrowed(" "),
+            _ => Cow::Borrowed(""),
         }
     }
 }
@@ -674,10 +584,7 @@ impl Cat for &Statement {
                 },
                 _,
             ) => {
-                let mut desc: String = r.description.cat();
-                let formula: String = r.formula.cat();
-                desc += formula.as_str();
-                desc + ":" + pos.0.to_string().as_str() + "," + pos.1.to_string().as_str()
+                format!("{} {}: {}", r.description.cat(), r.formula.cat(), pos)
             }
             _ => "".to_owned(),
         }
