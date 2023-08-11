@@ -4,9 +4,9 @@ use std::io::Error as IoErr;
 use regex::Regex;
 use thiserror::Error as ThisError;
 
-use decode::{PathDescriptor, RuleRef};
-use statements::Loc;
-use TupPathDescriptor;
+use crate::buffers::{PathDescriptor, TupPathDescriptor};
+use crate::decode::RuleRef;
+use crate::statements::Loc;
 
 /// Errors returning during parsing and subst-ing Tupfiles
 #[non_exhaustive]
@@ -120,7 +120,7 @@ impl Error {
     pub fn new_path_search_error(error_str: String) -> Error {
         Error::PathSearchError(error_str.to_string())
     }
-    pub(crate) fn human_readable(&self, path_buffers: &impl crate::decode::PathBuffers) -> String {
+    pub(crate) fn human_readable(&self, path_buffers: &impl crate::buffers::PathBuffers) -> String {
         let r = Regex::new(r"TupPathDescriptor\((\d+)\)").unwrap();
 
         let selstr = self.to_string();

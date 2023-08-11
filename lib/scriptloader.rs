@@ -14,12 +14,14 @@ use mlua::{UserData, UserDataMethods};
 use nom::{AsBytes, InputTake};
 use parking_lot::RwLock;
 
-use decode::{GlobPath, OutputHandler, PathBuffers, PathSearcher};
-use errors::Error as Err;
-use parser::locate_tuprules;
-use statements::Statement::Rule;
-use statements::*;
-use transform::{Artifacts, ParseState};
+use crate::buffers::PathBuffers;
+use crate::decode::{OutputHandler, PathSearcher};
+use crate::errors::Error as Err;
+use crate::parser::locate_tuprules;
+use crate::paths::GlobPath;
+use crate::statements::Statement::Rule;
+use crate::statements::*;
+use crate::transform::{Artifacts, ParseState};
 
 lazy_static! {
     static ref LINENO: &'static str = "lineno";

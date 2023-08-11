@@ -15,7 +15,7 @@ use bstr::{ByteSlice, ByteVec};
 use regex;
 use regex::bytes::{Regex, RegexBuilder};
 
-use platform::get_platform;
+use crate::platform::get_platform;
 
 //use bstr::{ByteSlice, ByteVec};
 /// Represents an error that can occur when parsing a glob pattern.
@@ -249,7 +249,11 @@ impl GlobMatcher {
     /// get the i-the matching capturing group in path. Each glob pattern has corresponds to a capturing group
     pub fn group<P: AsRef<Path>>(&self, path: P) -> Vec<String> {
         let c = Candidate::new(path.as_ref());
-        log::debug!("group regex: {:?} in {:?}", self.re, str::from_utf8(c.path()));
+        log::debug!(
+            "group regex: {:?} in {:?}",
+            self.re,
+            str::from_utf8(c.path())
+        );
         let u: u8 = b'G';
         self.re
             .captures_iter(c.path.as_ref())

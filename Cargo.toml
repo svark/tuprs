@@ -1,6 +1,7 @@
 [package]
 name = "tupparser"
 version = "0.1.0"
+edition = "2021"
 authors = ["Arun Sivaramakrishnan <arun.sivaramakrishnan@gmail.com>"]
 
 [lib]
@@ -13,9 +14,7 @@ nom_locate = "4.0.0"
 lazy_static = "1.4.0"
 thiserror = "1.0.30"
 regex = "1.5.4"
-daggy = "0.8.0"
 walkdir = "2.3.2"
-petgraph = "0.6.0"
 path-dedot = "3.1.0"
 bstr = "0.2.17"
 bimap = "0.6.1"

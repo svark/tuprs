@@ -3,25 +3,10 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 
-use decode::MatchingPath;
-use transform;
+use crate::paths::MatchingPath;
+use crate::transform;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Program(String);
-impl Program {
-    pub fn new(s: String) -> Self {
-        Self(s)
-    }
-}
-impl nom::AsBytes for Program {
-    fn as_bytes(&self) -> &[u8] {
-        self.0.as_bytes()
-    }
-}
-
-//use std::path::Path;
-// rvalue typically appears on the right side of assignment statement
-// in general they can be constituents of any tup expression that is not on lhs of assignment
+/// PathExpr are tokens that hold some meaning in tupfiles
 #[derive(PartialEq, Debug, Clone, Hash, Eq)]
 pub(crate) enum PathExpr {
     /// a normal string
@@ -50,31 +35,33 @@ pub(crate) enum PathExpr {
 /// Variable tracking location of Statement (usually a rule) in a Tupfile
 /// see also [RuleRef] that keeps track of file in which the location is referred
 #[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash)]
-pub struct FineLoc {
+pub struct Loc {
     line: u32,
     col: u32,
     span: u32,
 }
 
-impl FineLoc {
+impl Loc {
+    /// line number of the expression
     pub fn get_line(&self) -> u32 {
         self.line
     }
+    /// column number of the expression
     pub fn get_col(&self) -> u32 {
         self.col
     }
+    /// length of the expression
     pub fn get_span(&self) -> u32 {
         self.span
     }
-
-    pub(crate) fn new(line: u32, col: u32, span: u32) -> FineLoc {
-        FineLoc { line, col, span }
+    pub(crate) fn new(line: u32, col: u32, span: u32) -> Loc {
+        Loc { line, col, span }
     }
 }
 
-impl From<crate::parser::Span<'_>> for FineLoc {
-    fn from(span: crate::parser::Span) -> FineLoc {
-        FineLoc {
+impl From<crate::parser::Span<'_>> for Loc {
+    fn from(span: crate::parser::Span) -> Loc {
+        Loc {
             line: span.location_line(),
             col: span.get_column() as _,
             span: span.fragment().len() as u32,
@@ -185,8 +172,6 @@ pub(crate) struct RuleFormula {
     pub formula: Vec<PathExpr>,
 }
 
-pub type Loc = FineLoc;
-
 /// combined representation of a tup rule consisting of source/target and rule formula
 #[derive(PartialEq, Debug, Clone, Default)]
 pub(crate) struct Link {
@@ -197,7 +182,7 @@ pub(crate) struct Link {
 }
 
 /// Implement Display for a location useful for displaying error  s
-impl Display for FineLoc {
+impl Display for Loc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,

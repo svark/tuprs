@@ -15,19 +15,21 @@ use parking_lot::MappedRwLockReadGuard;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pathdiff::diff_paths;
 
-use decode::{
-    normalize_path, BufferObjects, GlobPath, GlobPathDescriptor, GroupPathDescriptor,
-    InputResolvedType, MyGlob, NormalPath, OutputHolder, PathBuffers, PathDescriptor, PathSearcher,
-    ResolvePaths, ResolvedLink, RuleDescriptor, RuleFormulaUsage, RuleRef, TupPathDescriptor,
+use crate::buffers::{
+    BufferObjects, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder, PathBuffers,
+    PathDescriptor, RuleDescriptor, TupPathDescriptor,
 };
-use errors::Error::RootNotFound;
-use errors::{Error as Err, Error};
-use glob::Candidate;
-use parser::locate_tuprules;
-use parser::{parse_statements_until_eof, parse_tupfile, Span};
-use platform::*;
-use scriptloader::parse_script;
-use statements::*;
+use crate::decode::{PathSearcher, ResolvePaths, ResolvedLink, RuleFormulaUsage, RuleRef};
+use crate::errors::Error::RootNotFound;
+use crate::errors::{Error as Err, Error};
+use crate::glob::Candidate;
+use crate::parser::locate_tuprules;
+use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
+use crate::paths::{normalize_path, NormalPath};
+use crate::paths::{GlobPath, InputResolvedType};
+use crate::platform::*;
+use crate::scriptloader::parse_script;
+use crate::statements::*;
 
 /// Statements to resolve with their current parse state
 pub struct StatementsToResolve {
@@ -194,6 +196,9 @@ impl ParseState {
         res
     }
 
+    /// Initialize ParseState for var-subst-ing `cur_file' with no conf_map.
+    /// This is useful for testing.
+    #[cfg(test)]
     pub fn new_at(cur_file: &Path) -> Self {
         let mut def_vars = HashMap::new();
         let pbuffers = Arc::new(RwLock::new(BufferObjects::new(get_parent(cur_file))));
@@ -1585,6 +1590,7 @@ impl Artifacts {
     pub fn add_link(&mut self, rlink: ResolvedLink) {
         self.resolved_links.push(rlink)
     }
+    #[allow(dead_code)]
     pub(crate) fn get_resolved_link(&self, i: usize) -> &ResolvedLink {
         &self.resolved_links[i]
     }

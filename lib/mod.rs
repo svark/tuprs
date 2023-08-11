@@ -4,7 +4,6 @@
 extern crate bimap;
 extern crate bstr;
 extern crate crossbeam;
-extern crate daggy;
 #[cfg(test)]
 extern crate env_logger;
 #[macro_use]
@@ -17,30 +16,31 @@ extern crate nom_locate;
 extern crate parking_lot;
 extern crate path_dedot;
 extern crate pathdiff;
-extern crate petgraph;
 extern crate regex;
 extern crate thiserror;
 extern crate walkdir;
 
-pub use decode::BinDescriptor;
-pub use decode::GeneratedFiles;
-pub use decode::GroupPathDescriptor;
-pub use decode::InputResolvedType;
-pub use decode::PathDescriptor;
+pub use buffers::BinDescriptor;
+pub use buffers::GeneratedFiles;
+pub use buffers::GroupPathDescriptor;
+pub use buffers::PathDescriptor;
+pub use buffers::RuleDescriptor;
+pub use buffers::TupPathDescriptor;
 pub use decode::ResolvedLink;
-pub use decode::RuleDescriptor;
-pub use decode::TupPathDescriptor;
-use statements::Loc;
+pub use paths::InputResolvedType;
 pub use transform::load_conf_vars;
 pub use transform::locate_file;
 pub use transform::Artifacts;
 pub use transform::ReadWriteBufferObjects;
 pub use transform::TupParser;
 
+mod buffers;
 pub mod decode;
 pub mod errors;
 mod glob;
+/// Parser for tupfiles
 pub mod parser;
+mod paths;
 mod platform;
 mod scriptloader;
 pub mod statements;
@@ -443,6 +443,7 @@ fn test_parse() {
         .1
         .statement;
     let mut file = std::fs::File::create("file.txt").expect("cannot open file");
+    use buffers::BufferObjects;
     use std::io::Write;
     file.write_all("-".as_bytes()).expect("file write error");
     let mut dir = DirSearcher::new();

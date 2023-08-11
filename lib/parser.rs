@@ -1,3 +1,4 @@
+/// This module handles tokenizing and parsing of statements in a tupfile using nom
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
@@ -17,9 +18,7 @@ use nom::{
 };
 use nom_locate::{position, LocatedSpan};
 
-use statements::DollarExprs;
-use statements::*;
-
+use crate::statements::*;
 use crate::transform;
 
 /// Span is an alias for LocatedSpan
@@ -791,8 +790,8 @@ fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
     Ok((s, (Statement::Comment, i).into()))
 }
 
-// parse an assignment expression
-fn parse_let_expr(i: Span) -> IResult<Span, LocatedStatement> {
+/// parse an assignment expression
+fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     // parse the left side of the assignment
     let (s, left) = parse_lvalue(s)?;
@@ -843,7 +842,7 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
 }
 
 // parse an assignment expression
-fn parse_letref_expr(i: Span) -> IResult<Span, LocatedStatement> {
+fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, l) = parse_lvalue_ref(s)?;
     let (s, _) = opt(sp1)(s)?;
@@ -1042,7 +1041,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
                     ),
                     target: from_output(output, secondary_output, v1, v2),
                     rule_formula,
-                    pos: FineLoc::from(pos),
+                    pos: Loc::from(pos),
                 },
                 EnvDescriptor::default(),
             ),
@@ -1108,7 +1107,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
                     ),
                     target: from_output(output, secondary_output, None, None),
                     rule_formula,
-                    pos: FineLoc::from(pos),
+                    pos: Loc::from(pos),
                 },
             ),
             i,
@@ -1123,8 +1122,8 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_comment),
         complete(parse_include),
         complete(parse_include_rules),
-        complete(parse_letref_expr),
-        complete(parse_let_expr),
+        complete(parse_ref_assignment_expr),
+        complete(parse_assignment_expr),
         complete(parse_rule),
         complete(parse_if_else_endif),
         complete(parse_ifdef_endif),
@@ -1287,7 +1286,7 @@ pub(crate) fn parse_ifdef_endif(i: Span) -> IResult<Span, LocatedStatement> {
 pub(crate) fn parse_tupfile<P: AsRef<Path>>(
     filename: P,
 ) -> Result<Vec<LocatedStatement>, crate::errors::Error> {
-    use errors::Error as Err;
+    use crate::errors::Error as Err;
     use std::fs::File;
     use std::io::prelude::*;
     let mut file = File::open(filename).map_err(|e| Err::IoError(e, Loc::default()))?;
