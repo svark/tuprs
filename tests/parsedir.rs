@@ -26,7 +26,6 @@ mod tests {
         d.push("tests/tupscripttest");
         let statements = parse_dir(d.as_path()).expect("failed to parse!");
         //let statements0 = statements[0].get_statements();
-        log::error!("statements: {:?}", statements);
         assert_eq!(statements.len(), 2);
     }
 }
