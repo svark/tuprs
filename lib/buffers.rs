@@ -1,3 +1,4 @@
+//! Module to hold buffers of tupfile paths, bins, groups which can be referenced by their descriptors
 use std::borrow::{Borrow, Cow};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -172,15 +173,17 @@ where
                 .skip_while(|x| Component::CurDir.eq(x))
                 .collect()
         } else {
-            diff_paths(path.as_ref(), self.get_root_dir()).unwrap_or_else(|| {
-                panic!(
-                    "could not diff paths \n: {:?} - {:?}",
-                    path.as_ref(),
-                    self.get_root_dir()
-                )
-            })
+            diff_paths(path.as_ref(), self.get_root_dir())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "could not diff paths \n: {:?} - {:?}",
+                        path.as_ref(),
+                        self.get_root_dir()
+                    )
+                })
+                .into()
         };
-        let np = NormalPath::new(pbuf);
+        let np = NormalPath::new_from_cow_path(Cow::from(pbuf));
         self.add_normal_path(np)
     }
 
@@ -466,7 +469,7 @@ impl GeneratedFiles {
                     if glob_path.is_match(p) && hs.insert(*pd) {
                         vs.push(MatchingPath::with_captures(
                             *pd,
-                            p.to_path_buf(),
+                            np.clone(),
                             glob_path.get_glob_desc(),
                             glob_path.group(p),
                         ))
@@ -487,7 +490,7 @@ impl GeneratedFiles {
                         if glob_path.is_match(p) && hs.insert(*pd) {
                             vs.push(MatchingPath::with_captures(
                                 *pd,
-                                p.to_path_buf(),
+                                np.clone(),
                                 glob_path.get_glob_desc(),
                                 glob_path.group(p),
                             ))
@@ -820,8 +823,8 @@ impl MyGlob {
 
 /// Output path and its id.
 pub struct OutputType {
-    pub path: NormalPath,
-    pub pid: PathDescriptor,
+    pub(crate) path: NormalPath,
+    pub(crate) pid: PathDescriptor,
 }
 
 impl Display for OutputType {
@@ -952,7 +955,7 @@ impl PathBuffers for BufferObjects {
     /// Returns parent id for the path
     fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor> {
         let p = self.pbo.try_get(pd)?;
-        let np = NormalPath::new_from_cow(get_parent(p.as_path()));
+        let np = NormalPath::new_from_cow_path(get_parent(p.as_path()));
         self.get_id(&np).copied()
     }
 
@@ -969,7 +972,7 @@ impl PathBuffers for BufferObjects {
     fn get_rel_path(&self, pd: &PathDescriptor, vd: &PathDescriptor) -> NormalPath {
         let np1 = self.get_path(pd);
         let np2 = self.get_path(vd);
-        NormalPath::new(diff_paths(np1.as_path(), np2.as_path()).unwrap())
+        NormalPath::new_from_cow_path(diff_paths(np1.as_path(), np2.as_path()).unwrap().into())
     }
 
     /// Returns rule corresponding to a rule descriptor. Panics if none is found
@@ -1004,8 +1007,7 @@ impl PathBuffers for BufferObjects {
     /// Get tup id corresponding to its path
     fn get_tup_id(&self, p: &Path) -> &TupPathDescriptor {
         let p = paths::without_curdir_prefix(p);
-        let p: &Path = p.as_ref();
-        self.tbo.get_id(&NormalPath::new(p.to_path_buf())).unwrap()
+        self.tbo.get_id(&NormalPath::new_from_cow_path(p)).unwrap()
     }
 
     /// Return root folder where tup was initialized

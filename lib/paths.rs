@@ -1,3 +1,4 @@
+//! Module for handling paths and glob patterns in tupfile.
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -18,7 +19,8 @@ use crate::glob::Candidate;
 use crate::statements::{CatRef, PathExpr};
 use crate::{BinDescriptor, GroupPathDescriptor, PathDescriptor};
 
-/// Constructor and accessor for a NormalPath
+/// Normal path holds paths wrt root directory and can be compared with other paths
+/// It is used to store paths in a normalized form (slash-corrected) and to compare paths
 #[derive(Debug, Default, Eq, PartialEq, Clone, Hash)]
 pub struct NormalPath {
     inner: PathBuf,
@@ -92,7 +94,7 @@ impl ToString for NormalPath {
 
 impl NormalPath {
     /// Construct consuming the given pathbuf
-    pub fn new(p: PathBuf) -> NormalPath {
+    fn new(p: PathBuf) -> NormalPath {
         if p.as_os_str().is_empty() || p.as_os_str() == "/" || p.as_os_str() == "\\" {
             NormalPath {
                 inner: PathBuf::from("."),
@@ -101,14 +103,19 @@ impl NormalPath {
             NormalPath { inner: p }
         }
     }
-    pub(crate) fn new_from_cow(p: Cow<Path>) -> NormalPath {
-        NormalPath::new(p.into_owned())
+
+    pub(crate) fn new_from_cow_path(p: Cow<Path>) -> NormalPath {
+        NormalPath::new_from_cow_str(Candidate::new(p.as_ref()).to_cow_str())
     }
+    fn new_from_cow_str(p: Cow<str>) -> NormalPath {
+        NormalPath::new(PathBuf::from(p.as_ref()))
+    }
+
     /// Construct a `NormalPath' by joining tup_cwd with path
     pub fn absolute_from(path: &Path, tup_cwd: &Path) -> Self {
         let p1 = Self::cleanup(path, tup_cwd);
         debug!("abs:{:?}", p1);
-        NormalPath::new(p1)
+        NormalPath::new_from_cow_path(Cow::from(p1))
     }
 
     pub(crate) fn cleanup<P: AsRef<Path>>(path: &Path, tup_cwd: P) -> PathBuf {
@@ -201,13 +208,13 @@ impl MatchingPath {
     /// Create a `MatchingPath` with captured glob strings.
     pub fn with_captures(
         path_descriptor: PathDescriptor,
-        path: PathBuf,
+        path: NormalPath,
         glob: &GlobPathDescriptor,
         captured_globs: Vec<String>,
     ) -> MatchingPath {
         MatchingPath {
             path_descriptor,
-            path: NormalPath::new(path),
+            path,
             glob_descriptor: Some(*glob),
             captured_globs,
         }
@@ -381,27 +388,31 @@ impl GlobPath {
     }
 }
 
-pub struct OutputsAsPaths {
+pub(crate) struct OutputsAsPaths {
     outputs: Vec<PathBuf>,
     rule_ref: RuleRef,
 }
 
 impl OutputsAsPaths {
-    pub fn new(outputs: Vec<PathBuf>, rule_ref: RuleRef) -> Self {
+    /// Create a new instance of OutputsAsPaths from a list of paths and a rule reference
+    pub(crate) fn new(outputs: Vec<PathBuf>, rule_ref: RuleRef) -> Self {
         Self { outputs, rule_ref }
     }
+    /// returns all the outputs as vector of strings
     pub fn get_paths(&self) -> Vec<String> {
         self.outputs
             .iter()
             .map(|x| x.as_path().to_string_lossy().to_string())
             .collect()
     }
+    ///  returns the stem portion of each output file. See [Path::file_stem]
     pub fn get_file_stem(&self) -> Option<String> {
         self.outputs
             .first()
             .and_then(|x| x.as_path().file_stem())
             .map(|x| x.to_string_lossy().to_string())
     }
+    /// Checks if there are no outputs
     pub fn is_empty(&self) -> bool {
         self.outputs.is_empty()
     }

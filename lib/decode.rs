@@ -262,7 +262,7 @@ impl PathSearcher for DirSearcher {
             let (path_desc, _) = path_buffers.add_abs(path);
             pes.push(MatchingPath::with_captures(
                 path_desc,
-                path.to_path_buf(),
+                path_buffers.get_path(&path_desc).clone(),
                 glob_path.get_glob_desc(),
                 globs.group(path),
             ));

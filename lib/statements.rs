@@ -54,7 +54,8 @@ impl Loc {
     pub fn get_span(&self) -> u32 {
         self.span
     }
-    pub(crate) fn new(line: u32, col: u32, span: u32) -> Loc {
+    /// create a new Loc using line, column and span
+    pub fn new(line: u32, col: u32, span: u32) -> Loc {
         Loc { line, col, span }
     }
 }

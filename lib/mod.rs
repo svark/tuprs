@@ -1,4 +1,3 @@
-//#![feature(slice_group_by)]
 //! Crate for parsing a tupfile and thereafter de-globbing and decoding variables in a Tupfile
 #![warn(missing_docs)]
 extern crate bimap;
@@ -34,13 +33,13 @@ pub use transform::Artifacts;
 pub use transform::ReadWriteBufferObjects;
 pub use transform::TupParser;
 
-mod buffers;
+pub mod buffers;
 pub mod decode;
 pub mod errors;
 mod glob;
 /// Parser for tupfiles
 pub mod parser;
-mod paths;
+pub mod paths;
 mod platform;
 mod scriptloader;
 pub mod statements;
@@ -110,6 +109,7 @@ fn test_op() {
         let path_searcher = DirSearcher::new();
         let mut stmts_ = stmts.subst(&mut parse_state, &path_searcher).unwrap();
         stmts_.cleanup();
+        use crate::statements::Loc;
         assert_eq!(stmts_.len(), 3);
         let resolvedexpr = [
             Statement::Rule(
@@ -232,6 +232,7 @@ fn test_parse() {
     use nom_locate::LocatedSpan;
     use statements::CleanupPaths;
     //use statements::PathExpr;
+    use crate::buffers::PathBuffers;
     use statements::DollarExprs;
     use statements::LocatedStatement;
     use statements::PathExpr::Group;
@@ -326,6 +327,7 @@ fn test_parse() {
     .unwrap()
     .1
     .statement;
+    use statements::Loc;
 
     let loc = Loc::new(0, 0, 0);
     let stmts_raw = vec![res64, res65, res66, res67, res68, res7];
@@ -418,7 +420,6 @@ fn test_parse() {
         )
     );
     use decode::*;
-    use statements::Loc;
     let mut bo = BufferObjects::new(Path::new("."));
     let mut dir_searcher = DirSearcher::new();
     let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
