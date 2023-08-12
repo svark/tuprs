@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::fmt::{Display, Formatter};
 use std::path::{Component, Path, PathBuf};
 
 use log::debug;
@@ -174,6 +175,16 @@ pub struct MatchingPath {
     glob_descriptor: Option<GlobPathDescriptor>,
     /// first glob match in the above path
     captured_globs: Vec<String>,
+}
+
+impl Display for MatchingPath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "MatchingPath(path:{:?}, captured_globs:{:?})",
+            self.path.as_path(),
+            self.captured_globs
+        ))
+    }
 }
 
 impl MatchingPath {

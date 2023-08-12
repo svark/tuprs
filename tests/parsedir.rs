@@ -14,18 +14,55 @@ mod tests {
         env_logger::init();
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("tests/tuptest");
-        let statements = parse_dir(d.as_path()).expect("failed to parse!");
+        let (arts, rwbuffers) = parse_dir(d.as_path()).expect("failed to parse!");
         //let statements0 = statements[0].get_statements();
         // println!("{:?}", statements);
-        assert_eq!(statements.len(), 12);
+        let rlinks = arts.rules_by_tup();
+        let mut outs = String::new();
+        for rlinks in rlinks {
+            for r in rlinks {
+                outs.push_str(r.human_readable(rwbuffers.get()).as_str());
+                outs.push('\n')
+            }
+        }
+        outs.pop();
+        let expected = r#"ResolvedLink { primary_sources: [GroupEntry(<output0>, b\out0.txt)], secondary_sources: [], rule_formula_desc: cp %<output0> out1.txt, primary_targets: [a\out1.txt], secondary_targets: [], excluded_targets: [a\^.*FltMgrMsg], group: None, bin: None, rule_ref: RuleRef { tup_path_desc: a\Tupfile, loc: Loc { line: 2, col: 1, span: 382 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [], secondary_sources: [GroupEntry(<output2>, a\out2.txt)], rule_formula_desc: touch out7.txt, primary_targets: [a\out7.txt], secondary_targets: [], excluded_targets: [], group: None, bin: Some(a\o7), rule_ref: RuleRef { tup_path_desc: a\Tupfile, loc: Loc { line: 3, col: 1, span: 320 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: a\in0.txt, path: NormalPath { inner: "a\\in0.txt" }, glob_descriptor: None, captured_globs: [] })], secondary_sources: [], rule_formula_desc: cp in0.txt out2.txt, primary_targets: [a\out2.txt], secondary_targets: [], excluded_targets: [a\^.*FltMgrMsg], group: Some(<output2>), bin: None, rule_ref: RuleRef { tup_path_desc: a\Tupfile, loc: Loc { line: 6, col: 1, span: 249 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: a\out1.txt, path: NormalPath { inner: "C:\\Users\\aruns\\tupnodes\\tuprs\\tests\\tuptest\\a\\out1.txt" }, glob_descriptor: Some(a\out[12].txt), captured_globs: ["1"] })], secondary_sources: [], rule_formula_desc: cp out1.txt out13.txt, primary_targets: [a\out13.txt], secondary_targets: [], excluded_targets: [], group: None, bin: None, rule_ref: RuleRef { tup_path_desc: a\Tupfile, loc: Loc { line: 8, col: 1, span: 190 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: a\out2.txt, path: NormalPath { inner: "C:\\Users\\aruns\\tupnodes\\tuprs\\tests\\tuptest\\a\\out2.txt" }, glob_descriptor: Some(a\out[12].txt), captured_globs: ["2"] })], secondary_sources: [], rule_formula_desc: cp out2.txt out23.txt, primary_targets: [a\out23.txt], secondary_targets: [], excluded_targets: [], group: None, bin: None, rule_ref: RuleRef { tup_path_desc: a\Tupfile, loc: Loc { line: 8, col: 1, span: 190 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [BinEntry(a\o7, a\out7.txt)], secondary_sources: [], rule_formula_desc: cp out7.txt outout7.txt, primary_targets: [a\outout7.txt], secondary_targets: [], excluded_targets: [a\^.*FltMgrMsg], group: None, bin: None, rule_ref: RuleRef { tup_path_desc: a\Tupfile, loc: Loc { line: 10, col: 1, span: 147 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: a\out2.txt, path: NormalPath { inner: "a\\out2.txt" }, glob_descriptor: None, captured_globs: [] })], secondary_sources: [], rule_formula_desc: cp out2.txt outout2.txt, primary_targets: [a\outout2.txt], secondary_targets: [], excluded_targets: [a\^.*FltMgrMsg], group: None, bin: None, rule_ref: RuleRef { tup_path_desc: a\Tupfile, loc: Loc { line: 10, col: 1, span: 147 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: a\patches.txt, path: NormalPath { inner: "a\\patches.txt" }, glob_descriptor: None, captured_globs: [] })], secondary_sources: [], rule_formula_desc: echo patches.txt > outpatches.txt.txt, primary_targets: [a\outpatches.txt.txt], secondary_targets: [], excluded_targets: [], group: None, bin: None, rule_ref: RuleRef { tup_path_desc: a\Tupfile, loc: Loc { line: 1, col: 1, span: 42 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: a\out1.txt, path: NormalPath { inner: "C:\\Users\\aruns\\tupnodes\\tuprs\\tests\\tuptest\\a\\out1.txt" }, glob_descriptor: Some(a\out[1].txt), captured_globs: ["1"] })], secondary_sources: [], rule_formula_desc: cp out1.txt new_1.txt, primary_targets: [a\new_1.txt], secondary_targets: [], excluded_targets: [], group: None, bin: None, rule_ref: RuleRef { tup_path_desc: a\Tupfile, loc: Loc { line: 12, col: 32, span: 51 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b\in1.txt, path: NormalPath { inner: "C:\\Users\\aruns\\tupnodes\\tuprs\\tests\\tuptest\\b\\in1.txt" }, glob_descriptor: Some(b\in*.txt), captured_globs: ["1"] })], secondary_sources: [], rule_formula_desc: echo in1.txt > outecho.txt, primary_targets: [b\outecho.txt], secondary_targets: [], excluded_targets: [], group: None, bin: None, rule_ref: RuleRef { tup_path_desc: b\Tupfile, loc: Loc { line: 2, col: 16, span: 190 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b\in1.txt, path: NormalPath { inner: "b\\in1.txt" }, glob_descriptor: None, captured_globs: [] })], secondary_sources: [], rule_formula_desc: cat in1.txt & cp in1.txt out0.txt, primary_targets: [b\out0.txt], secondary_targets: [], excluded_targets: [b\^.*FltMgrMsg], group: Some(<output0>), bin: None, rule_ref: RuleRef { tup_path_desc: b\Tupfile, loc: Loc { line: 5, col: 1, span: 144 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [GroupEntry(<output2>, a\out2.txt)], secondary_sources: [], rule_formula_desc: cp %<output2> out3.txt, primary_targets: [b\out3.txt], secondary_targets: [], excluded_targets: [b\^.*FltMgrMsg], group: None, bin: None, rule_ref: RuleRef { tup_path_desc: b\Tupfile, loc: Loc { line: 6, col: 1, span: 74 } }, env: EnvDescriptor(0) }"#;
+        //log::warn!("{}", outs);
+        assert_eq!(outs, expected);
+
+        assert_eq!(arts.len(), 12);
     }
+
     #[test]
     fn test_script() {
         env_logger::init();
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("tests/tupscripttest");
-        let statements = parse_dir(d.as_path()).expect("failed to parse!");
-        //let statements0 = statements[0].get_statements();
-        assert_eq!(statements.len(), 2);
+        let (arts, rwbuffers) = parse_dir(d.as_path()).expect("failed to parse!");
+        let rlinks = arts.rules_by_tup();
+        let mut outs = String::new();
+        for rlinks in rlinks {
+            for r in rlinks {
+                outs.push_str(r.human_readable(rwbuffers.get()).as_str());
+                outs.push('\n')
+            }
+        }
+        outs.pop();
+        let expected = r#"ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: a\in0.txt, path: NormalPath { inner: "a\\in0.txt" }, glob_descriptor: None, captured_globs: [] })], secondary_sources: [], rule_formula_desc: cp -r in0.txt outs.txt, primary_targets: [a\outs.txt], secondary_targets: [], excluded_targets: [], group: Some(<mygrp>), bin: None, rule_ref: RuleRef { tup_path_desc: a\Tupfile.lua, loc: Loc { line: 15, col: 0, span: 0 } }, env: EnvDescriptor(0) }
+ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b\in1.txt, path: NormalPath { inner: "b\\in1.txt" }, glob_descriptor: None, captured_globs: [] })], secondary_sources: [GroupEntry(<mygrp>, a\outs.txt)], rule_formula_desc: cp -r in1.txt outs.txt, primary_targets: [b\outs.txt], secondary_targets: [], excluded_targets: [], group: None, bin: Some(b\mybin), rule_ref: RuleRef { tup_path_desc: b\Tupfile.lua, loc: Loc { line: 15, col: 0, span: 0 } }, env: EnvDescriptor(0) }"#;
+
+        //log::warn!("{}", outs);
+        assert_eq!(outs, expected);
     }
 }

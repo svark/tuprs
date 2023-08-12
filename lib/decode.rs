@@ -8,22 +8,22 @@ use std::path::{Path, PathBuf};
 
 use bstr::ByteSlice;
 use log::{debug, log_enabled};
-use parking_lot::MappedRwLockReadGuard;
+use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use pathdiff::diff_paths;
 use regex::{Captures, Regex};
 use walkdir::WalkDir;
 
 use crate::buffers::{
-    BinDescriptor, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder, OutputType,
-    PathBuffers, PathDescriptor, RuleDescriptor, TupPathDescriptor,
+    BinDescriptor, BufferObjects, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder,
+    OutputType, PathBuffers, PathDescriptor, RuleDescriptor, TupPathDescriptor,
 };
 use crate::errors::{Error as Err, Error};
-use crate::paths;
 use crate::paths::{
     ExcludeInputPaths, GlobPath, InputResolvedType, InputsAsPaths, MatchingPath, OutputsAsPaths,
 };
 use crate::statements::*;
 use crate::transform::{get_parent, Artifacts, TupParser};
+use crate::{paths, ReadWriteBufferObjects};
 
 /// Trait to discover paths from an external source (such as a database)
 pub trait PathSearcher {
@@ -203,6 +203,7 @@ impl DirSearcher {
         }
     }
 }
+
 impl PathSearcher for DirSearcher {
     /// scan folder tree for paths
     /// This function runs the glob matcher to discover rule inputs by walking from given directory. The paths are returned as descriptors stored in [MatchingPatch]
@@ -363,6 +364,7 @@ impl DecodeInputPaths for PathExpr {
         Ok(vs)
     }
 }
+
 // decode input paths
 impl DecodeInputPaths for Vec<PathExpr> {
     fn decode(
@@ -921,6 +923,7 @@ fn get_deglobbed_rule(
         env: env.clone(),
     })
 }
+
 /// ResolvedLink represents a rule with its inputs, outputs and command string fully or partially resolved.
 /// This means that paths stored here are file paths that are or expected to be in file system.
 /// Rule string is also expect to be executable or ready for persistence with all  symbols and variable references resolved
@@ -967,6 +970,101 @@ impl ResolvedLink {
             rule_ref: Default::default(),
             env: Default::default(),
         }
+    }
+    /// get a readable string for a Statement, replacing descriptors with paths
+    pub fn human_readable(&self, pb_: RwLockReadGuard<BufferObjects>) -> String {
+        let s = format!("{:?}", self);
+        let pb = pb_.clone();
+        let replace_tup_desc = move |selstr: &str| {
+            let r = Regex::new(r"TupPathDescriptor\((\d+)\)").unwrap();
+            r.replace_all(selstr, move |caps: &regex::Captures| {
+                let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
+                let path = pb.get_tup_path(&TupPathDescriptor::new(num));
+                path.to_string_lossy().to_string()
+            })
+            .to_string()
+        };
+        let pb = pb_.clone();
+        // replace rule descriptor with rule formula
+        let replace_rule_desc = move |selstr: String| {
+            let r = Regex::new(r"RuleDescriptor\((\d+)\)").unwrap();
+            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+                let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
+                let rule_usage = pb.get_rule(&RuleDescriptor::new(num));
+                rule_usage.get_rule_str()
+            })
+            .to_string()
+        };
+        let pb = pb_.clone();
+        // replace group descriptor with group path
+        let replace_group_desc = move |selstr: String| {
+            let r = Regex::new(r"GroupPathDescriptor\((\d+)\)").unwrap();
+            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+                let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
+                let path = pb
+                    .try_get_group_path(&GroupPathDescriptor::new(num))
+                    .unwrap()
+                    .as_path();
+                path.to_string_lossy().to_string()
+            })
+            .to_string()
+        };
+        let pb = pb_.clone();
+        // replace bin descriptor with bin name
+        let replace_bin_desc = move |selstr: String| {
+            let r = Regex::new(r"BinDescriptor\((\d+)\)").unwrap();
+            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+                let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
+                let path = pb.get_bin_name(&BinDescriptor::new(num));
+                path.to_string()
+            })
+            .to_string()
+        };
+        let pb = pb_.clone();
+        // replace env descriptor with env vars
+        let _replace_env_desc = move |selstr: String| {
+            let r = Regex::new(r"EnvDescriptor\((\d+)\)").unwrap();
+            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+                let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
+                let path = pb.try_get_env(&EnvDescriptor::new(num)).unwrap();
+                path.getenv()
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<String>>()
+                    .join(" ")
+            })
+            .to_string()
+        };
+        let pb = pb_.clone();
+        // replace path descriptor with path
+        let r = Regex::new(r"PathDescriptor\((\d+)\)").unwrap();
+        let replace_path_desc = move |selstr: String| {
+            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+                let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
+                let path = pb.get_path(&PathDescriptor::new(num));
+                path.as_path().to_string_lossy().to_string()
+            })
+            .to_string()
+        };
+        let pb = pb_.clone();
+        //  replace glob descriptor with path
+        let r = Regex::new(r"GlobPathDescriptor\((\d+)\)").unwrap();
+        let replace_glob_desc = move |selstr: String| {
+            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+                let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
+                let path = pb.get_path(&PathDescriptor::new(num));
+                path.as_path().to_string_lossy().to_string()
+            })
+            .to_string()
+        };
+
+        let s = replace_tup_desc(s.as_str());
+        let s = replace_rule_desc(s);
+        let s = replace_group_desc(s);
+        let s = replace_bin_desc(s);
+        //let s = replace_env_desc(s);
+        let s = replace_glob_desc(s);
+        return replace_path_desc(s);
     }
 
     /// iterator over all the sources (primary and secondary) in this link
@@ -1378,7 +1476,7 @@ impl ResolvePaths for Vec<LocatedStatement> {
 }
 
 /// `parse_dir' scans and parses all Tupfiles from a directory root, When sucessful it returns de-globbed, decoded links(rules)
-pub fn parse_dir(root: &Path) -> Result<Artifacts, Error> {
+pub fn parse_dir(root: &Path) -> Result<(Artifacts, ReadWriteBufferObjects), Error> {
     let mut tupfiles = Vec::new();
     let tf = OsString::from("Tupfile");
     let tflua = OsString::from("Tupfile.lua");
@@ -1399,5 +1497,8 @@ pub fn parse_dir(root: &Path) -> Result<Artifacts, Error> {
         artifacts_all.extend(artifacts);
     }
 
-    parser.reresolve(artifacts_all)
+    Ok((
+        parser.reresolve(artifacts_all)?,
+        parser.read_write_buffers(),
+    ))
 }

@@ -1,7 +1,7 @@
 use std::borrow::{Borrow, Cow};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Formatter;
+use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
@@ -94,6 +94,9 @@ pub trait PathBuffers {
     /// Return an iterator over all the id-group path pairs.
     /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
     fn group_iter(&self) -> bimap::hash::Iter<'_, NormalPath, GroupPathDescriptor>;
+
+    /// Bin Name
+    fn get_bin_name(&self, b: &BinDescriptor) -> Cow<'_, str>;
 }
 
 /// ```PathDescriptor``` is an id given to a  folder where tupfile was found
@@ -226,7 +229,6 @@ pub(crate) type BinBufferObject = GenPathBufferObject<BinDescriptor>;
 
 /// Friendly name for BiMap<RuleDescriptor, RuleFormulaUsage>
 pub(crate) type RuleBufferObject = GenRuleBufferObject;
-
 /// methods to add or get group entries from a buffer
 impl GroupBufferObject {
     // Returns name of group (wrapped with angle-brackets)
@@ -822,6 +824,12 @@ pub struct OutputType {
     pub pid: PathDescriptor,
 }
 
+impl Display for OutputType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("OutputType({:?})", self.path.as_path()))
+    }
+}
+
 impl OutputType {
     pub(crate) fn new(path: NormalPath, pid: PathDescriptor) -> Self {
         Self { path, pid }
@@ -1030,5 +1038,9 @@ impl PathBuffers for BufferObjects {
     /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
     fn group_iter(&self) -> bimap::hash::Iter<'_, NormalPath, GroupPathDescriptor> {
         self.gbo.group_iter()
+    }
+
+    fn get_bin_name(&self, b: &BinDescriptor) -> Cow<'_, str> {
+        self.bbo.get(b).as_path().to_string_lossy()
     }
 }
