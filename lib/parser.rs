@@ -307,6 +307,7 @@ fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
         b"$(" => parse_pathexpr_dollar(s),
         b"@(" => parse_pathexpr_at(s),
         b"&(" => parse_pathexpr_amp(s),
+        b"${" => parse_pathexpr_dollar_curl(s),
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))),
     }
 }
@@ -314,7 +315,6 @@ fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexprbasic_curly(i: Span) -> IResult<Span, PathExpr> {
     let (s, r) = peek(take(2_usize))(i)?;
     match r.as_bytes() {
-        b"${" => parse_pathexpr_dollar_curl(s),
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))),
     }
 }
@@ -440,7 +440,7 @@ fn parse_pathexpr_word(i: Span) -> IResult<Span, PathExpr> {
     Ok((s, PathExpr::from(DollarExprs::Word(n, text))))
 }
 
-// parse $(call variable, param...)
+/// parse $(call variable, param...)
 fn parse_pathexpr_call(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(call")(i)?;
     let (s, _) = parse_ws(s)?;
@@ -585,67 +585,69 @@ fn parse_delim(i: Span) -> IResult<Span, Span> {
 /// consume a literal that is not a pathexpr token
 fn parse_misc_bits<'a, 'b>(
     input: Span<'a>,
-    delim: &'b str,
-    pathexpr_toks: &'static str,
+    end_tok: &'b str,
+    break_toks: &'static str,
 ) -> IResult<Span<'a>, Span<'a>> {
-    let islit = |ref i| !delim.as_bytes().contains(i) && !pathexpr_toks.as_bytes().contains(i);
+    let islit = |ref i| !end_tok.as_bytes().contains(i) && !break_toks.as_bytes().contains(i);
     alt((complete(parse_delim), complete(take_while(islit))))(input)
 }
 /// parse either (dollar|at|) expression or a general rvalue delimited by delim
-/// pathexpr_toks are the tokens that identify a tup-expression such as $expr, &expr, {bin} or <grp>
+/// break_toks are the tokens that pause and restart the parser to create a new pathexpr
 pub(crate) fn parse_pathexpr_ws<'a, 'b>(
     s: Span<'a>,
-    delim: &'b str,
-    pathexpr_toks: &'static str,
+    end_tok: &'b str,
+    break_toks: &'static str,
 ) -> IResult<Span<'a>, PathExpr> {
     alt((
         complete(parse_escaped),
         complete(parse_quote),
         complete(parse_ws),
         complete(parse_pathexprbasic),
-        complete(parse_pathexprbasic_curly),
         complete(map_res(
-            |i| parse_misc_bits(i, delim, pathexpr_toks),
-            from_str,
-        )),
-    ))(s)
-}
-fn parse_pathexpr_no_ws<'a, 'b>(
-    s: Span<'a>,
-    delim: &'b str,
-    pathexpr_toks: &'static str,
-) -> IResult<Span<'a>, PathExpr> {
-    alt((
-        complete(parse_escaped),
-        complete(parse_pathexprbasic),
-        complete(parse_pathexprbasic_curly),
-        complete(map_res(
-            |i| parse_misc_bits(i, delim, pathexpr_toks),
+            |i| parse_misc_bits(i, end_tok, break_toks),
             from_str,
         )),
     ))(s)
 }
 
-// repeatedly invoke the rvalue parser until eof or delim is encountered
+/// break_toks are the tokens that pause and restart the parser to create a new pathexpr
+fn parse_pathexpr_no_ws<'a, 'b>(
+    s: Span<'a>,
+    end_tok: &'b str,
+    break_toks: &'static str,
+) -> IResult<Span<'a>, PathExpr> {
+    alt((
+        complete(parse_escaped),
+        complete(parse_pathexprbasic),
+        complete(map_res(
+            |i| parse_misc_bits(i, end_tok, break_toks),
+            from_str,
+        )),
+    ))(s)
+}
+
+// repeatedly invoke the rvalue parser until eof or end_tok is encountered
+// parser pauses to create new pathexpr when break_tok is encountered
 fn parse_pelist_till_delim_with_ws<'a, 'b>(
     input: Span<'a>,
-    delim: &'b str,
-    pathexpr_delims: &'static str,
+    end_tok: &'b str,
+    break_toks: &'static str,
 ) -> IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
     many_till(
-        |i| parse_pathexpr_ws(i, delim, pathexpr_delims),
-        map(one_of(delim), |_| (Span::new(b"".as_ref()))),
+        |i| parse_pathexpr_ws(i, end_tok, break_toks),
+        map(one_of(end_tok), |_| (Span::new(b"".as_ref()))),
     )(input)
 }
 // repeatedly invoke the rvalue parser until eof or delim is encountered
+// parser pauses to create new pathexpr when break_tok is encountered
 fn parse_pelist_till_delim_no_ws<'a, 'b>(
     input: Span<'a>,
-    delim: &'b str,
-    pathexpr_delims: &'static str,
+    end_tok: &'b str,
+    break_tok: &'static str,
 ) -> IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
     many_till(
-        |i| parse_pathexpr_no_ws(i, delim, pathexpr_delims),
-        map(one_of(delim), |_| (Span::new(b"".as_ref()))),
+        |i| parse_pathexpr_no_ws(i, end_tok, break_tok),
+        map(one_of(end_tok), |_| (Span::new(b"".as_ref()))),
     )(input)
 }
 

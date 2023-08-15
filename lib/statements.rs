@@ -338,6 +338,7 @@ pub(crate) enum Statement {
     /// define name { body }
     /// body is a list of statements
     Define(Ident, String),
+    Task(Vec<String>),
 }
 
 // we could have used `Into' or 'ToString' trait
