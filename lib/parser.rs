@@ -311,13 +311,6 @@ fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))),
     }
 }
-// parse basic special expressions (dollar, at, ampersand) with curlies
-fn parse_pathexprbasic_curly(i: Span) -> IResult<Span, PathExpr> {
-    let (s, r) = peek(take(2_usize))(i)?;
-    match r.as_bytes() {
-        _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))),
-    }
-}
 
 /// parse $(addsuffix suffix, list)
 fn parse_pathexpr_addsuffix(i: Span) -> IResult<Span, PathExpr> {
