@@ -44,13 +44,10 @@ fn get_non_pattern_prefix(glob_path: &Path) -> (PathBuf, bool) {
         prefix.push(component);
         num_comps += 1;
     }
-    if prefix.is_dir() {
-        (prefix, num_comps + 1 < glob_path.components().count())
+    if num_comps < glob_path.components().count() {
+        (prefix, true)
     } else {
-        (
-            prefix.parent().unwrap().to_path_buf(),
-            num_comps + 1 < glob_path.components().count(),
-        )
+        (prefix.parent().unwrap().to_path_buf(), false)
     }
 }
 
@@ -88,7 +85,8 @@ impl ToString for NormalPath {
     /// Inner path in form that can be compared or stored as a bytes
     fn to_string(&self) -> String {
         // following converts backslashes to forward slashes
-        normalize_path(self.as_path()).to_string()
+        //normalize_path(self.as_path()).to_string()
+        self.as_path().to_string_lossy().to_string()
     }
 }
 
@@ -114,8 +112,9 @@ impl NormalPath {
     /// Construct a `NormalPath' by joining tup_cwd with path
     pub fn absolute_from(path: &Path, tup_cwd: &Path) -> Self {
         let p1 = Self::cleanup(path, tup_cwd);
-        debug!("abs:{:?}", p1);
-        NormalPath::new_from_cow_path(Cow::from(p1))
+        let np = NormalPath::new_from_cow_path(Cow::from(p1));
+        debug!("abs:{:?}", np);
+        np
     }
 
     pub(crate) fn cleanup<P: AsRef<Path>>(path: &Path, tup_cwd: P) -> PathBuf {
@@ -238,6 +237,8 @@ impl MatchingPath {
     pub(crate) fn get_captured_globs(&self) -> &Vec<String> {
         &self.captured_globs
     }
+
+    // For recursive prefix globs, we need to get the prefix of the glob path
 }
 
 #[derive(Debug, Clone, Default)]
@@ -266,8 +267,8 @@ where
         &self.id
     }
     pub fn from_rel_path(tup_cwd: &Path, p: &Path, path_buffers: &mut impl PathBuffers) -> Self {
-        let tup_cwd = path_buffers.get_root_dir().join(tup_cwd);
-        let np = NormalPath::absolute_from(p, tup_cwd.as_path());
+        //let tup_cwd = path_buffers.get_root_dir().join(tup_cwd);
+        let np = NormalPath::absolute_from(p, tup_cwd);
         let id = path_buffers.add_abs(np.as_path()).0;
         Self::new(np, id)
     }
@@ -296,7 +297,7 @@ impl GlobPath {
         path_buffers: &mut impl PathBuffers,
         ided_path: IdedPath<GlobPathDescriptor>,
     ) -> Result<GlobPath, Error> {
-        let (mut base_path, _) = get_non_pattern_prefix(ided_path.as_path());
+        let (mut base_path, _has_glob) = get_non_pattern_prefix(ided_path.as_path());
         if base_path.eq(&PathBuf::new()) {
             base_path = base_path.join(".");
         }
@@ -320,7 +321,7 @@ impl GlobPath {
     }
 
     /// Id to Glob path
-    pub fn get_path_desc(&self) -> PathDescriptor {
+    pub fn get_glob_path_desc(&self) -> PathDescriptor {
         let gp_desc = usize::from(*self.glob_path.as_desc());
         gp_desc.into()
     }
@@ -331,10 +332,6 @@ impl GlobPath {
     /// Glob path as [Path]
     pub fn get_abs_path(&self) -> &Path {
         self.glob_path.as_path()
-    }
-    /// Get path relative to root
-    pub fn get_rel_path(&self, path_buffers: &impl PathBuffers) -> NormalPath {
-        path_buffers.get_path(&self.get_path_desc()).clone()
     }
     /// Glob path as a string
     pub fn get_path_str(&self) -> &OsStr {
@@ -370,6 +367,11 @@ impl GlobPath {
             }
         }
         false
+    }
+
+    /// Check if the glob path has a recursive prefix
+    pub fn is_recursive_prefix(&self) -> bool {
+        self.glob.is_recursive_prefix()
     }
 
     /// Regexp string corresponding to glob
@@ -425,7 +427,7 @@ impl OutputsAsPaths {
 /// `InputsAsPaths' represents resolved inputs to pass to a rule.
 /// Bins are converted to raw paths, groups paths are expanded into a space separated path list
 pub struct InputsAsPaths {
-    raw_inputs: Vec<PathBuf>,
+    raw_inputs: Vec<NormalPath>,
     groups_by_name: HashMap<String, String>,
     raw_inputs_glob_match: Option<InputResolvedType>,
     rule_ref: RuleRef,
@@ -524,8 +526,10 @@ impl InputsAsPaths {
             );
         }
         let relpath = |x: &Path| {
-            diff_paths(x, tup_cwd)
-                .unwrap_or_else(|| panic!("path diff failure {:?} with base:{:?}", x, tup_cwd))
+            NormalPath::new_from_cow_path(Cow::Owned(
+                diff_paths(x, tup_cwd)
+                    .unwrap_or_else(|| panic!("path diff failure {:?} with base:{:?}", x, tup_cwd)),
+            ))
         };
         let try_grp = |x: &InputResolvedType| {
             if let &InputResolvedType::GroupEntry(ref grp_desc, _) = x {
@@ -535,7 +539,7 @@ impl InputsAsPaths {
                 ))
             } else if let &InputResolvedType::UnResolvedGroupEntry(ref grp_desc) = x {
                 let grp_name = path_buffers.get_group_name(grp_desc);
-                Some((grp_name.clone(), Path::new(&*grp_name).to_path_buf()))
+                Some((grp_name.clone(), NormalPath::new(PathBuf::from(grp_name))))
             } else {
                 None
             }
@@ -550,7 +554,7 @@ impl InputsAsPaths {
             namedgroupitems
                 .entry(x.0)
                 .or_insert_with(Default::default)
-                .push(x.1.to_string_lossy().to_string())
+                .push(x.1.to_string())
         }
         let namedgroupitems = namedgroupitems
             .drain()

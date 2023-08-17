@@ -6,12 +6,11 @@ use std::hash::Hash;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use bstr::ByteSlice;
 use log::{debug, log_enabled};
 use parking_lot::{MappedRwLockReadGuard, RwLockReadGuard};
 use pathdiff::diff_paths;
 use regex::{Captures, Regex};
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 use crate::buffers::{
     BinDescriptor, BufferObjects, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder,
@@ -220,18 +219,21 @@ impl PathSearcher for DirSearcher {
             glob_path.get_base_abs_path(),
             to_match
         );
+        let root = path_buffers.get_root_dir();
         if !glob_path.has_glob_pattern() {
             let mut pes = Vec::new();
-            let path_desc = glob_path.get_path_desc();
+            let path_desc = glob_path.get_glob_path_desc();
             debug!("looking for child {:?}", to_match);
-            if to_match.is_file() {
-                pes.push(MatchingPath::new(
-                    path_desc,
-                    path_buffers.get_path(&path_desc).clone(),
-                ));
+            let matching_outs = self.output_holder.discover_paths(path_buffers, glob_path)?;
+            if !matching_outs.is_empty() {
+                pes.extend(matching_outs);
             } else {
-                // discover inputs from previous outputs
-                pes.extend(self.output_holder.discover_paths(path_buffers, glob_path)?);
+                if root.join(to_match).is_file() {
+                    pes.push(MatchingPath::new(
+                        path_desc,
+                        path_buffers.get_path(&path_desc).clone(),
+                    ));
+                }
             }
 
             if log_enabled!(log::Level::Debug) {
@@ -242,23 +244,36 @@ impl PathSearcher for DirSearcher {
             return Ok(pes);
         }
 
-        let globs = MyGlob::new(glob_path.get_slash_corrected())?;
         let base_path = glob_path.get_base_abs_path();
+        let globs = MyGlob::new(glob_path.get_slash_corrected())?;
         debug!("glob regex used for finding matches {}", globs.re());
         debug!("base path for files matching glob: {:?}", base_path);
-        let mut walkdir = WalkDir::new(base_path);
-        walkdir = walkdir.max_depth(1);
+        let mut walkdir = WalkDir::new(path_buffers.get_root_dir().join(base_path));
+        if glob_path.is_recursive_prefix() {
+            walkdir = walkdir.max_depth(usize::MAX);
+        } else {
+            walkdir = walkdir.max_depth(1);
+        }
+        let len = root.components().count();
+        let relative_path = |entry: DirEntry| -> PathBuf {
+            entry
+                .path()
+                .components()
+                .skip(len)
+                .collect::<PathBuf>()
+                .as_path()
+                .to_owned()
+        };
+
+        let mut unique_path_descs = HashSet::new();
         let filtered_paths = walkdir
             .min_depth(1)
             .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|entry| {
-                let match_path = paths::normalize_path(entry.path());
-                entry.path().is_file() && globs.is_match(match_path.path().to_str_lossy().as_ref())
-            });
+            .filter_map(move |entry| entry.ok().filter(|e| e.path().is_file()).map(relative_path))
+            .filter(|entry| globs.is_match(entry.as_path()));
         let mut pes = Vec::new();
         for matching in filtered_paths {
-            let path = matching.path();
+            let path = matching.as_path();
             let (path_desc, _) = path_buffers.add_abs(path);
             pes.push(MatchingPath::with_captures(
                 path_desc,
@@ -266,13 +281,20 @@ impl PathSearcher for DirSearcher {
                 glob_path.get_glob_desc(),
                 globs.group(path),
             ));
+            unique_path_descs.insert(path_desc);
         }
         if log_enabled!(log::Level::Debug) {
             for pe in pes.iter() {
                 debug!("mp_glob:{:?}", pe);
             }
         }
-        pes.extend(self.output_holder.discover_paths(path_buffers, glob_path)?);
+        let mut matching_outputs = self.output_holder.discover_paths(path_buffers, glob_path)?;
+        for pe in matching_outputs.drain(..) {
+            debug!("mp_glob:{:?}", pe);
+            if unique_path_descs.insert(*pe.path_descriptor()) {
+                pes.push(pe);
+            }
+        }
         Ok(pes)
     }
 
@@ -517,11 +539,11 @@ impl DecodeInputPlaceHolders for PathExpr {
         let frep = |inp: &InputsAsPaths, sinp: &InputsAsPaths, d: &str| -> Result<String, Err> {
             let rule_ref = inp.get_rule_ref();
             let d = if d.contains("%f") {
-                let inputs = inp.get_paths();
-                if inputs.is_empty() {
+                let input_raw_paths = inp.get_paths();
+                if input_raw_paths.is_empty() {
                     return Err(Err::StalePerc('f', rule_ref.clone(), d.to_string()));
                 }
-                d.replace("%f", inputs.join(" ").as_str())
+                d.replace("%f", input_raw_paths.join(" ").as_str())
             } else {
                 d.to_string()
             };
@@ -591,8 +613,18 @@ impl DecodeInputPlaceHolders for PathExpr {
             } else {
                 d
             };
+            let d = if d.contains("%h") {
+                let g = inp
+                    .get_glob()
+                    .and_then(|x| if x.len() > 1 { x.first() } else { None })
+                    .cloned();
+                let g = g.ok_or_else(|| Err::StalePerc('h', rule_ref.clone(), d.clone()))?;
+                d.replace("%h", g.as_str())
+            } else {
+                d
+            };
             let d = if d.contains("%g") {
-                let g = inp.get_glob().and_then(|x| x.first());
+                let g = inp.get_glob().and_then(|x| x.last());
                 let g = g.ok_or_else(|| Err::StalePerc('g', rule_ref.clone(), d.clone()))?;
                 d.replace("%g", g.as_str())
             } else {

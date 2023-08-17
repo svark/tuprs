@@ -1457,7 +1457,7 @@ impl LocatedStatement {
                 parse_state.func_map.insert(name.to_string(), val.clone());
                 //newstats.push(LocatedStatement::new(Statement::Define(name.clone(),val.clone()), loc.clone()))
             }
-            Statement::Task(t) => {}
+            Statement::Task(_) => {}
         }
         Ok(newstats)
     }

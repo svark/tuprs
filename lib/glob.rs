@@ -15,6 +15,7 @@ use bstr::{ByteSlice, ByteVec};
 use regex;
 use regex::bytes::{Regex, RegexBuilder};
 
+use crate::glob::Token::{Literal, RecursivePrefix, RecursiveZeroOrMore};
 use crate::platform::get_platform;
 
 //use bstr::{ByteSlice, ByteVec};
@@ -126,6 +127,7 @@ impl fmt::Display for ErrorKind {
 }
 
 fn new_regex(pat: &str) -> Result<Regex, Error> {
+    log::warn!("building regex from:{}", pat);
     RegexBuilder::new(pat)
         .dot_matches_new_line(true)
         .size_limit(10 * (1 << 20))
@@ -167,7 +169,7 @@ pub struct Glob {
     glob: String,
     re: String,
     opts: GlobOptions,
-    //tokens: Tokens,
+    tokens: Tokens,
 }
 
 impl PartialEq for Glob {
@@ -204,7 +206,11 @@ pub struct GlobMatcher {
     //pat: Glob,
     /// The pattern, as a compiled regex.
     re: Regex,
+    tokens: Tokens,
 }
+
+impl GlobMatcher {}
+
 /// A candidate path for matching.
 ///
 /// All glob matching in this crate operates on `Candidate` values.
@@ -232,9 +238,29 @@ impl<'a> Candidate<'a> {
     pub fn to_cow_str(&self) -> Cow<'_, str> {
         self.path.to_str_lossy()
     }
+
+    pub fn len(&self) -> usize {
+        self.path.len()
+    }
+
+    pub fn strip(&mut self, prefix_len: usize) {
+        let c = match self.path {
+            Cow::Borrowed(b) => Cow::Borrowed(&b[prefix_len..]),
+            Cow::Owned(ref mut o) => Cow::Owned(o[prefix_len..].to_vec()),
+        };
+        self.path = c;
+    }
 }
 impl GlobMatcher {
     /// Tests whether the given path matches this pattern or not.
+    pub(crate) fn is_recursive_prefix(&self) -> bool {
+        self.tokens
+            .iter()
+            .skip_while(|x| matches!(**x, Literal(_)))
+            .take_while(|x| **x == Token::RecursiveZeroOrMore || **x == Token::RecursivePrefix)
+            .count()
+            > 0
+    }
 
     pub fn is_match_candidate(&self, candidate: &Candidate) -> bool {
         self.re.is_match(candidate.path().as_ref())
@@ -254,12 +280,20 @@ impl GlobMatcher {
             self.re,
             str::from_utf8(c.path())
         );
-        let u: u8 = b'G';
+        let u = ['G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q'];
         self.re
             .captures_iter(c.path.as_ref())
             .enumerate()
             .inspect(|c| log::debug!("{:?}", c))
-            .filter_map(|c| c.1.name(&format!("{}M", (u + (c.0 as u8)) as char)))
+            .filter_map(|c| {
+                let v = u.iter().filter_map(|ch| c.1.name(&format!("{}M", ch)));
+                if v.clone().count() > 0 {
+                    Some(v.collect::<Vec<_>>())
+                } else {
+                    None
+                }
+            })
+            .flatten()
             .filter_map(|m| str::from_utf8(m.as_bytes()).ok())
             .map(|s| s.to_string())
             .collect()
@@ -291,6 +325,8 @@ struct GlobOptions {
     backslash_escape: bool,
     /// Whether groups will be added in regex for each glob pattern
     capture_globs: bool,
+    /// Skip recursive prefixes in regular expression generation
+    skip_recursive: bool,
 }
 
 impl GlobOptions {
@@ -300,6 +336,7 @@ impl GlobOptions {
             literal_separator: false,
             backslash_escape: !is_separator('\\'),
             capture_globs: false,
+            skip_recursive: true,
         }
     }
 }
@@ -344,7 +381,8 @@ impl Glob {
     /// Returns a matcher for this pattern.
     pub fn compile_matcher(&self) -> GlobMatcher {
         let re = new_regex(&self.re).expect("regex compilation shouldn't fail");
-        GlobMatcher { re }
+        let tokens = self.tokens.clone();
+        GlobMatcher { re, tokens }
     }
 }
 
@@ -386,6 +424,7 @@ impl<'a> GlobBuilder<'a> {
                 glob: self.glob.to_string(),
                 re: tokens.to_regex_with(&self.opts),
                 opts: self.opts,
+                tokens: tokens.clone(),
             })
         }
     }
@@ -420,6 +459,9 @@ impl Tokens {
         // Special case. If the entire glob is just `**`, then it should match
         // everything.
         if self.len() == 1 && self[0] == Token::RecursivePrefix {
+            if options.skip_recursive {
+                return re;
+            }
             let rep = if options.capture_globs { "(.*)" } else { ".*" };
             re.push_str(rep);
             re.push('$');
@@ -433,7 +475,14 @@ impl Tokens {
     fn tokens_to_regex(options: &GlobOptions, tokens: &[Token], re: &mut String) {
         let c = b'G';
         let mut index: u8 = 0;
-        for tok in tokens {
+        let sfn = |t: &&Token| {
+            if options.skip_recursive {
+                **t == RecursiveZeroOrMore || **t == RecursivePrefix
+            } else {
+                false
+            }
+        };
+        for tok in tokens.iter().skip_while(sfn) {
             match *tok {
                 Token::Literal(c) => {
                     re.push_str(&char_to_escaped_literal(c));

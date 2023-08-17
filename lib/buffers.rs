@@ -15,7 +15,7 @@ use log::{debug, log_enabled};
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pathdiff::diff_paths;
 
-use crate::decode::{OutputHandler, PathSearcher, RuleFormulaUsage, RuleRef};
+use crate::decode::{OutputHandler, RuleFormulaUsage, RuleRef};
 use crate::errors::Error;
 use crate::glob::{Candidate, GlobBuilder, GlobMatcher};
 use crate::paths::{GlobPath, InputResolvedType, MatchingPath, NormalPath};
@@ -59,7 +59,7 @@ pub trait PathBuffers {
     /// return path from its descriptor
     fn get_path(&self, pd: &PathDescriptor) -> &NormalPath;
     /// return path from its descriptor
-    fn get_rel_path(&self, pd: &PathDescriptor, vd: &PathDescriptor) -> NormalPath;
+    fn get_rel_path<P: AsRef<Path>>(&self, pd: &PathDescriptor, vd: P) -> NormalPath;
     /// Return Rule from its descriptor
     fn get_rule(&self, rd: &RuleDescriptor) -> &RuleFormulaUsage;
     /// return Env from its descriptor
@@ -684,15 +684,16 @@ impl GeneratedFiles {
     }
 }
 
-impl PathSearcher for OutputHolder {
-    fn discover_paths(
+impl OutputHolder {
+    /// Discover paths matching glob pattern from outputs accumulated so far
+    pub fn discover_paths(
         &self,
-        path_buffers: &mut impl PathBuffers,
+        path_buffers: &impl PathBuffers,
         glob_path: &GlobPath,
     ) -> Result<Vec<MatchingPath>, Error> {
         let mut vs = Vec::new();
         if !glob_path.has_glob_pattern() {
-            let path_desc: PathDescriptor = glob_path.get_path_desc().0.into();
+            let path_desc: PathDescriptor = glob_path.get_glob_path_desc().0.into();
             self.get().outputs_with_desc(
                 &path_desc,
                 glob_path.get_base_desc(),
@@ -706,11 +707,11 @@ impl PathSearcher for OutputHolder {
         Ok(vs)
     }
 
-    fn get_outs(&self) -> &OutputHolder {
+    fn _get_outs(&self) -> &OutputHolder {
         &self
     }
 
-    fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error> {
+    fn _merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error> {
         self.get_mut().merge(p, o)
     }
 }
@@ -818,6 +819,10 @@ impl MyGlob {
     /// Get regex
     pub(crate) fn re(&self) -> &regex::bytes::Regex {
         self.matcher.re()
+    }
+
+    pub(crate) fn is_recursive_prefix(&self) -> bool {
+        self.matcher.is_recursive_prefix()
     }
 }
 
@@ -969,10 +974,9 @@ impl PathBuffers for BufferObjects {
         self.pbo.get(id)
     }
 
-    fn get_rel_path(&self, pd: &PathDescriptor, vd: &PathDescriptor) -> NormalPath {
+    fn get_rel_path<P: AsRef<Path>>(&self, pd: &PathDescriptor, np2: P) -> NormalPath {
         let np1 = self.get_path(pd);
-        let np2 = self.get_path(vd);
-        NormalPath::new_from_cow_path(diff_paths(np1.as_path(), np2.as_path()).unwrap().into())
+        NormalPath::new_from_cow_path(diff_paths(np1.as_path(), np2.as_ref()).unwrap().into())
     }
 
     /// Returns rule corresponding to a rule descriptor. Panics if none is found
