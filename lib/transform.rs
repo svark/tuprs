@@ -1180,7 +1180,7 @@ pub fn load_conf_vars(filename: &Path) -> Result<HashMap<String, Vec<String>>, E
                 debug!("loading conf vars from tup.config at {:?}", filename);
                 loaded = true;
                 for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
-                    if let Statement::LetExpr { left, right, .. } = statement {
+                    if let Statement::AssignExpr { left, right, .. } = statement {
                         if let Some(rest) = left.name.strip_prefix("CONFIG_") {
                             log::warn!("conf var:{} = {}", rest, right.cat());
                             conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
@@ -1231,7 +1231,7 @@ impl LocatedStatement {
         let mut newstats = Vec::new();
         let loc = self.get_loc();
         match self.get_statement() {
-            Statement::LetExpr {
+            Statement::AssignExpr {
                 left,
                 right,
                 is_append,
@@ -1247,7 +1247,7 @@ impl LocatedStatement {
                     app,
                 );
             }
-            Statement::LetRefExpr {
+            Statement::AsignRefExpr {
                 left,
                 right,
                 is_append,

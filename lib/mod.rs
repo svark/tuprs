@@ -255,13 +255,13 @@ fn test_parse() {
         assert_eq!(res1.unwrap().1, prog1);
     }
     {
-        let letexpr = Span::new(b"ROOT = .\n INCS = -I$(ROOT)/inc1 -I$(ROOT)/inc2\n");
-        let res2 = parser::parse_statements_until_eof(letexpr).unwrap();
+        let assign_expr = Span::new(b"ROOT = .\n INCS = -I$(ROOT)/inc1 -I$(ROOT)/inc2\n");
+        let res2 = parser::parse_statements_until_eof(assign_expr).unwrap();
         assert_eq!(res2.len(), 2);
         use statements::Ident;
         assert_eq!(
             res2[0].statement,
-            Statement::LetExpr {
+            Statement::AssignExpr {
                 left: Ident {
                     name: "ROOT".to_string()
                 },
@@ -272,7 +272,7 @@ fn test_parse() {
         );
         assert_eq!(
             res2[1].statement,
-            Statement::LetExpr {
+            Statement::AssignExpr {
                 left: Ident {
                     name: "INCS".to_string()
                 },

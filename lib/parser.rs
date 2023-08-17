@@ -803,7 +803,7 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     Ok((
         s,
         (
-            Statement::LetExpr {
+            Statement::AssignExpr {
                 left,
                 right,
                 is_append: (op.as_bytes() == b"+="),
@@ -852,7 +852,7 @@ fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     Ok((
         s,
         (
-            Statement::LetRefExpr {
+            Statement::AsignRefExpr {
                 left: l,
                 right: r.0,
                 is_append: (op.as_bytes() == b"+="),

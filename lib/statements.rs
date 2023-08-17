@@ -301,13 +301,13 @@ impl Display for EnvDescriptor {
 /// any of the valid statements that can appear in a tupfile
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) enum Statement {
-    LetExpr {
+    AssignExpr {
         left: Ident,
         right: Vec<PathExpr>,
         is_append: bool,
         is_empty_assign: bool,
     },
-    LetRefExpr {
+    AsignRefExpr {
         left: Ident,
         right: Vec<PathExpr>,
         is_append: bool,
@@ -418,12 +418,12 @@ impl CleanupPaths for Statement {
             Statement::Rule(l, _) => {
                 l.cleanup();
             }
-            Statement::LetExpr {
+            Statement::AssignExpr {
                 left: _left, right, ..
             } => {
                 right.cleanup();
             }
-            Statement::LetRefExpr {
+            Statement::AsignRefExpr {
                 left: _left, right, ..
             } => {
                 right.cleanup();
