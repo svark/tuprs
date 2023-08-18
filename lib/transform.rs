@@ -1450,14 +1450,11 @@ impl LocatedStatement {
             Statement::Comment => {
                 // ignore
             }
-            Statement::GitIgnore => {
-                newstats.push(LocatedStatement::new(Statement::GitIgnore, loc.clone()))
-            }
             Statement::Define(name, val) => {
                 parse_state.func_map.insert(name.to_string(), val.clone());
                 //newstats.push(LocatedStatement::new(Statement::Define(name.clone(),val.clone()), loc.clone()))
             }
-            Statement::Task(_) => {}
+            Statement::Task(..) => {}
         }
         Ok(newstats)
     }

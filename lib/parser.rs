@@ -3,11 +3,13 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use nom::bytes::complete::{is_a, is_not};
-use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
+use nom::character::complete::{
+    line_ending, multispace0, multispace1, not_line_ending, space0, space1,
+};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
-use nom::sequence::{delimited, preceded};
+use nom::sequence::{delimited, preceded, terminated};
 use nom::AsBytes;
 use nom::Err;
 use nom::IResult;
@@ -769,12 +771,6 @@ fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = complete(ws0_line_ending)(s)?;
     Ok((s, (Statement::IncludeRules, i).into()))
 }
-fn parse_gitignore(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
-    let (s, _) = tag(".gitignore")(s)?;
-    let (s, _) = complete(ws0_line_ending)(s)?;
-    Ok((s, (Statement::GitIgnore, i).into()))
-}
 
 // parse comment expresssion
 fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
@@ -783,6 +779,34 @@ fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = opt(is_not("\n\r"))(s)?;
     let (s, _) = line_ending(s)?;
     Ok((s, (Statement::Comment, i).into()))
+}
+
+/// task(name) : dep1 dep2..
+///       commands..
+/// dep1 dep2 could be outputs, group, bin or another task
+fn parse_task_expr(i: Span) -> IResult<Span, LocatedStatement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("task")(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, name) = context("task name", cut(map_res(take_until(")"), from_utf8)))(s)?;
+
+    let (s, _) = tag(":")(s)?;
+    let (s, _) = line_ending(s)?;
+
+    let read_lines = |s| {
+        let (s, _) = tag("\t")(s)?;
+        let (s, line) = map_res(terminated(not_line_ending, line_ending), from_utf8)(s)?;
+        Ok((s, line))
+    };
+    // take until enddef or endef occurs
+    let (s, (body, _)) = context(
+        "task expression",
+        cut(many_till(
+            read_lines,
+            delimited(line_ending, multispace0, line_ending),
+        )),
+    )(s)?;
+    Ok((s, (Statement::Task(Ident::new(name), body), i).into()))
 }
 
 /// parse an assignment expression
@@ -826,7 +850,7 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
     )(s)?;
     let (s, _) = multispace0(s)?;
 
-    // take until enddef or endef occurs
+    // take until enddef occurs
     let (s, body) = context(
         "define expression",
         cut(map_res(take_until("enddef"), from_utf8)),
@@ -1128,8 +1152,8 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_run),
         complete(parse_preload),
         complete(parse_import),
-        complete(parse_gitignore),
         complete(parse_define_expr),
+        complete(parse_task_expr),
     ))(i)
 }
 

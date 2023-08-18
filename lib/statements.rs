@@ -31,6 +31,8 @@ pub(crate) enum PathExpr {
     MacroRef(String),
     // resolved glob references
     DeGlob(MatchingPath),
+    /// a reference to a task
+    TaskRef(String),
 }
 /// Variable tracking location of Statement (usually a rule) in a Tupfile
 /// see also [RuleRef] that keeps track of file in which the location is referred
@@ -135,6 +137,13 @@ pub(crate) struct Ident {
 impl ToString for Ident {
     fn to_string(&self) -> String {
         self.name.clone()
+    }
+}
+
+impl Ident {
+    /// create a new Ident from a string
+    pub fn new(s: String) -> Ident {
+        Ident { name: s }
     }
 }
 /// variable being checked for defined
@@ -333,12 +342,11 @@ pub(crate) enum Statement {
     Preload(Vec<PathExpr>),
     Run(Vec<PathExpr>),
     Comment,
-    GitIgnore,
     /// Define a multi-line variable
     /// define name { body }
     /// body is a list of statements
     Define(Ident, String),
-    Task(Vec<String>),
+    Task(Ident, Vec<String>),
 }
 
 // we could have used `Into' or 'ToString' trait
