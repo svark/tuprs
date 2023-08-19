@@ -11,9 +11,9 @@ use pathdiff::diff_paths;
 use regex::Regex;
 
 use crate::buffers::{
-    BinBufferObject, GlobPathDescriptor, GroupBufferObject, MyGlob, PathBufferObject, PathBuffers,
+    BufferObjects, GlobPathDescriptor, MyGlob, PathBufferObject, PathBuffers, TaskDescriptor,
 };
-use crate::decode::{GroupInputs, RuleRef};
+use crate::decode::{GroupInputs, TupLoc};
 use crate::errors::Error;
 use crate::glob::Candidate;
 use crate::statements::{CatRef, PathExpr};
@@ -392,12 +392,12 @@ impl GlobPath {
 
 pub(crate) struct OutputsAsPaths {
     outputs: Vec<PathBuf>,
-    rule_ref: RuleRef,
+    rule_ref: TupLoc,
 }
 
 impl OutputsAsPaths {
     /// Create a new instance of OutputsAsPaths from a list of paths and a rule reference
-    pub(crate) fn new(outputs: Vec<PathBuf>, rule_ref: RuleRef) -> Self {
+    pub(crate) fn new(outputs: Vec<PathBuf>, rule_ref: TupLoc) -> Self {
         Self { outputs, rule_ref }
     }
     /// returns all the outputs as vector of strings
@@ -419,7 +419,7 @@ impl OutputsAsPaths {
         self.outputs.is_empty()
     }
 
-    pub(crate) fn get_rule_ref(&self) -> &RuleRef {
+    pub(crate) fn get_rule_ref(&self) -> &TupLoc {
         &self.rule_ref
     }
 }
@@ -430,7 +430,7 @@ pub struct InputsAsPaths {
     raw_inputs: Vec<NormalPath>,
     groups_by_name: HashMap<String, String>,
     raw_inputs_glob_match: Option<InputResolvedType>,
-    rule_ref: RuleRef,
+    rule_ref: TupLoc,
     tup_dir: PathBuf,
 }
 
@@ -474,7 +474,7 @@ impl InputsAsPaths {
             .collect()
     }
 
-    pub(crate) fn get_rule_ref(&self) -> &RuleRef {
+    pub(crate) fn get_rule_ref(&self) -> &TupLoc {
         &self.rule_ref
     }
 
@@ -513,7 +513,7 @@ impl InputsAsPaths {
         tup_cwd: &Path,
         inp: &[InputResolvedType],
         path_buffers: &mut impl PathBuffers,
-        rule_ref: RuleRef,
+        rule_ref: TupLoc,
     ) -> InputsAsPaths {
         let isnotgrp = |x: &InputResolvedType| {
             !matches!(x, &InputResolvedType::GroupEntry(_, _))
@@ -593,6 +593,8 @@ pub enum InputResolvedType {
     BinEntry(BinDescriptor, PathDescriptor),
     /// Unresolved file that failed glob match
     UnResolvedFile(PathDescriptor),
+    /// Reference to a task
+    TaskRef(TaskDescriptor),
 }
 
 impl InputResolvedType {
@@ -602,6 +604,15 @@ impl InputResolvedType {
             return !x.is_empty();
         }
         return false;
+    }
+
+    /// return true if this is a reference to a task
+    pub fn is_task(&self) -> bool {
+        if let InputResolvedType::TaskRef(_) = self {
+            true
+        } else {
+            false
+        }
     }
     /// Get matched glob in the input to a rule
     fn as_glob_match(&self) -> Option<&Vec<String>> {
@@ -629,6 +640,7 @@ impl InputResolvedType {
             InputResolvedType::UnResolvedGroupEntry(_) => Path::new(""),
             //InputResolvedType::RawUnchecked(p) => pbo.get(p).as_path()
             InputResolvedType::UnResolvedFile(p) => pbo.get(p).as_path(),
+            InputResolvedType::TaskRef(_) => Path::new(""),
         }
     }
 
@@ -640,6 +652,7 @@ impl InputResolvedType {
             InputResolvedType::BinEntry(_, p) => Some(p),
             InputResolvedType::UnResolvedGroupEntry(_) => None,
             InputResolvedType::UnResolvedFile(_) => None,
+            InputResolvedType::TaskRef(_) => None,
         }
     }
 
@@ -655,18 +668,17 @@ impl InputResolvedType {
     /// For Group(or UnResolvedGroup) entries, group name is returned
     /// For Bin entries, bin name is returned
     /// For others the file name is returned
-    pub(crate) fn get_resolved_name<'a, 'b>(
-        &'a self,
-        pbo: &PathBufferObject,
-        gbo: &'b GroupBufferObject,
-        bbo: &'b BinBufferObject,
-    ) -> String {
+    pub(crate) fn get_resolved_name<'a, 'b>(&'a self, bo: &'b BufferObjects) -> String {
         match self {
-            InputResolvedType::Deglob(e) => pbo.get(e.path_descriptor()).to_string(),
-            InputResolvedType::GroupEntry(g, _) => gbo.get(g).to_string(),
-            InputResolvedType::BinEntry(b, _) => bbo.get(b).to_string(),
-            InputResolvedType::UnResolvedGroupEntry(g) => gbo.get(g).to_string(),
-            InputResolvedType::UnResolvedFile(p) => pbo.get(p).to_string(),
+            InputResolvedType::Deglob(e) => bo.get_path_str(e.path_descriptor()),
+            InputResolvedType::GroupEntry(g, _) => bo.get_group_name(g),
+            InputResolvedType::BinEntry(b, _) => bo.get_bin_name(b).to_string(),
+            InputResolvedType::UnResolvedGroupEntry(g) => bo.get_group_name(g),
+            InputResolvedType::UnResolvedFile(p) => bo.get_path_str(p),
+            InputResolvedType::TaskRef(t) => bo
+                .try_get_task(t)
+                .map(|x| x.get_name().to_string())
+                .unwrap_or_default(),
         }
     }
 }

@@ -5,7 +5,7 @@ use regex::Regex;
 use thiserror::Error as ThisError;
 
 use crate::buffers::{PathDescriptor, TupPathDescriptor};
-use crate::decode::RuleRef;
+use crate::decode::TupLoc;
 use crate::statements::Loc;
 
 /// Errors returning during parsing and subst-ing Tupfiles
@@ -23,7 +23,7 @@ pub enum Error {
     IoError(IoErr, Loc),
     /// Macro with given name could not found for expansion
     #[error("Unknown macro reference:{0}")]
-    UnknownMacroRef(String, RuleRef),
+    UnknownMacroRef(String, TupLoc),
     /// Dependency cylcle  between rules of tupfile because groups refer to one another
     #[error("Dependency cycle between {0}, {1}")]
     DependencyCycle(String, String),
@@ -35,56 +35,56 @@ pub enum Error {
     GlobError(String),
     /// Overlapping results from different glob patterns
     #[error("Multiple glob patterns match some paths")]
-    MultipleGlobMatches(String, RuleRef),
+    MultipleGlobMatches(String, TupLoc),
     /// Multiple rules return the same output file
     #[error("Multiple rules writing to same output {0}: current rule: {1}, previous rule: {2}")]
-    MultipleRulesToSameOutput(PathDescriptor, RuleRef, RuleRef),
+    MultipleRulesToSameOutput(PathDescriptor, TupLoc, TupLoc),
     /// Group reference could not resolved
     #[error("Groups reference {0} could not be resolved at input{0}")]
-    StaleGroupRef(String, RuleRef),
+    StaleGroupRef(String, TupLoc),
     /// Bin reference could not be resolved
     #[error("Bin reference {0} could not be resolved at input {0}")]
-    StaleBinRef(String, RuleRef),
+    StaleBinRef(String, TupLoc),
     /// Percentage char in rules could not be resolved
     #[error("%{0} could not be resolved from {2} for rule at: {1}")]
-    StalePerc(char, RuleRef, String),
+    StalePerc(char, TupLoc, String),
     ///  Numbered reference could not be resolved
     #[error("Number reference %[num]{0} could not be resolved from {2} for rule at {1}")]
-    StalePercNumberedRef(char, RuleRef, String),
+    StalePercNumberedRef(char, TupLoc, String),
     /// Lua script error
     #[error("Script Error: {0}")]
     ScriptError(String, u32),
     /// Error running tup run
     #[error("Error running tup run at {0} : \n {1}")]
-    RunError(RuleRef, String),
+    RunError(TupLoc, String),
     /// Tuprules file could not be located from current Tupfile
     #[error("Tup rules could not be located from {0}")]
-    TupRulesNotFound(RuleRef),
+    TupRulesNotFound(TupLoc),
     /// Tuprules file could not be located from current Tupfile
     #[error("Include path {0} referred in {1} could not be located")]
-    PathNotFound(String, RuleRef),
+    PathNotFound(String, TupLoc),
     /// Rule creates a directory
     #[error("Output path is a directory: {0} defined at {1}")]
-    OutputIsDir(String, RuleRef),
+    OutputIsDir(String, TupLoc),
     /// input file could not be resolved
     #[error("Error resolving an input: {0} at {1}")]
-    UnResolvedFile(String, RuleRef),
+    UnResolvedFile(String, TupLoc),
     /// Path search error
     #[error("Path search error: {0}")]
     PathSearchError(String),
     /// Path search error with context
     #[error("Path search error: {0} at {1}")]
-    PathSearchErrorCtx(String, RuleRef),
+    PathSearchErrorCtx(String, TupLoc),
     /// Raw lua errors
     #[error(transparent)]
     LuaError(#[from] mlua::Error),
     /// User error
     #[error("User error: {0} at {1}")]
-    UserError(String, RuleRef),
+    UserError(String, TupLoc),
 
     /// negative index specific for word
-    #[error("Negative index {0} in word at {1}")]
-    NegativeIndex(i32, RuleRef),
+    #[error("Could not find task by name:{0} at {1}")]
+    TaskNotFound(String, TupLoc),
 }
 
 /// Error along with the tupfile path where it occurred

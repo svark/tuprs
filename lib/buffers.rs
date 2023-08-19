@@ -9,13 +9,13 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use bimap::hash::RightValues;
-use bimap::BiMap;
+use bimap::{BiBTreeMap, BiMap};
 use bstr::ByteSlice;
 use log::{debug, log_enabled};
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pathdiff::diff_paths;
 
-use crate::decode::{OutputHandler, RuleFormulaUsage, RuleRef};
+use crate::decode::{OutputHandler, RuleFormulaInstance, TaskInstance, TupLoc};
 use crate::errors::Error;
 use crate::glob::{Candidate, GlobBuilder, GlobMatcher};
 use crate::paths::{GlobPath, InputResolvedType, MatchingPath, NormalPath};
@@ -41,13 +41,16 @@ pub trait PathBuffers {
     fn add_path_from<P: AsRef<Path>>(&mut self, tup_cwd: &Path, path: P) -> (PathDescriptor, bool);
 
     /// add a rule and fetch a unique id
-    fn add_rule(&mut self, rule: RuleFormulaUsage) -> (RuleDescriptor, bool);
+    fn add_rule(&mut self, rule: RuleFormulaInstance) -> (RuleDescriptor, bool);
 
     /// add tup file and fetch its unique id
     fn add_tup(&mut self, p: &Path) -> (TupPathDescriptor, bool);
 
     /// add env vars and fetch an id for them
     fn add_env_var(&mut self, var: String, cur_env_desc: &EnvDescriptor) -> EnvDescriptor;
+
+    /// add a task instance to buffer and return a unique id
+    fn add_task_path(&mut self, task: TaskInstance) -> (TaskDescriptor, bool);
 
     /// Return input path from resolved input
     fn get_input_path_name(&self, i: &InputResolvedType) -> String;
@@ -61,13 +64,19 @@ pub trait PathBuffers {
     /// return path from its descriptor
     fn get_rel_path<P: AsRef<Path>>(&self, pd: &PathDescriptor, vd: P) -> NormalPath;
     /// Return Rule from its descriptor
-    fn get_rule(&self, rd: &RuleDescriptor) -> &RuleFormulaUsage;
+    fn get_rule(&self, rd: &RuleDescriptor) -> &RuleFormulaInstance;
     /// return Env from its descriptor
     fn try_get_env(&self, ed: &EnvDescriptor) -> Option<&Env>;
     /// Return tup file path
     fn get_tup_path(&self, p: &TupPathDescriptor) -> &Path;
     /// Return path from its descriptor
     fn try_get_path(&self, id: &PathDescriptor) -> Option<&NormalPath>;
+
+    /// Return task reference name from its descriptor
+    fn try_get_task(&self, id: &TaskDescriptor) -> Option<&TaskInstance>;
+
+    /// fetch the descriptor for a task using its name and directory
+    fn try_get_task_desc(&self, tup_cwd: &Path, name: &str) -> Option<&TaskDescriptor>;
 
     /// Try get a bin path entry by its descriptor.
     fn try_get_group_path(&self, gd: &GroupPathDescriptor) -> Option<&NormalPath>;
@@ -124,6 +133,10 @@ pub struct TupPathDescriptor(usize);
 #[derive(Debug, PartialEq, Eq, Clone, Hash, Copy, PartialOrd, Ord)]
 pub struct RuleDescriptor(usize);
 
+/// ```TaskDescriptor``` maintains the id of task based on tasks tracked for far in BufferObjects
+#[derive(Debug, PartialEq, Eq, Clone, Hash, Copy, PartialOrd, Ord)]
+pub struct TaskDescriptor(usize);
+
 /// path to descriptor(T) `BiMap', path stored is relative to rootdir (.1 in this struct)
 #[derive(Debug, Default, Clone)]
 pub(crate) struct GenPathBufferObject<T: PartialEq + Eq + Hash + Clone> {
@@ -137,7 +150,10 @@ pub(crate) struct GenEnvBufferObject(BiMap<Env, EnvDescriptor>);
 
 /// Rule to its descriptor bimap
 #[derive(Debug, Default, Clone)]
-pub(crate) struct GenRuleBufferObject(BiMap<RuleFormulaUsage, RuleDescriptor>);
+pub(crate) struct GenRuleBufferObject(BiMap<RuleFormulaInstance, RuleDescriptor>);
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct GenTaskBufferObject(BiBTreeMap<TaskInstance, TaskDescriptor>);
 
 impl<T> GenPathBufferObject<T>
 where
@@ -232,6 +248,8 @@ pub(crate) type BinBufferObject = GenPathBufferObject<BinDescriptor>;
 
 /// Friendly name for BiMap<RuleDescriptor, RuleFormulaUsage>
 pub(crate) type RuleBufferObject = GenRuleBufferObject;
+
+pub(crate) type TaskBufferObject = GenTaskBufferObject;
 /// methods to add or get group entries from a buffer
 impl GroupBufferObject {
     // Returns name of group (wrapped with angle-brackets)
@@ -288,11 +306,12 @@ impl_from_usize!(BinDescriptor);
 impl_from_usize!(TupPathDescriptor);
 impl_from_usize!(RuleDescriptor);
 impl_from_usize!(GlobPathDescriptor);
+impl_from_usize!(TaskDescriptor);
 
 /// methods to modify get Rules of `RuleBufferObject'
 impl RuleBufferObject {
     /// Add a ```RuleFormulaUsage''' object to this buffer returning a unique id
-    pub(crate) fn add_rule(&mut self, r: RuleFormulaUsage) -> (RuleDescriptor, bool) {
+    pub(crate) fn add_rule(&mut self, r: RuleFormulaInstance) -> (RuleDescriptor, bool) {
         let l = self.0.len();
         let rulestr = r.get_formula().cat();
         debug!("adding rule {} to buffer", rulestr);
@@ -305,8 +324,28 @@ impl RuleBufferObject {
     }
 
     /// return rule corresponding to its id
-    pub(crate) fn get_rule(&self, id: &RuleDescriptor) -> Option<&RuleFormulaUsage> {
+    pub(crate) fn get_rule(&self, id: &RuleDescriptor) -> Option<&RuleFormulaInstance> {
         self.0.get_by_right(id)
+    }
+}
+
+impl TaskBufferObject {
+    pub(crate) fn add_task(&mut self, r: TaskInstance) -> (TaskDescriptor, bool) {
+        let l = self.0.len();
+        debug!("adding task {} to buffer", r.get_name());
+        if let Some(prev_index) = self.0.get_by_left(&r) {
+            (*prev_index, false)
+        } else {
+            let _ = self.0.insert(r, l.into());
+            (l.into(), true)
+        }
+    }
+
+    pub(crate) fn try_get_task(&self, id: &TaskDescriptor) -> Option<&TaskInstance> {
+        self.0.get_by_right(id)
+    }
+    pub(crate) fn try_get_task_desc(&self, task: &TaskInstance) -> Option<&TaskDescriptor> {
+        self.0.get_by_left(task)
     }
 }
 
@@ -391,7 +430,7 @@ pub struct GeneratedFiles {
     /// paths accumulated in groups
     groups: HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>,
     /// track the parent rule that generates a output file
-    parent_rule: HashMap<PathDescriptor, RuleRef>,
+    parent_rule: HashMap<PathDescriptor, TupLoc>,
 }
 
 impl GeneratedFiles {
@@ -557,12 +596,12 @@ impl GeneratedFiles {
     }
 
     /// the parent rule that generates a output file
-    pub(crate) fn get_parent_rule(&self, o: &PathDescriptor) -> Option<&RuleRef> {
+    pub(crate) fn get_parent_rule(&self, o: &PathDescriptor) -> Option<&TupLoc> {
         self.parent_rule.get(o)
     }
 
     /// Add an entry to the set that holds paths
-    fn add_parent_rule(&mut self, pd: PathDescriptor, rule_ref: RuleRef) -> RuleRef {
+    fn add_parent_rule(&mut self, pd: PathDescriptor, rule_ref: TupLoc) -> TupLoc {
         match self.parent_rule.entry(pd) {
             Entry::Occupied(e) => e.get().clone(),
             Entry::Vacant(e) => e.insert(rule_ref).clone(),
@@ -638,7 +677,7 @@ impl GeneratedFiles {
     fn merge_parent_rules(
         &mut self,
         path_buffers: &impl PathBuffers,
-        new_parent_rule: &HashMap<PathDescriptor, RuleRef>,
+        new_parent_rule: &HashMap<PathDescriptor, TupLoc>,
         new_path_descs: &HashSet<PathDescriptor>,
     ) -> Result<(), errors::Error> {
         for new_path_desc in new_path_descs.iter() {
@@ -679,7 +718,7 @@ impl GeneratedFiles {
         Ok(())
     }
     /// return the map from output file descriptor to the parent rule that generates it.
-    fn get_parent_rules(&self) -> &HashMap<PathDescriptor, RuleRef> {
+    fn get_parent_rules(&self) -> &HashMap<PathDescriptor, TupLoc> {
         &self.parent_rule
     }
 }
@@ -739,7 +778,7 @@ impl OutputHandler for OutputHolder {
         RwLockReadGuard::map(self.get(), |x| x.get_children())
     }
 
-    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<MappedRwLockReadGuard<'_, RuleRef>> {
+    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<MappedRwLockReadGuard<'_, TupLoc>> {
         let r = self.get();
         if r.get_parent_rule(o).is_some() {
             Some(RwLockReadGuard::map(self.get(), |x| {
@@ -750,14 +789,14 @@ impl OutputHandler for OutputHolder {
         }
     }
 
-    fn get_parent_rules(&self) -> MappedRwLockReadGuard<'_, HashMap<PathDescriptor, RuleRef>> {
+    fn get_parent_rules(&self) -> MappedRwLockReadGuard<'_, HashMap<PathDescriptor, TupLoc>> {
         RwLockReadGuard::map(self.get(), |x| x.get_parent_rules())
     }
 
     fn add_output(&mut self, pd: PathDescriptor) -> bool {
         self.get_mut().add_output(pd)
     }
-    fn add_parent_rule(&mut self, pd: PathDescriptor, rule_ref: RuleRef) -> RuleRef {
+    fn add_parent_rule(&mut self, pd: PathDescriptor, rule_ref: TupLoc) -> TupLoc {
         self.get_mut().add_parent_rule(pd, rule_ref)
     }
 
@@ -854,29 +893,33 @@ impl OutputType {
 /// Each sub-buffer is a bimap from names to a unique id which simplifies storing references.
 #[derive(Debug, Clone)]
 pub struct BufferObjects {
-    pbo: PathBufferObject,
+    path_bo: PathBufferObject,
     //< paths by id
-    gbo: GroupBufferObject,
+    group_bo: GroupBufferObject,
     //< groups by id
-    bbo: BinBufferObject,
+    bin_bo: BinBufferObject,
     //< bins by id
-    tbo: TupPathBufferObject,
+    tup_bo: TupPathBufferObject,
     //< tup paths by id
     ebo: EnvBufferObject,
     //< environment variables by id
-    rbo: RuleBufferObject, //< Rules by id
+    rule_bo: RuleBufferObject,
+    //< Rules by id
+    // < task paths by id
+    task_bo: TaskBufferObject,
 }
 
 impl Default for BufferObjects {
     fn default() -> Self {
         let root = Path::new(".");
         BufferObjects {
-            pbo: PathBufferObject::new(root),
-            bbo: BinBufferObject::new(root),
-            gbo: GroupBufferObject::new(root),
-            tbo: TupPathBufferObject::new(root),
+            path_bo: PathBufferObject::new(root),
+            bin_bo: BinBufferObject::new(root),
+            group_bo: GroupBufferObject::new(root),
+            tup_bo: TupPathBufferObject::new(root),
             ebo: EnvBufferObject::default(),
-            rbo: RuleBufferObject::default(),
+            rule_bo: RuleBufferObject::default(),
+            task_bo: TaskBufferObject::default(),
         }
     }
 }
@@ -886,10 +929,10 @@ impl BufferObjects {
     /// Construct Buffer object using tup (most) root directory where Tupfile.ini is found
     pub fn new<P: AsRef<Path>>(root: P) -> BufferObjects {
         BufferObjects {
-            pbo: PathBufferObject::new(root.as_ref()),
-            bbo: BinBufferObject::new(root.as_ref()),
-            gbo: GroupBufferObject::new(root.as_ref()),
-            tbo: TupPathBufferObject::new(root.as_ref()),
+            path_bo: PathBufferObject::new(root.as_ref()),
+            bin_bo: BinBufferObject::new(root.as_ref()),
+            group_bo: GroupBufferObject::new(root.as_ref()),
+            tup_bo: TupPathBufferObject::new(root.as_ref()),
             ..Default::default()
         }
     }
@@ -898,7 +941,7 @@ impl BufferObjects {
 impl PathBuffers for BufferObjects {
     /// Add path of bin. Folder is the one where  Tupfile declaring the bin. name is bin name
     fn add_bin_path_expr(&mut self, tup_cwd: &Path, pe: &str) -> (BinDescriptor, bool) {
-        self.bbo.add_relative_bin(pe.as_ref(), tup_cwd)
+        self.bin_bo.add_relative_bin(pe.as_ref(), tup_cwd)
     }
 
     fn add_env(&mut self, e: Cow<Env>) -> (EnvDescriptor, bool) {
@@ -911,27 +954,27 @@ impl PathBuffers for BufferObjects {
         tup_cwd: &Path,
         group_str: &str,
     ) -> (GroupPathDescriptor, bool) {
-        self.gbo.add_relative(tup_cwd, Path::new(group_str))
+        self.group_bo.add_relative(tup_cwd, Path::new(group_str))
     }
 
     /// Add a path to buffer and return its unique id in the buffer
     /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
     fn add_abs(&mut self, p: &Path) -> (PathDescriptor, bool) {
         let p = paths::without_curdir_prefix(p);
-        self.pbo.add(p)
+        self.path_bo.add(p)
     }
 
     /// Add a path to buffer and return its unique id in the buffer
     fn add_path_from<P: AsRef<Path>>(&mut self, tup_cwd: &Path, p: P) -> (PathDescriptor, bool) {
-        self.pbo.add_relative(tup_cwd, p.as_ref())
+        self.path_bo.add_relative(tup_cwd, p.as_ref())
     }
 
-    fn add_rule(&mut self, r: RuleFormulaUsage) -> (RuleDescriptor, bool) {
-        self.rbo.add_rule(r)
+    fn add_rule(&mut self, r: RuleFormulaInstance) -> (RuleDescriptor, bool) {
+        self.rule_bo.add_rule(r)
     }
     fn add_tup(&mut self, p: &Path) -> (TupPathDescriptor, bool) {
         let p1 = NormalPath::cleanup(p, Path::new("."));
-        self.tbo.add(p1.as_path())
+        self.tup_bo.add(p1.as_path())
     }
 
     /// add environment variable to the list of variables active in current tupfile until now
@@ -951,27 +994,31 @@ impl PathBuffers for BufferObjects {
         }
     }
 
+    fn add_task_path(&mut self, task: TaskInstance) -> (TaskDescriptor, bool) {
+        self.task_bo.add_task(task)
+    }
+
     /// Get file name or bin name or group name of the input path
     /// use `get_resolve_path` to get resolved path
     fn get_input_path_name(&self, i: &InputResolvedType) -> String {
-        i.get_resolved_name(&self.pbo, &self.gbo, &self.bbo)
+        i.get_resolved_name(&self)
     }
 
     /// Returns parent id for the path
     fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor> {
-        let p = self.pbo.try_get(pd)?;
+        let p = self.path_bo.try_get(pd)?;
         let np = NormalPath::new_from_cow_path(get_parent(p.as_path()));
         self.get_id(&np).copied()
     }
 
     /// Returns id for the path
     fn get_id(&self, np: &NormalPath) -> Option<&PathDescriptor> {
-        self.pbo.get_id(np)
+        self.path_bo.get_id(np)
     }
 
     /// Returns path corresponding to an path descriptor. This panics if there is no match
     fn get_path(&self, id: &PathDescriptor) -> &NormalPath {
-        self.pbo.get(id)
+        self.path_bo.get(id)
     }
 
     fn get_rel_path<P: AsRef<Path>>(&self, pd: &PathDescriptor, np2: P) -> NormalPath {
@@ -980,8 +1027,8 @@ impl PathBuffers for BufferObjects {
     }
 
     /// Returns rule corresponding to a rule descriptor. Panics if none is found
-    fn get_rule(&self, id: &RuleDescriptor) -> &RuleFormulaUsage {
-        self.rbo
+    fn get_rule(&self, id: &RuleDescriptor) -> &RuleFormulaInstance {
+        self.rule_bo
             .get_rule(id)
             .unwrap_or_else(|| panic!("unable to fetch rule formula for id:{}", id))
     }
@@ -992,46 +1039,56 @@ impl PathBuffers for BufferObjects {
 
     /// Returns path corresponding to the given tupfile descriptor
     fn get_tup_path(&self, t: &TupPathDescriptor) -> &Path {
-        self.tbo.get(t).as_path()
+        self.tup_bo.get(t).as_path()
     }
     // Attempts to get path corresponding to an path descriptor. None if no match is found
     fn try_get_path(&self, id: &PathDescriptor) -> Option<&NormalPath> {
-        self.pbo.try_get(id)
+        self.path_bo.try_get(id)
     }
 
+    fn try_get_task(&self, id: &TaskDescriptor) -> Option<&TaskInstance> {
+        self.task_bo.try_get_task(id)
+    }
+
+    fn try_get_task_desc(&self, tup_cwd: &Path, name: &str) -> Option<&TaskDescriptor> {
+        let task = TaskInstance::new(tup_cwd, name, vec![], vec![], TupLoc::default());
+        self.task_bo.try_get_task_desc(&task)
+    }
     /// Try get a bin path entry by its descriptor.
     fn try_get_group_path(&self, gd: &GroupPathDescriptor) -> Option<&NormalPath> {
-        self.gbo.try_get(gd)
+        self.group_bo.try_get(gd)
     }
     /// Get group ids as an iter
     fn get_group_descs(&self) -> RightValues<'_, NormalPath, GroupPathDescriptor> {
-        self.gbo.get_ids()
+        self.group_bo.get_ids()
     }
 
     /// Get tup id corresponding to its path
     fn get_tup_id(&self, p: &Path) -> &TupPathDescriptor {
         let p = paths::without_curdir_prefix(p);
-        self.tbo.get_id(&NormalPath::new_from_cow_path(p)).unwrap()
+        self.tup_bo
+            .get_id(&NormalPath::new_from_cow_path(p))
+            .unwrap()
     }
 
     /// Return root folder where tup was initialized
     fn get_root_dir(&self) -> &Path {
-        self.pbo.get_root_dir()
+        self.path_bo.get_root_dir()
     }
 
     /// Get group name stored against its id
     fn get_group_name(&self, gd: &GroupPathDescriptor) -> String {
-        self.gbo.get_group_name(gd)
+        self.group_bo.get_group_name(gd)
     }
 
     /// Get path of a maybe resolved input
     fn get_path_from(&self, input_glob: &InputResolvedType) -> &Path {
-        input_glob.get_resolved_path(&self.pbo)
+        input_glob.get_resolved_path(&self.path_bo)
     }
 
     /// Get Path stored against its id
     fn get_path_str(&self, p: &PathDescriptor) -> String {
-        let p = self.pbo.get(p).as_path();
+        let p = self.path_bo.get(p).as_path();
         p.to_string_lossy().to_string()
     }
 
@@ -1043,10 +1100,10 @@ impl PathBuffers for BufferObjects {
     /// Return an iterator over all the id-group path pairs.
     /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
     fn group_iter(&self) -> bimap::hash::Iter<'_, NormalPath, GroupPathDescriptor> {
-        self.gbo.group_iter()
+        self.group_bo.group_iter()
     }
 
     fn get_bin_name(&self, b: &BinDescriptor) -> Cow<'_, str> {
-        self.bbo.get(b).as_path().to_string_lossy()
+        self.bin_bo.get(b).as_path().to_string_lossy()
     }
 }

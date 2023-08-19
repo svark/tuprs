@@ -19,7 +19,10 @@ use crate::buffers::{
     BufferObjects, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder, PathBuffers,
     PathDescriptor, RuleDescriptor, TupPathDescriptor,
 };
-use crate::decode::{PathSearcher, ResolvePaths, ResolvedLink, RuleFormulaUsage, RuleRef};
+use crate::decode::{
+    PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance,
+    TupLoc,
+};
 use crate::errors::Error::RootNotFound;
 use crate::errors::{Error as Err, Error};
 use crate::glob::Candidate;
@@ -199,10 +202,12 @@ impl ParseState {
     /// Initialize ParseState for var-subst-ing `cur_file' with no conf_map.
     /// This is useful for testing.
     #[cfg(test)]
-    pub fn new_at(cur_file: &Path) -> Self {
+    pub fn new_at<P: AsRef<Path>>(cur_file: P) -> Self {
         let mut def_vars = HashMap::new();
-        let pbuffers = Arc::new(RwLock::new(BufferObjects::new(get_parent(cur_file))));
-        let cur_file_desc = pbuffers.write().add_tup(cur_file).0;
+        let pbuffers = Arc::new(RwLock::new(BufferObjects::new(get_parent(
+            cur_file.as_ref(),
+        ))));
+        let cur_file_desc = pbuffers.write().add_tup(cur_file.as_ref()).0;
         let cur_file = pbuffers.read().get_tup_path(&cur_file_desc).to_path_buf();
         let dir = get_parent_str(cur_file.as_path()).to_string().to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir]);
@@ -316,7 +321,7 @@ impl ExpandRun for Statement {
         loc: &Loc,
         res: &mut Vec<LocatedStatement>,
     ) -> Result<(), Error> {
-        let rule_ref = RuleRef::new(&parse_state.cur_file_desc, loc);
+        let rule_ref = TupLoc::new(&parse_state.cur_file_desc, loc);
         match self {
             Statement::Preload(v) => {
                 let dir = v.cat();
@@ -1115,7 +1120,7 @@ impl ExpandMacro for Link {
                     } else {
                         return Err(Err::UnknownMacroRef(
                             name.clone(),
-                            RuleRef::new(m.get_cur_file_desc(), &pos),
+                            TupLoc::new(m.get_cur_file_desc(), &pos),
                         ));
                     }
                 }
@@ -1354,7 +1359,7 @@ impl LocatedStatement {
                     )?;
                 }
                 if !found {
-                    return Err(Error::TupRulesNotFound(RuleRef::new(
+                    return Err(Error::TupRulesNotFound(TupLoc::new(
                         &parse_state.cur_file_desc,
                         loc,
                     )));
@@ -1390,7 +1395,7 @@ impl LocatedStatement {
                 } else {
                     return Err(Error::PathNotFound(
                         p.to_string_lossy().to_string(),
-                        RuleRef::new(parse_state.get_cur_file_desc(), self.get_loc()),
+                        TupLoc::new(parse_state.get_cur_file_desc(), self.get_loc()),
                     ));
                 }
             }
@@ -1416,7 +1421,7 @@ impl LocatedStatement {
                 eprintln!("{}\n", &v.cat().as_str());
                 return Err(Error::UserError(
                     v.cat().as_str().to_string(),
-                    RuleRef::new(&parse_state.cur_file_desc, loc),
+                    TupLoc::new(&parse_state.cur_file_desc, loc),
                 ));
             }
             Statement::Preload(v) => {
@@ -1454,7 +1459,26 @@ impl LocatedStatement {
                 parse_state.func_map.insert(name.to_string(), val.clone());
                 //newstats.push(LocatedStatement::new(Statement::Define(name.clone(),val.clone()), loc.clone()))
             }
-            Statement::Task(..) => {}
+            Statement::Task(name, deps, recipe) => {
+                debug!("adding task:{} with deps:{:?}", name.as_str(), &deps);
+                let tup_loc = TupLoc::new(&parse_state.cur_file_desc, loc);
+                let tup_dir = parse_state.get_tup_dir().to_path_buf();
+                let deps = deps.subst_pe(parse_state, path_searcher);
+                // each line of the recipe has the same parse state as the task
+                let recipe: Vec<_> = recipe
+                    .iter()
+                    .map(|x| x.subst_pe(&mut parse_state.clone(), path_searcher))
+                    .collect();
+                let ti = TaskInstance::new(
+                    tup_dir,
+                    name.as_str(),
+                    deps.clone(),
+                    recipe.clone(),
+                    tup_loc,
+                );
+                let mut bo = parse_state.path_buffers.write();
+                bo.add_task_path(ti);
+            }
         }
         Ok(newstats)
     }
@@ -1558,6 +1582,7 @@ pub struct TupParser<Q: PathSearcher + Sized + Send + 'static> {
 #[derive(Debug, Clone, Default)]
 pub struct Artifacts {
     resolved_links: Vec<ResolvedLink>,
+    resolved_tasks: Vec<ResolvedTask>,
 }
 
 impl Artifacts {
@@ -1566,8 +1591,11 @@ impl Artifacts {
         Artifacts::default()
     }
     /// Builds Artifacts from a vector of [ResolvedLink]s
-    pub fn from(resolved_links: Vec<ResolvedLink>) -> Artifacts {
-        Artifacts { resolved_links }
+    pub fn from(resolved_links: Vec<ResolvedLink>, resolved_tasks: Vec<ResolvedTask>) -> Artifacts {
+        Artifacts {
+            resolved_links,
+            resolved_tasks,
+        }
     }
 
     /// Return the number of resolved links.
@@ -1583,6 +1611,7 @@ impl Artifacts {
     /// extend links in `artifacts` with those in self
     pub fn extend(&mut self, mut artifacts: Artifacts) {
         self.resolved_links.extend(artifacts.drain_resolved_links());
+        self.resolved_tasks.extend(artifacts.drain_resolved_tasks());
     }
     /// add a single link
     pub fn add_link(&mut self, rlink: ResolvedLink) {
@@ -1596,21 +1625,14 @@ impl Artifacts {
     pub(crate) fn drain_resolved_links(&mut self) -> Drain<'_, ResolvedLink> {
         self.resolved_links.drain(..)
     }
+
+    fn drain_resolved_tasks(&mut self) -> Drain<'_, ResolvedTask> {
+        self.resolved_tasks.drain(..)
+    }
     /// divulges secrets of all the resolved links returned by the parser,
     pub fn get_resolved_links(&self) -> &Vec<ResolvedLink> {
         &self.resolved_links
     }
-
-    /*
-        pub(crate) fn acquire(&mut self, outs: &impl PathSearcher) {
-            self.outs.acquire(outs);
-        }
-
-
-    /// Returns the output files from all the rules found after current parsing sesssion
-    pub fn get_output_files(&self) -> Ref<'_, HashSet<PathDescriptor>> {
-        self.outs.get_output_files()
-    } */
 
     /// Returns a vector over slices of resolved links grouped by the tupfile that generated them
     pub fn rules_by_tup(&self) -> Vec<&'_ [ResolvedLink]> {
@@ -1637,15 +1659,6 @@ impl Artifacts {
     pub fn get_rules(&self) -> &[ResolvedLink] {
         return self.resolved_links.as_slice();
     }
-    /*
-    /// get parent rule that generated an output file with given id.
-    pub fn get_parent_rule(&self, p0: &PathDescriptor) -> Option<Ref<'_, RuleRef>> {
-        self.outs.get_parent_rule(p0)
-    }
-    /// Add a new path entry against a group with `group_desc`
-    pub fn add_group_entry(&mut self, group_desc: &GroupPathDescriptor, pd: PathDescriptor) {
-        self.outs.add_group_entry(group_desc, pd)
-    } */
 }
 
 /// Represents an opens  buffer that is ready to be read for all data that stored with an id during parsing.
@@ -1691,7 +1704,7 @@ impl ReadWriteBufferObjects {
     }
 
     /// returns the rule corresponding to `RuleDescriptor`
-    pub fn get_rule(&self, rd: &RuleDescriptor) -> MappedRwLockReadGuard<'_, RuleFormulaUsage> {
+    pub fn get_rule(&self, rd: &RuleDescriptor) -> MappedRwLockReadGuard<'_, RuleFormulaInstance> {
         let r = self.get();
         RwLockReadGuard::map(r, |x| x.get_rule(rd))
     }

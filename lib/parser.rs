@@ -3,13 +3,11 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use nom::bytes::complete::{is_a, is_not};
-use nom::character::complete::{
-    line_ending, multispace0, multispace1, not_line_ending, space0, space1,
-};
+use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
-use nom::sequence::{delimited, preceded, terminated};
+use nom::sequence::{delimited, preceded};
 use nom::AsBytes;
 use nom::Err;
 use nom::IResult;
@@ -26,9 +24,6 @@ use crate::transform;
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
 
-fn to_lval(name: String) -> Ident {
-    Ident { name }
-}
 fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
 }
@@ -144,6 +139,16 @@ fn parse_pathexpr_at(i: Span) -> IResult<Span, PathExpr> {
             complete(map(parse_pathexpr_ref_raw, PathExpr::AtExpr)),
             complete(map(parse_pathexpr_ref_raw_curl, PathExpr::AtExpr)),
         )),
+    )(i)
+}
+
+fn parse_pathexpr_taskref(i: Span) -> IResult<Span, PathExpr> {
+    context(
+        "task reference",
+        map(
+            delimited(tag("&task{"), parse_lvalue, tag("}")),
+            PathExpr::TaskRef,
+        ),
     )(i)
 }
 
@@ -598,6 +603,7 @@ pub(crate) fn parse_pathexpr_ws<'a, 'b>(
         complete(parse_quote),
         complete(parse_ws),
         complete(parse_pathexprbasic),
+        complete(parse_pathexpr_taskref),
         complete(map_res(
             |i| parse_misc_bits(i, end_tok, break_toks),
             from_str,
@@ -672,7 +678,7 @@ fn parse_lvalue_ref(input: Span) -> IResult<Span, Ident> {
 }
 // parse a lvalue to a ident
 fn parse_lvalue(input: Span) -> IResult<Span, Ident> {
-    map(map_res(take_while(is_ident), from_utf8), to_lval)(input)
+    map(map_res(take_while(is_ident), from_utf8), Ident::new)(input)
 }
 
 impl From<(Statement, Span<'_>)> for LocatedStatement {
@@ -784,29 +790,31 @@ fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
 /// task(name) : dep1 dep2..
 ///       commands..
 /// dep1 dep2 could be outputs, group, bin or another task
-fn parse_task_expr(i: Span) -> IResult<Span, LocatedStatement> {
+fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("task")(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, name) = context("task name", cut(map_res(take_until(")"), from_utf8)))(s)?;
-
+    let (s, name) = context(
+        "task name",
+        cut(delimited(tag("{"), parse_lvalue, tag("}"))),
+    )(s)?;
+    let (s, _) = opt(sp1)(s)?;
     let (s, _) = tag(":")(s)?;
-    let (s, _) = line_ending(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, deps) = opt(parse_pelist_till_line_end_with_ws)(s)?;
+    log::warn!("remaining: {:?}", s);
+    let deps = deps.map(|x| x.0).unwrap_or_default();
 
     let read_lines = |s| {
-        let (s, _) = tag("\t")(s)?;
-        let (s, line) = map_res(terminated(not_line_ending, line_ending), from_utf8)(s)?;
-        Ok((s, line))
+        let (s, line) = context("task expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
+        Ok((s, line.0))
     };
     // take until enddef or endef occurs
     let (s, (body, _)) = context(
         "task expression",
-        cut(many_till(
-            read_lines,
-            delimited(line_ending, multispace0, line_ending),
-        )),
+        cut(many_till(read_lines, tag("endtask"))),
     )(s)?;
-    Ok((s, (Statement::Task(Ident::new(name), body), i).into()))
+    Ok((s, (Statement::Task(name, deps, body), i).into()))
 }
 
 /// parse an assignment expression
@@ -844,10 +852,7 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("define")(s)?;
     let (s, _) = sp1(s)?;
-    let (s, name) = context(
-        "define expression",
-        cut(map_res(take_while(is_ident), from_utf8)),
-    )(s)?;
+    let (s, ident) = context("define expression", cut(parse_lvalue))(s)?;
     let (s, _) = multispace0(s)?;
 
     // take until enddef occurs
@@ -857,7 +862,7 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
     )(s)?;
     let (s, _) = multispace0(s)?;
     let (s, _) = tag("enddef")(s)?;
-    Ok((s, (Statement::Define(to_lval(name), body), i).into()))
+    Ok((s, (Statement::Define(ident, body), i).into()))
 }
 
 // parse an assignment expression
@@ -1153,7 +1158,7 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_preload),
         complete(parse_import),
         complete(parse_define_expr),
-        complete(parse_task_expr),
+        complete(parse_task_statement),
     ))(i)
 }
 

@@ -31,11 +31,11 @@ pub(crate) enum PathExpr {
     MacroRef(String),
     // resolved glob references
     DeGlob(MatchingPath),
-    /// a reference to a task
-    TaskRef(String),
+    // Task Ref
+    TaskRef(Ident),
 }
 /// Variable tracking location of Statement (usually a rule) in a Tupfile
-/// see also [RuleRef] that keeps track of file in which the location is referred
+/// see also [TupLoc] that keeps track of file in which the location is referred
 #[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash)]
 pub struct Loc {
     line: u32,
@@ -129,7 +129,7 @@ pub(crate) struct EqCond {
 
 /// name of a variable in let expressions such as X=1 or
 /// &X = 1
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Debug, Clone, Hash, Eq)]
 pub(crate) struct Ident {
     pub name: String,
 }
@@ -144,6 +144,10 @@ impl Ident {
     /// create a new Ident from a string
     pub fn new(s: String) -> Ident {
         Ident { name: s }
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.name.as_str()
     }
 }
 /// variable being checked for defined
@@ -346,7 +350,7 @@ pub(crate) enum Statement {
     /// define name { body }
     /// body is a list of statements
     Define(Ident, String),
-    Task(Ident, Vec<String>),
+    Task(Ident, Vec<PathExpr>, Vec<Vec<PathExpr>>),
 }
 
 // we could have used `Into' or 'ToString' trait
@@ -507,6 +511,7 @@ impl Cat for &PathExpr {
             PathExpr::Quoted(v) => format!("\"{}\"", v.cat()),
             PathExpr::Group(p, g) => format!("{}<{}>", p.cat(), g.cat()),
             PathExpr::DeGlob(mp) => format!("{:?}", transform::get_path_str(mp.get_path())),
+            PathExpr::TaskRef(name) => format!("&task:/{}", name.to_string()),
             _ => String::new(),
         }
     }

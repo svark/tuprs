@@ -19,6 +19,8 @@ extern crate regex;
 extern crate thiserror;
 extern crate walkdir;
 
+use std::ops::DerefMut;
+
 pub use buffers::BinDescriptor;
 pub use buffers::GeneratedFiles;
 pub use buffers::GroupPathDescriptor;
@@ -241,9 +243,9 @@ fn test_parse() {
     use statements::{EqCond, Link, RuleFormula, Source, Statement, Target};
     use transform::*;
     type Span<'a> = LocatedSpan<&'a [u8]>;
+    use env_logger;
     use statements::EnvDescriptor;
-    //use env_logger;
-    // env_logger::init();
+    env_logger::init();
     {
         let sp0 = Span::new(b" ifeq($(DEBUG), 20)\n");
         let res1 = parser::parse_eq(sp0);
@@ -488,12 +490,38 @@ fn test_parse() {
          := $(subst -W3,-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505,$(CXX_FLAGS))\n",
     ))
     .expect("parse failure");
-    let mut m = ParseState::default();
+    let mut m = ParseState::new_at(Path::new("."));
     stmts.subst(&mut m, &path_searcher).expect("subst failure");
     assert_eq!(
         m.expr_map.get("CXX_FLAGS").unwrap().join(""),
         "-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505"
     );
+
+    let stmts = vec![
+        parser::parse_statements_until_eof(Span::new(b"task{setup}:\n-echo hi\nendtask\n"))
+            .unwrap()
+            .first()
+            .unwrap()
+            .clone(),
+        parser::parse_statements_until_eof(Span::new(
+            b"task{process}: &task{setup}\n\techo processing...\nendtask\n",
+        ))
+        .unwrap()
+        .first()
+        .unwrap()
+        .clone(),
+    ];
+    //use crate::transform::Subst;
+    stmts.subst(&mut m, &path_searcher).expect("subst failure");
+    let mut write_guard = m.path_buffers.write();
+    stmts
+        .resolve_paths(
+            Path::new("./Tupfile"),
+            &mut dir_searcher,
+            write_guard.deref_mut(),
+            &tup_desc,
+        )
+        .expect("resolve failure");
 }
 /*
 #[test]
