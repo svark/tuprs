@@ -59,8 +59,9 @@ pub trait PathBuffers {
     /// get id stored against input path
     fn get_id(&self, np: &NormalPath) -> Option<&PathDescriptor>;
 
-    /// return path from its descriptor
+    /// return path from its descriptor. Panics when the path is not found
     fn get_path(&self, pd: &PathDescriptor) -> &NormalPath;
+
     /// return path from its descriptor
     fn get_rel_path<P: AsRef<Path>>(&self, pd: &PathDescriptor, vd: P) -> NormalPath;
     /// Return Rule from its descriptor
@@ -728,20 +729,25 @@ impl OutputHolder {
     pub fn discover_paths(
         &self,
         path_buffers: &impl PathBuffers,
-        glob_path: &GlobPath,
+        glob_paths: &[GlobPath],
     ) -> Result<Vec<MatchingPath>, Error> {
         let mut vs = Vec::new();
-        if !glob_path.has_glob_pattern() {
-            let path_desc: PathDescriptor = glob_path.get_glob_path_desc().0.into();
-            self.get().outputs_with_desc(
-                &path_desc,
-                glob_path.get_base_desc(),
-                &mut vs,
-                path_buffers,
-            );
-        } else {
-            self.get()
-                .outputs_matching_glob(path_buffers, &glob_path, &mut vs);
+        for glob_path in glob_paths {
+            if !glob_path.has_glob_pattern() {
+                let path_desc: PathDescriptor = glob_path.get_glob_path_desc().0.into();
+                self.get().outputs_with_desc(
+                    &path_desc,
+                    glob_path.get_base_desc(),
+                    &mut vs,
+                    path_buffers,
+                );
+            } else {
+                self.get()
+                    .outputs_matching_glob(path_buffers, &glob_path, &mut vs);
+            }
+            if !vs.is_empty() {
+                break;
+            }
         }
         Ok(vs)
     }
@@ -1020,7 +1026,6 @@ impl PathBuffers for BufferObjects {
     fn get_path(&self, id: &PathDescriptor) -> &NormalPath {
         self.path_bo.get(id)
     }
-
     fn get_rel_path<P: AsRef<Path>>(&self, pd: &PathDescriptor, np2: P) -> NormalPath {
         let np1 = self.get_path(pd);
         NormalPath::new_from_cow_path(diff_paths(np1.as_path(), np2.as_ref()).unwrap().into())
@@ -1051,7 +1056,7 @@ impl PathBuffers for BufferObjects {
     }
 
     fn try_get_task_desc(&self, tup_cwd: &Path, name: &str) -> Option<&TaskDescriptor> {
-        let task = TaskInstance::new(tup_cwd, name, vec![], vec![], TupLoc::default());
+        let task = TaskInstance::new(tup_cwd, name, vec![], vec![], TupLoc::default(), vec![]);
         self.task_bo.try_get_task_desc(&task)
     }
     /// Try get a bin path entry by its descriptor.

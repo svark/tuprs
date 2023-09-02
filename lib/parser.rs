@@ -814,7 +814,7 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
         "task expression",
         cut(many_till(read_lines, tag("endtask"))),
     )(s)?;
-    Ok((s, (Statement::Task(name, deps, body), i).into()))
+    Ok((s, (Statement::Task(name, deps, body, vec![]), i).into()))
 }
 
 /// parse an assignment expression
@@ -1068,11 +1068,23 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
                     pos: Loc::from(pos),
                 },
                 EnvDescriptor::default(),
+                Vec::new(),
             ),
             i,
         )
             .into(),
     ))
+}
+
+pub(crate) fn parse_searchpaths(i: Span) -> IResult<Span, LocatedStatement> {
+    let (s, _) = multispace0(i)?;
+    let (s, _) = tag("searchpaths")(s)?;
+    let (s, _) = sp1(s)?;
+    let (s, r) = context(
+        "searchpaths expression",
+        cut(parse_pelist_till_line_end_with_ws),
+    )(s)?;
+    Ok((s, (Statement::SearchPaths(r.0), i).into()))
 }
 
 // parse a macro assignment which is more or less same as parsing a rule expression
@@ -1159,6 +1171,7 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_import),
         complete(parse_define_expr),
         complete(parse_task_statement),
+        complete(parse_searchpaths),
     ))(i)
 }
 

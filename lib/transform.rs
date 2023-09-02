@@ -349,16 +349,24 @@ impl ExpandRun for Statement {
                         if arg.contains('*') {
                             let arg_path = Path::new(arg);
                             {
-                                let ref glob_path = GlobPath::new(
+                                let glob_path = GlobPath::new(
                                     parse_state.get_tup_dir().as_ref(),
                                     arg_path,
                                     path_buffers,
                                 )?;
-                                let matches = path_searcher
-                                    .discover_paths(path_buffers, glob_path)
+                                let mut glob_paths = vec![glob_path];
+                                for dir_desc in parse_state.load_dirs.iter() {
+                                    let dir = path_buffers.get_path(dir_desc).clone();
+                                    let glob_path =
+                                        GlobPath::new(dir.as_path(), arg_path, path_buffers)?;
+                                    glob_paths.push(glob_path);
+                                }
+                                let mut matches = path_searcher
+                                    .discover_paths(path_buffers, glob_paths.as_slice())
                                     .unwrap_or_else(|_| {
                                         panic!("error matching glob pattern {}", arg)
                                     });
+
                                 debug!("expand_run num files from glob:{:?}", matches.len());
                                 for ofile in matches {
                                     let p = diff_paths(
@@ -670,14 +678,26 @@ impl DollarExprs {
 
                 let gstr = glob.subst_pe(m, path_searcher).cat();
                 let dir = m.get_tup_dir().to_path_buf();
+                let ldirs = m.load_dirs.clone();
                 m.with_mut_path_buffers_do(|path_buffers_mut| {
                     let glob_path =
                         GlobPath::new(dir.as_path(), Path::new(gstr.as_str()), path_buffers_mut)
                             .unwrap();
+                    let mut glob_paths = vec![glob_path];
+                    for dir_desc in ldirs.iter() {
+                        let dir = path_buffers_mut.get_path(dir_desc).clone();
+                        let glob_path = GlobPath::new(
+                            dir.as_path(),
+                            Path::new(gstr.as_str()),
+                            path_buffers_mut,
+                        )
+                        .unwrap();
+                        glob_paths.push(glob_path); // other directories in which to look for paths
+                    }
                     let paths = path_searcher
-                        .discover_paths(path_buffers_mut, &glob_path)
+                        .discover_paths(path_buffers_mut, glob_paths.as_slice())
                         .unwrap_or_else(|e| {
-                            log::warn!("Error while globbing {:?}: {}", glob_path, e);
+                            log::warn!("Error while globbing {:?}: {}", glob_paths, e);
                             vec![]
                         });
                     paths.into_iter().map(|x| PathExpr::DeGlob(x)).collect()
@@ -1399,14 +1419,18 @@ impl LocatedStatement {
                     ));
                 }
             }
-            Statement::Rule(link, _) => {
+            Statement::Rule(link, _, _) => {
                 let mut l = link.clone();
                 while l.has_ref() {
                     l = l.expand(parse_state)?; // expand all nested macro refs
                 }
                 let env_desc = parse_state.cur_env_desc.clone();
                 newstats.push(LocatedStatement::new(
-                    Statement::Rule(l.subst_pe(parse_state, path_searcher), env_desc),
+                    Statement::Rule(
+                        l.subst_pe(parse_state, path_searcher),
+                        env_desc,
+                        parse_state.load_dirs.clone(),
+                    ),
                     *loc,
                 ));
             }
@@ -1459,7 +1483,7 @@ impl LocatedStatement {
                 parse_state.func_map.insert(name.to_string(), val.clone());
                 //newstats.push(LocatedStatement::new(Statement::Define(name.clone(),val.clone()), loc.clone()))
             }
-            Statement::Task(name, deps, recipe) => {
+            Statement::Task(name, deps, recipe, _) => {
                 debug!("adding task:{} with deps:{:?}", name.as_str(), &deps);
                 let tup_loc = TupLoc::new(&parse_state.cur_file_desc, loc);
                 let tup_dir = parse_state.get_tup_dir().to_path_buf();
@@ -1475,9 +1499,25 @@ impl LocatedStatement {
                     deps.clone(),
                     recipe.clone(),
                     tup_loc,
+                    vec![],
                 );
                 let mut bo = parse_state.path_buffers.write();
                 bo.add_task_path(ti);
+            }
+            Statement::SearchPaths(paths) => {
+                let paths = paths.subst_pe(&mut parse_state.clone(), path_searcher);
+                let dir = paths.cat();
+                let dirs = dir.split(":").collect::<Vec<_>>();
+                for dir in dirs {
+                    let p = Path::new(dir);
+                    let (dirid, _) = parse_state
+                        .path_buffers
+                        .write()
+                        .add_path_from(parse_state.get_tup_dir().as_ref(), p);
+                    {
+                        parse_state.load_dirs.push(dirid);
+                    }
+                }
             }
         }
         Ok(newstats)

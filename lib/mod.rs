@@ -165,6 +165,7 @@ fn test_op() {
                     pos: Loc::new(3, 3, 0),
                 },
                 EnvDescriptor::default(),
+                vec![],
             ),
             Statement::Rule(
                 Link {
@@ -195,6 +196,7 @@ fn test_op() {
                     pos: Loc::new(6, 2, 0),
                 },
                 EnvDescriptor::default(),
+                vec![],
             ),
             Statement::Rule(
                 Link {
@@ -220,6 +222,7 @@ fn test_op() {
                     pos: Loc::new(8, 2, 0),
                 },
                 EnvDescriptor::default(),
+                vec![],
             ),
         ];
 
@@ -389,6 +392,7 @@ fn test_parse() {
             pos: Loc::new(2, 2, 0),
         },
         EnvDescriptor::default(),
+        vec![],
     )];
 
     assert_eq!(stmts_[0], prog[0], "\r\nfound first but expected second");
@@ -423,7 +427,8 @@ fn test_parse() {
                 pos: Loc::new(1, 2, 0),
                 ..Default::default()
             },
-            EnvDescriptor::default()
+            EnvDescriptor::default(),
+            vec![]
         )
     );
     use decode::*;

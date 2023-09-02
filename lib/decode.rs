@@ -31,7 +31,7 @@ pub trait PathSearcher {
     fn discover_paths(
         &self,
         path_buffers: &mut impl PathBuffers,
-        glob_path: &GlobPath,
+        glob_path: &[GlobPath],
     ) -> Result<Vec<MatchingPath>, Error>;
 
     /// Find Outputs
@@ -66,6 +66,7 @@ pub struct TaskInstance {
     deps: Vec<PathExpr>,
     recipe: Vec<Vec<PathExpr>>,
     tup_loc: TupLoc,
+    search_dirs: Vec<PathDescriptor>,
 }
 
 impl PartialOrd for TaskInstance {
@@ -128,6 +129,7 @@ impl TaskInstance {
         deps: Vec<PathExpr>,
         recipe: Vec<Vec<PathExpr>>,
         tup_loc: TupLoc,
+        search_dirs: Vec<PathDescriptor>,
     ) -> TaskInstance {
         let name = format!("{}/{}", tup_cwd.as_ref().to_string_lossy(), name);
         TaskInstance {
@@ -135,6 +137,7 @@ impl TaskInstance {
             deps,
             recipe,
             tup_loc,
+            search_dirs,
         }
     }
     /// Returns the name of the task in the format dir/&task:name
@@ -274,81 +277,92 @@ impl PathSearcher for DirSearcher {
     fn discover_paths(
         &self,
         path_buffers: &mut impl PathBuffers,
-        glob_path: &GlobPath,
+        glob_path: &[GlobPath],
     ) -> Result<Vec<MatchingPath>, Error> {
-        let to_match = glob_path.get_abs_path();
-        debug!(
-            "bp:{:?}, to_match:{:?}",
-            glob_path.get_base_abs_path(),
-            to_match
-        );
-        let root = path_buffers.get_root_dir();
-        if !glob_path.has_glob_pattern() {
-            let mut pes = Vec::new();
-            let path_desc = glob_path.get_glob_path_desc();
-            debug!("looking for child {:?}", to_match);
-            let matching_outs = self.output_holder.discover_paths(path_buffers, glob_path)?;
-            if !matching_outs.is_empty() {
-                pes.extend(matching_outs);
-            } else {
+        let mut unique_path_descs = HashSet::new();
+        let mut pes = Vec::new();
+        let matching_outs = self.output_holder.discover_paths(path_buffers, glob_path)?;
+        if !matching_outs.is_empty() {
+            pes.extend(matching_outs);
+            return Ok(pes);
+        }
+        for glob_path in glob_path {
+            let to_match = glob_path.get_abs_path();
+            debug!(
+                "bp:{:?}, to_match:{:?}",
+                glob_path.get_base_abs_path(),
+                to_match
+            );
+
+            let root = path_buffers.get_root_dir();
+            if !glob_path.has_glob_pattern() {
+                let mut pes = Vec::new();
+                let path_desc = glob_path.get_glob_path_desc();
+                debug!("looking for child {:?}", to_match);
                 if root.join(to_match).is_file() {
                     pes.push(MatchingPath::new(
                         path_desc,
                         path_buffers.get_path(&path_desc).clone(),
                     ));
+                    if log_enabled!(log::Level::Debug) {
+                        for pe in pes.iter() {
+                            debug!("mp:{:?}", pe);
+                        }
+                    }
+                    return Ok(pes);
                 }
-            }
-
-            if log_enabled!(log::Level::Debug) {
-                for pe in pes.iter() {
-                    debug!("mp:{:?}", pe);
+            } else {
+                let base_path = glob_path.get_base_abs_path();
+                if !base_path.is_dir() {
+                    debug!("base path {:?} is not a directory", base_path);
+                    continue;
                 }
-            }
-            return Ok(pes);
-        }
+                let globs = MyGlob::new(glob_path.get_slash_corrected())?;
+                debug!("glob regex used for finding matches {}", globs.re());
+                debug!("base path for files matching glob: {:?}", base_path);
+                let mut walkdir = WalkDir::new(path_buffers.get_root_dir().join(base_path));
+                if glob_path.is_recursive_prefix() {
+                    walkdir = walkdir.max_depth(usize::MAX);
+                } else {
+                    walkdir = walkdir.max_depth(1);
+                }
+                let len = root.components().count();
+                let relative_path = |entry: DirEntry| -> PathBuf {
+                    entry
+                        .path()
+                        .components()
+                        .skip(len)
+                        .collect::<PathBuf>()
+                        .as_path()
+                        .to_owned()
+                };
 
-        let base_path = glob_path.get_base_abs_path();
-        let globs = MyGlob::new(glob_path.get_slash_corrected())?;
-        debug!("glob regex used for finding matches {}", globs.re());
-        debug!("base path for files matching glob: {:?}", base_path);
-        let mut walkdir = WalkDir::new(path_buffers.get_root_dir().join(base_path));
-        if glob_path.is_recursive_prefix() {
-            walkdir = walkdir.max_depth(usize::MAX);
-        } else {
-            walkdir = walkdir.max_depth(1);
-        }
-        let len = root.components().count();
-        let relative_path = |entry: DirEntry| -> PathBuf {
-            entry
-                .path()
-                .components()
-                .skip(len)
-                .collect::<PathBuf>()
-                .as_path()
-                .to_owned()
-        };
-
-        let mut unique_path_descs = HashSet::new();
-        let filtered_paths = walkdir
-            .min_depth(1)
-            .into_iter()
-            .filter_map(move |entry| entry.ok().filter(|e| e.path().is_file()).map(relative_path))
-            .filter(|entry| globs.is_match(entry.as_path()));
-        let mut pes = Vec::new();
-        for matching in filtered_paths {
-            let path = matching.as_path();
-            let (path_desc, _) = path_buffers.add_abs(path);
-            pes.push(MatchingPath::with_captures(
-                path_desc,
-                path_buffers.get_path(&path_desc).clone(),
-                glob_path.get_glob_desc(),
-                globs.group(path),
-            ));
-            unique_path_descs.insert(path_desc);
-        }
-        if log_enabled!(log::Level::Debug) {
-            for pe in pes.iter() {
-                debug!("mp_glob:{:?}", pe);
+                let filtered_paths = walkdir
+                    .min_depth(1)
+                    .into_iter()
+                    .filter_map(move |entry| {
+                        entry.ok().filter(|e| e.path().is_file()).map(relative_path)
+                    })
+                    .filter(|entry| globs.is_match(entry.as_path()));
+                for matching in filtered_paths {
+                    let path = matching.as_path();
+                    let (path_desc, _) = path_buffers.add_abs(path);
+                    pes.push(MatchingPath::with_captures(
+                        path_desc,
+                        path_buffers.get_path(&path_desc).clone(),
+                        glob_path.get_glob_desc(),
+                        globs.group(path),
+                    ));
+                    unique_path_descs.insert(path_desc);
+                }
+                if log_enabled!(log::Level::Debug) {
+                    for pe in pes.iter() {
+                        debug!("mp_glob:{:?}", pe);
+                    }
+                }
+                if !pes.is_empty() {
+                    break;
+                }
             }
         }
         let mut matching_outputs = self.output_holder.discover_paths(path_buffers, glob_path)?;
@@ -378,6 +392,7 @@ pub(crate) trait DecodeInputPaths {
         path_searcher: &impl PathSearcher,
         path_buffers: &mut impl PathBuffers,
         rule_ref: &TupLoc,
+        search_dirs: &Vec<PathDescriptor>,
     ) -> Result<Vec<InputResolvedType>, Err>;
 }
 
@@ -390,6 +405,7 @@ impl DecodeInputPaths for PathExpr {
         path_searcher: &impl PathSearcher,
         path_buffers: &mut impl PathBuffers,
         rule_ref: &TupLoc,
+        search_dirs: &Vec<PathDescriptor>,
     ) -> Result<Vec<InputResolvedType>, Err> {
         let mut vs = Vec::new();
         debug!("Decoding input paths of {:?}", &self);
@@ -398,11 +414,18 @@ impl DecodeInputPaths for PathExpr {
             PathExpr::Literal(_) => {
                 let pbuf = paths::normalized_path(self);
                 let glob_path = GlobPath::new(tup_cwd, pbuf.as_path(), path_buffers)?;
+                let abs_path = glob_path.get_abs_path().to_path_buf();
+                let mut glob_paths = vec![glob_path];
+                for search_dir in search_dirs {
+                    let dir = path_buffers.get_path(search_dir).clone();
+                    let glob_path = GlobPath::new(dir.as_path(), pbuf.as_path(), path_buffers)?;
+                    debug!("glob str: {:?}", glob_path.get_abs_path());
+                    glob_paths.push(glob_path);
+                }
 
-                debug!("glob str: {:?}", glob_path.get_abs_path());
-                let pes = path_searcher.discover_paths(path_buffers, &glob_path)?;
+                let mut pes = path_searcher.discover_paths(path_buffers, glob_paths.as_slice())?;
                 if pes.is_empty() {
-                    let (pd, _) = path_buffers.add_abs(glob_path.get_abs_path());
+                    let (pd, _) = path_buffers.add_abs(abs_path.as_path());
                     vs.push(InputResolvedType::UnResolvedFile(pd));
                 } else {
                     vs.extend(pes.into_iter().map(InputResolvedType::Deglob));
@@ -468,6 +491,7 @@ impl DecodeInputPaths for Vec<PathExpr> {
         path_searcher: &impl PathSearcher,
         path_buffers: &mut impl PathBuffers,
         rule_ref: &TupLoc,
+        search_dirs: &Vec<PathDescriptor>,
     ) -> Result<Vec<InputResolvedType>, Err> {
         // gather locations where exclude patterns show up
         debug!("decoding inputs");
@@ -482,7 +506,7 @@ impl DecodeInputPaths for Vec<PathExpr> {
         let decoded: Result<Vec<_>, _> = self
             .iter()
             .inspect(|x| debug!("before decode {:?}", x))
-            .map(|x| x.decode(tup_cwd, path_searcher, path_buffers, rule_ref))
+            .map(|x| x.decode(tup_cwd, path_searcher, path_buffers, rule_ref, &search_dirs))
             .inspect(|x| debug!("after {:?}", x))
             .collect();
         let filter_out_excludes =
@@ -967,6 +991,7 @@ fn get_deglobbed_rule(
     let rule_ref = rule_ctx.get_rule_ref();
     let t = rule_ctx.get_target();
     let tup_cwd = rule_ctx.get_tup_cwd();
+    let search_dirs = rule_ctx.get_search_dirs();
     let secondary_deglobbed_inps = rule_ctx.get_secondary_inp();
     debug!("deglobbing tup at dir:{:?}, rule:{:?}", tup_cwd, r.cat());
 
@@ -1026,6 +1051,7 @@ fn get_deglobbed_rule(
         group: group_desc,
         rule_ref: rule_ref.clone(),
         env: env.clone(),
+        search_dirs: search_dirs.to_vec(),
     })
 }
 
@@ -1058,6 +1084,8 @@ pub struct ResolvedLink {
     rule_ref: TupLoc,
     /// Env(environment) needed by this rule
     env: EnvDescriptor,
+    /// Vpaths
+    search_dirs: Vec<PathDescriptor>,
 }
 
 impl ResolvedLink {
@@ -1074,6 +1102,7 @@ impl ResolvedLink {
             bin: None,
             rule_ref: Default::default(),
             env: Default::default(),
+            search_dirs: vec![],
         }
     }
     /// get a readable string for a Statement, replacing descriptors with paths
@@ -1239,14 +1268,30 @@ impl ResolvedLink {
         path_buffers: &mut impl PathBuffers,
         p: &PathDescriptor,
         rule_ref: &TupLoc,
+        search_dirs: &[PathDescriptor],
     ) -> Result<Vec<MatchingPath>, Error> {
-        let glob_path = GlobPath::from_path_desc(path_buffers, *p)?;
+        let tup_cwd = path_buffers
+            .get_tup_path(&rule_ref.tup_path_desc)
+            .to_path_buf();
+        let rel_path = path_buffers.get_rel_path(p, tup_cwd.as_path());
+        let glob_path = GlobPath::new(tup_cwd.as_path(), rel_path.as_path(), path_buffers)?;
         debug!("need to resolve file:{:?}", glob_path.get_abs_path());
-        let pes: Vec<MatchingPath> = path_searcher.discover_paths(path_buffers, &glob_path)?;
+        let mut glob_paths = vec![glob_path];
+        for dir in search_dirs {
+            let cwd = path_buffers.get_path(dir).clone();
+            let rel_path = path_buffers.get_rel_path(p, cwd.as_path());
+            glob_paths.push(GlobPath::new(
+                cwd.as_path(),
+                rel_path.as_path(),
+                path_buffers,
+            )?);
+        }
+        let pes: Vec<MatchingPath> =
+            path_searcher.discover_paths(path_buffers, glob_paths.as_slice())?;
         if pes.is_empty() {
             debug!("Could not resolve :{:?}", path_buffers.get_path(p));
             return Err(Error::UnResolvedFile(
-                glob_path.get_abs_path().to_string_lossy().to_string(),
+                rel_path.as_path().to_string_lossy().to_string(),
                 rule_ref.clone(),
             ));
         }
@@ -1420,8 +1465,13 @@ impl ResolvePaths for ResolvedLink {
         for i in self.primary_sources.iter() {
             match i {
                 InputResolvedType::UnResolvedFile(p) => {
-                    let pes =
-                        Self::reresolve(path_searcher, path_buffers, &p, rlink.get_rule_ref())?;
+                    let pes = Self::reresolve(
+                        path_searcher,
+                        path_buffers,
+                        &p,
+                        rlink.get_rule_ref(),
+                        self.search_dirs.as_slice(),
+                    )?;
                     rlink
                         .primary_sources
                         .extend(pes.into_iter().map(InputResolvedType::Deglob));
@@ -1447,8 +1497,13 @@ impl ResolvePaths for ResolvedLink {
         for i in self.secondary_sources.iter() {
             match i {
                 InputResolvedType::UnResolvedFile(p) => {
-                    let pes =
-                        Self::reresolve(path_searcher, path_buffers, &p, rlink.get_rule_ref())?;
+                    let pes = Self::reresolve(
+                        path_searcher,
+                        path_buffers,
+                        &p,
+                        rlink.get_rule_ref(),
+                        self.search_dirs.as_slice(),
+                    )?;
                     rlink
                         .secondary_sources
                         .extend(pes.into_iter().map(InputResolvedType::Deglob));
@@ -1499,6 +1554,7 @@ struct RuleContext<'a, 'b, 'c, 'd> {
     rule_ref: &'b TupLoc,
     target: &'a Target,
     secondary_inp: &'c [InputResolvedType],
+    search_dirs: &'a [PathDescriptor],
 }
 
 impl<'a, 'b, 'c, 'd> RuleContext<'a, 'b, 'c, 'd> {
@@ -1516,6 +1572,9 @@ impl<'a, 'b, 'c, 'd> RuleContext<'a, 'b, 'c, 'd> {
     }
     fn get_tup_cwd(&self) -> &Path {
         self.tup_cwd
+    }
+    fn get_search_dirs(&self) -> &[PathDescriptor] {
+        self.search_dirs
     }
 }
 
@@ -1547,23 +1606,25 @@ impl LocatedStatement {
                         pos: _pos,
                     },
                     env,
+                    search_dirs,
                 ),
             loc,
         } = self
         {
             let rule_ref = &TupLoc::new(tup_desc, loc);
-            let inpdec = s
-                .primary
-                .decode(tup_cwd, path_searcher, path_buffers, rule_ref)?;
+            let inpdec =
+                s.primary
+                    .decode(tup_cwd, path_searcher, path_buffers, rule_ref, &search_dirs)?;
             let secondinpdec =
                 s.secondary
-                    .decode(tup_cwd, path_searcher, path_buffers, rule_ref)?;
+                    .decode(tup_cwd, path_searcher, path_buffers, rule_ref, &search_dirs)?;
             let resolver = RuleContext {
                 tup_cwd,
                 rule_formula,
                 rule_ref,
                 target: t,
                 secondary_inp: secondinpdec.as_slice(),
+                search_dirs: search_dirs.as_slice(),
             };
             let for_each = s.for_each;
             if for_each {
@@ -1592,7 +1653,7 @@ impl LocatedStatement {
 
         let mut tasks = Vec::new();
         if let LocatedStatement {
-            statement: Statement::Task(name, deps, recipe),
+            statement: Statement::Task(name, deps, recipe, search_dirs),
             loc,
         } = self
         {
@@ -1605,7 +1666,8 @@ impl LocatedStatement {
                 ))?;
             let mut resolved_deps = Vec::new();
             for dep in deps.iter() {
-                let dep = dep.decode(tup_cwd, path_searcher, path_buffers, tup_loc)?;
+                let dep =
+                    dep.decode(tup_cwd, path_searcher, path_buffers, tup_loc, &search_dirs)?;
                 resolved_deps.extend(dep);
             }
             let resolved_task = ResolvedTask::new(resolved_deps, task_desc, tup_loc.clone());

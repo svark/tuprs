@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 
 use crate::paths::MatchingPath;
-use crate::transform;
+use crate::{transform, PathDescriptor};
 
 /// PathExpr are tokens that hold some meaning in tupfiles
 #[derive(PartialEq, Debug, Clone, Hash, Eq)]
@@ -338,7 +338,7 @@ pub(crate) enum Statement {
     },
     IncludeRules,
     Include(Vec<PathExpr>),
-    Rule(Link, EnvDescriptor),
+    Rule(Link, EnvDescriptor, Vec<PathDescriptor>),
     Err(Vec<PathExpr>),
     MacroAssignment(String, Link), /* !macro = [inputs] | [order-only inputs] |> command |> [outputs] */
     Export(String),
@@ -350,7 +350,13 @@ pub(crate) enum Statement {
     /// define name { body }
     /// body is a list of statements
     Define(Ident, String),
-    Task(Ident, Vec<PathExpr>, Vec<Vec<PathExpr>>),
+    Task(
+        Ident,
+        Vec<PathExpr>,
+        Vec<Vec<PathExpr>>,
+        Vec<PathDescriptor>,
+    ),
+    SearchPaths(Vec<PathExpr>),
 }
 
 // we could have used `Into' or 'ToString' trait
@@ -427,7 +433,7 @@ impl CleanupPaths for Link {
 impl CleanupPaths for Statement {
     fn cleanup(&mut self) {
         match self {
-            Statement::Rule(l, _) => {
+            Statement::Rule(l, _, _) => {
                 l.cleanup();
             }
             Statement::AssignExpr {
@@ -461,6 +467,9 @@ impl CleanupPaths for Statement {
                 v.cleanup();
             }
             Statement::Run(v) => {
+                v.cleanup();
+            }
+            Statement::SearchPaths(v) => {
                 v.cleanup();
             }
             _ => (),
@@ -582,7 +591,7 @@ impl Cat for &Statement {
                     rule_formula: r,
                     pos,
                 },
-                _,
+                ..,
             ) => {
                 format!("{} {}: {}", r.description.cat(), r.formula.cat(), pos)
             }

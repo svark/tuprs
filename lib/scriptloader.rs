@@ -364,7 +364,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         };
         let env = self.parse_state.cur_env_desc.clone();
         let statement = LocatedStatement {
-            statement: Rule(l, env),
+            statement: Rule(l, env, vec![]),
             loc: Loc::new(lineno, 0, 0),
         };
         let (arts, outs) = statement
@@ -410,7 +410,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         let env = self.parse_state.cur_env_desc.clone();
         //self.links.push((l,env));
         let statement = LocatedStatement {
-            statement: Rule(l, env),
+            statement: Rule(l, env, vec![]),
             loc: Loc::new(lineno, 0, 0),
         };
         let (arts, outs) = statement
@@ -873,7 +873,10 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                 )
                 .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
                 path_searcher
-                    .discover_paths(scriptctx.bo_as_mut().deref_mut(), glob_path)
+                    .discover_paths(
+                        scriptctx.bo_as_mut().deref_mut(),
+                        std::slice::from_ref(glob_path),
+                    )
                     .expect("Glob expansion failed")
             };
             let glob_out = luactx.create_table()?;
