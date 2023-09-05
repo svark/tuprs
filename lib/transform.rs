@@ -17,7 +17,7 @@ use pathdiff::diff_paths;
 
 use crate::buffers::{
     BufferObjects, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder, PathBuffers,
-    PathDescriptor, RuleDescriptor, TupPathDescriptor,
+    PathDescriptor, RuleDescriptor, TaskDescriptor, TupPathDescriptor,
 };
 use crate::decode::{
     PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance,
@@ -1493,6 +1493,8 @@ impl LocatedStatement {
                     .iter()
                     .map(|x| x.subst_pe(&mut parse_state.clone(), path_searcher))
                     .collect();
+                let env_desc = parse_state.cur_env_desc.clone();
+
                 let ti = TaskInstance::new(
                     tup_dir,
                     name.as_str(),
@@ -1500,6 +1502,7 @@ impl LocatedStatement {
                     recipe.clone(),
                     tup_loc,
                     vec![],
+                    env_desc,
                 );
                 let mut bo = parse_state.path_buffers.write();
                 bo.add_task_path(ti);
@@ -1683,7 +1686,7 @@ impl Artifacts {
         while let Some(x) = link_iter.next() {
             end_index += 1;
             if let Some(nx) = link_iter.peek() {
-                if nx.get_rule_ref().get_tupfile_desc() != x.get_rule_ref().get_tupfile_desc() {
+                if nx.get_tup_loc().get_tupfile_desc() != x.get_tup_loc().get_tupfile_desc() {
                     out.push(&self.resolved_links[start_index..end_index]);
                     start_index = end_index;
                 }
@@ -1691,6 +1694,25 @@ impl Artifacts {
         }
         if start_index != end_index {
             out.push(&self.resolved_links[start_index..end_index]);
+        }
+        out
+    }
+    pub fn tasks_by_tup(&self) -> Vec<&'_ [ResolvedTask]> {
+        let mut task_iter = self.resolved_tasks.as_slice().iter().peekable();
+        let mut out = Vec::new();
+        let mut start_index = 0;
+        let mut end_index = 0;
+        while let Some(x) = task_iter.next() {
+            end_index += 1;
+            if let Some(nx) = task_iter.peek() {
+                if nx.get_tupfile_desc() != x.get_tupfile_desc() {
+                    out.push(&self.resolved_tasks[start_index..end_index]);
+                    start_index = end_index;
+                }
+            }
+        }
+        if start_index != end_index {
+            out.push(&self.resolved_tasks[start_index..end_index]);
         }
         out
     }
@@ -1747,6 +1769,11 @@ impl ReadWriteBufferObjects {
     pub fn get_rule(&self, rd: &RuleDescriptor) -> MappedRwLockReadGuard<'_, RuleFormulaInstance> {
         let r = self.get();
         RwLockReadGuard::map(r, |x| x.get_rule(rd))
+    }
+    /// returns task from its descriptor
+    pub fn get_task(&self, rd: &TaskDescriptor) -> MappedRwLockReadGuard<'_, TaskInstance> {
+        let r = self.get();
+        RwLockReadGuard::map(r, |x| x.try_get_task(rd).unwrap())
     }
     /// Return resolved input type in the string form.
     pub fn get_input_path_str(&self, i: &InputResolvedType) -> String {

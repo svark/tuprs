@@ -664,11 +664,19 @@ impl InputResolvedType {
         }
     }
 
+    /// return task that this input refers to
+    pub fn get_task_ref(&self) -> Option<TaskDescriptor> {
+        match self {
+            InputResolvedType::TaskRef(t) => Some(*t),
+            _ => None,
+        }
+    }
+
     /// Resolved name of the given Input,
     /// For Group(or UnResolvedGroup) entries, group name is returned
     /// For Bin entries, bin name is returned
     /// For others the file name is returned
-    pub(crate) fn get_resolved_name<'a, 'b>(&'a self, bo: &'b BufferObjects) -> String {
+    pub(crate) fn get_resolved_name(&self, bo: &BufferObjects) -> String {
         match self {
             InputResolvedType::Deglob(e) => bo.get_path_str(e.path_descriptor()),
             InputResolvedType::GroupEntry(g, _) => bo.get_group_name(g),
@@ -677,7 +685,7 @@ impl InputResolvedType {
             InputResolvedType::UnResolvedFile(p) => bo.get_path_str(p),
             InputResolvedType::TaskRef(t) => bo
                 .try_get_task(t)
-                .map(|x| x.get_name().to_string())
+                .map(|x| x.get_target().to_string())
                 .unwrap_or_default(),
         }
     }

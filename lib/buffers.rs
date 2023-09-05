@@ -333,7 +333,7 @@ impl RuleBufferObject {
 impl TaskBufferObject {
     pub(crate) fn add_task(&mut self, r: TaskInstance) -> (TaskDescriptor, bool) {
         let l = self.0.len();
-        debug!("adding task {} to buffer", r.get_name());
+        debug!("adding task {} to buffer", r.get_target());
         if let Some(prev_index) = self.0.get_by_left(&r) {
             (*prev_index, false)
         } else {
@@ -1056,7 +1056,15 @@ impl PathBuffers for BufferObjects {
     }
 
     fn try_get_task_desc(&self, tup_cwd: &Path, name: &str) -> Option<&TaskDescriptor> {
-        let task = TaskInstance::new(tup_cwd, name, vec![], vec![], TupLoc::default(), vec![]);
+        let task = TaskInstance::new(
+            tup_cwd,
+            name,
+            vec![],
+            vec![],
+            TupLoc::default(),
+            vec![],
+            EnvDescriptor::default(),
+        );
         self.task_bo.try_get_task_desc(&task)
     }
     /// Try get a bin path entry by its descriptor.

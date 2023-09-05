@@ -59,7 +59,7 @@ pub struct RuleFormulaInstance {
     rule_ref: TupLoc,
 }
 
-/// `TaskUsage` stores task name, its recipe  and its location in Tupfile
+/// `TaskUsage` stores task name, its dependents, recipe  and its location in Tupfile
 #[derive(Debug, Default, Clone)]
 pub struct TaskInstance {
     name: String,
@@ -67,6 +67,7 @@ pub struct TaskInstance {
     recipe: Vec<Vec<PathExpr>>,
     tup_loc: TupLoc,
     search_dirs: Vec<PathDescriptor>,
+    env: EnvDescriptor,
 }
 
 impl PartialOrd for TaskInstance {
@@ -130,6 +131,7 @@ impl TaskInstance {
         recipe: Vec<Vec<PathExpr>>,
         tup_loc: TupLoc,
         search_dirs: Vec<PathDescriptor>,
+        env: EnvDescriptor,
     ) -> TaskInstance {
         let name = format!("{}/{}", tup_cwd.as_ref().to_string_lossy(), name);
         TaskInstance {
@@ -138,21 +140,31 @@ impl TaskInstance {
             recipe,
             tup_loc,
             search_dirs,
+            env,
         }
     }
     /// Returns the name of the task in the format dir/&task:name
-    pub(crate) fn get_name(&self) -> &str {
+    pub fn get_target(&self) -> &str {
         self.name.as_str()
     }
 
+    /// dependents of the task
+    pub(crate) fn get_deps(&self) -> &Vec<PathExpr> {
+        &self.deps
+    }
+
     /// Returns the recipe of the task
-    pub(crate) fn get_recipe(&self) -> &Vec<Vec<PathExpr>> {
-        &self.recipe
+    pub fn get_recipe(&self) -> Vec<String> {
+        self.recipe.iter().map(|x| x.cat()).collect()
     }
 
     /// Returns the location of the task in the Tupfile
-    pub(crate) fn get_tup_loc(&self) -> &TupLoc {
+    pub fn get_tup_loc(&self) -> &TupLoc {
         &self.tup_loc
+    }
+    /// env required for the task
+    pub(crate) fn get_env_desc(&self) -> &EnvDescriptor {
+        &self.env
     }
 }
 
@@ -1239,7 +1251,7 @@ impl ResolvedLink {
     }
 
     /// returns `RuleRef' of this link that referes to the the  tupfile and the location of the rule
-    pub fn get_rule_ref(&self) -> &TupLoc {
+    pub fn get_tup_loc(&self) -> &TupLoc {
         &self.rule_ref
     }
 
@@ -1305,15 +1317,22 @@ pub struct ResolvedTask {
     deps: Vec<InputResolvedType>,
     task_descriptor: TaskDescriptor,
     loc: TupLoc,
+    env: EnvDescriptor,
 }
 
 impl ResolvedTask {
     /// Create a new ResolvedTask
-    pub fn new(deps: Vec<InputResolvedType>, task_descriptor: TaskDescriptor, loc: TupLoc) -> Self {
+    pub fn new(
+        deps: Vec<InputResolvedType>,
+        task_descriptor: TaskDescriptor,
+        loc: TupLoc,
+        env: EnvDescriptor,
+    ) -> Self {
         ResolvedTask {
             deps,
             task_descriptor,
             loc,
+            env,
         }
     }
 
@@ -1328,6 +1347,15 @@ impl ResolvedTask {
     /// returns the descriptor that identifies the task. Use bufferObjects to dereference the descriptor to get taskinstance
     pub fn get_task_descriptor(&self) -> &TaskDescriptor {
         &self.task_descriptor
+    }
+
+    /// returns environment associated with this task
+    pub fn get_env_desc(&self) -> EnvDescriptor {
+        self.env.clone()
+    }
+
+    pub fn get_tupfile_desc(&self) -> TupPathDescriptor {
+        self.loc.get_tupfile_desc().clone()
     }
 }
 
@@ -1431,14 +1459,14 @@ impl ResolvePaths for Vec<ResolvedLink> {
         let mut resolved_artifacts = Artifacts::new();
         for resolved_link in self.iter() {
             if resolved_link.has_unresolved_inputs() {
-                let cur_tup_desc = resolved_link.get_rule_ref().get_tupfile_desc();
+                let cur_tup_desc = resolved_link.get_tup_loc().get_tupfile_desc();
                 let tup_cwd = path_buffers.get_tup_path(cur_tup_desc).to_path_buf();
 
                 let art = resolved_link.resolve_paths(
                     tup_cwd.as_path(),
                     path_searcher,
                     path_buffers,
-                    resolved_link.get_rule_ref().get_tupfile_desc(),
+                    resolved_link.get_tup_loc().get_tupfile_desc(),
                 )?;
                 resolved_artifacts.extend(art);
             } else {
@@ -1469,7 +1497,7 @@ impl ResolvePaths for ResolvedLink {
                         path_searcher,
                         path_buffers,
                         &p,
-                        rlink.get_rule_ref(),
+                        rlink.get_tup_loc(),
                         self.search_dirs.as_slice(),
                     )?;
                     rlink
@@ -1486,7 +1514,7 @@ impl ResolvePaths for ResolvedLink {
                     } else {
                         return Err(Error::StaleGroupRef(
                             path_buffers.get_input_path_name(i),
-                            rlink.get_rule_ref().clone(),
+                            rlink.get_tup_loc().clone(),
                         ));
                     }
                 }
@@ -1501,7 +1529,7 @@ impl ResolvePaths for ResolvedLink {
                         path_searcher,
                         path_buffers,
                         &p,
-                        rlink.get_rule_ref(),
+                        rlink.get_tup_loc(),
                         self.search_dirs.as_slice(),
                     )?;
                     rlink
@@ -1518,7 +1546,7 @@ impl ResolvePaths for ResolvedLink {
                     } else {
                         return Err(Error::StaleGroupRef(
                             path_buffers.get_input_path_name(i),
-                            rlink.get_rule_ref().clone(),
+                            rlink.get_tup_loc().clone(),
                         ));
                     }
                 }
@@ -1664,14 +1692,18 @@ impl LocatedStatement {
                     name.as_str().to_string(),
                     tup_loc.clone(),
                 ))?;
-            let mut resolved_deps = Vec::new();
-            for dep in deps.iter() {
-                let dep =
-                    dep.decode(tup_cwd, path_searcher, path_buffers, tup_loc, &search_dirs)?;
-                resolved_deps.extend(dep);
+            if let Some(task_inst) = path_buffers.try_get_task(&task_desc).cloned() {
+                let env = task_inst.get_env_desc();
+                let mut resolved_deps = Vec::new();
+                for dep in deps.iter() {
+                    let dep =
+                        dep.decode(tup_cwd, path_searcher, path_buffers, tup_loc, &search_dirs)?;
+                    resolved_deps.extend(dep);
+                }
+                let resolved_task =
+                    ResolvedTask::new(resolved_deps, task_desc, tup_loc.clone(), env.clone());
+                tasks.push(resolved_task);
             }
-            let resolved_task = ResolvedTask::new(resolved_deps, task_desc, tup_loc.clone());
-            tasks.push(resolved_task);
         }
 
         Ok((Artifacts::from(deglobbed, tasks), output))
