@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::Formatter;
 use std::hash::Hash;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use log::{debug, log_enabled};
@@ -460,7 +459,6 @@ impl DecodeInputPaths for PathExpr {
                     if let Some(paths) = path_searcher.get_outs().get().get_group(grp_desc) {
                         vs.extend(
                             paths
-                                .deref()
                                 .iter()
                                 .map(|x| InputResolvedType::GroupEntry(*grp_desc, *x)),
                         )
@@ -474,7 +472,7 @@ impl DecodeInputPaths for PathExpr {
                 let (ref bin_desc, _) = path_buffers.add_bin_path_expr(tup_cwd, b.as_ref());
                 debug!("resolving bin: {:?}/{:?}", tup_cwd, b.as_str());
                 if let Some(paths) = path_searcher.get_outs().get().get_bin(bin_desc) {
-                    for p in paths.deref() {
+                    for p in paths {
                         vs.push(InputResolvedType::BinEntry(*bin_desc, *p))
                     }
                 } else {
@@ -1525,7 +1523,7 @@ impl ResolvePaths for ResolvedLink {
                 }
                 InputResolvedType::UnResolvedGroupEntry(g) => {
                     if let Some(hs) = path_searcher.get_outs().get().get_group(&g) {
-                        for pd in hs.deref() {
+                        for pd in hs {
                             rlink
                                 .primary_sources
                                 .push(InputResolvedType::GroupEntry(*g, *pd));
@@ -1557,7 +1555,7 @@ impl ResolvePaths for ResolvedLink {
                 }
                 InputResolvedType::UnResolvedGroupEntry(ref g) => {
                     if let Some(hs) = path_searcher.get_outs().get().get_group(g) {
-                        for pd in hs.deref() {
+                        for pd in hs {
                             rlink
                                 .secondary_sources
                                 .push(InputResolvedType::GroupEntry(*g, *pd))

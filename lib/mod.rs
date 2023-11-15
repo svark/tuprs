@@ -54,7 +54,6 @@ fn test_op() {
     use statements::PathExpr::{Quoted, Sp1};
     use std::fs::File;
     use std::io::Write;
-    use std::ops::DerefMut;
     {
         let mut file = File::create("tupdata0.txt").expect("cannot open file");
         let stmts = b"DEBUG =1\n\
