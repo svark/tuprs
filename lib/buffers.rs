@@ -507,11 +507,13 @@ impl GeneratedFiles {
                 path_buffers.try_get_path(pd).map(|np| {
                     let p: &Path = np.into();
                     if glob_path.is_match(p) && hs.insert(*pd) {
+                        let capture_grps = glob_path.group(p);
+                        debug!("found match:{:?} with groups:{:?}", p, capture_grps);
                         vs.push(MatchingPath::with_captures(
                             *pd,
                             np.clone(),
                             glob_path.get_glob_desc(),
-                            glob_path.group(p),
+                            capture_grps,
                         ))
                     }
                 });
@@ -528,11 +530,13 @@ impl GeneratedFiles {
                     if let Some(np) = path_buffers.try_get_path(pd) {
                         let p: &Path = np.into();
                         if glob_path.is_match(p) && hs.insert(*pd) {
+                            let capture_grps = glob_path.group(p);
+                            debug!("found match:{:?} with groups:{:?}", p, capture_grps);
                             vs.push(MatchingPath::with_captures(
                                 *pd,
                                 np.clone(),
                                 glob_path.get_glob_desc(),
-                                glob_path.group(p),
+                                capture_grps,
                             ))
                         }
                     }

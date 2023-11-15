@@ -83,7 +83,7 @@ pub(crate) fn normalize_path(p: &Path) -> Candidate {
 
 impl ToString for NormalPath {
     /// Inner path in form that can be compared or stored as a bytes
-    fn to_string(&self) -> String {
+    fn to_string(&self) -> std::string::String {
         // following converts backslashes to forward slashes
         //normalize_path(self.as_path()).to_string()
         self.as_path().to_string_lossy().to_string()
@@ -404,7 +404,7 @@ impl OutputsAsPaths {
     pub fn get_paths(&self) -> Vec<String> {
         self.outputs
             .iter()
-            .map(|x| x.as_path().to_string_lossy().to_string())
+            .map(|x| normalize_path(x.as_path()).to_string())
             .collect()
     }
     ///  returns the stem portion of each output file. See [Path::file_stem]
@@ -470,7 +470,8 @@ impl InputsAsPaths {
             .iter()
             .map(|x| x.as_path())
             .chain(self.groups_by_name.values().map(Path::new))
-            .map(|x| x.to_string_lossy().to_string())
+            .map(normalize_path)
+            .map(std::string::String::from)
             .collect()
     }
 

@@ -362,11 +362,13 @@ impl PathSearcher for DirSearcher {
                 paths.sort_by(|a, b| a.cmp(b));
                 for path in paths.iter() {
                     let (path_desc, _) = path_buffers.add_abs(path);
+                    let captured_globs = globs.group(path);
+                    debug!("found path {:?} with captures {:?}", path, captured_globs);
                     pes.push(MatchingPath::with_captures(
                         path_desc,
                         path_buffers.get_path(&path_desc).clone(),
                         glob_path.get_glob_desc(),
-                        globs.group(path),
+                        captured_globs,
                     ));
                     unique_path_descs.insert(path_desc);
                 }
@@ -655,7 +657,9 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if input_raw_paths.is_empty() {
                     return Err(Err::StalePerc('f', rule_ref.clone(), d.to_string()));
                 }
-                d.replace("%f", input_raw_paths.join(" ").as_str())
+                let x1 = input_raw_paths.join(" ");
+                debug!("replacing %f with {:?}", x1.as_str());
+                d.replace("%f", x1.as_str())
             } else {
                 d.to_string()
             };
@@ -731,6 +735,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                     .and_then(|x| if x.len() > 1 { x.first() } else { None })
                     .cloned();
                 let g = g.ok_or_else(|| Err::StalePerc('h', rule_ref.clone(), d.clone()))?;
+                debug!("replacing %h with {:?}", g);
                 d.replace("%h", g.as_str())
             } else {
                 d
@@ -738,6 +743,7 @@ impl DecodeInputPlaceHolders for PathExpr {
             let d = if d.contains("%g") {
                 let g = inp.get_glob().and_then(|x| x.last());
                 let g = g.ok_or_else(|| Err::StalePerc('g', rule_ref.clone(), d.clone()))?;
+                debug!("replacing %g with {:?}", g.as_str());
                 d.replace("%g", g.as_str())
             } else {
                 d
@@ -976,6 +982,10 @@ impl DecodeInputPlaceHolders for RuleFormula {
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
     ) -> Result<Self, Err> {
+        debug!(
+            "decoding format strings to replace with inputs in Ruleformula:{:?}",
+            self
+        );
         Ok(RuleFormula::new_from_parts(
             self.description
                 .decode_input_place_holders(inputs, secondary_inputs)?,

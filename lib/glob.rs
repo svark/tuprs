@@ -4,6 +4,7 @@
 use std::borrow::Cow;
 use std::error::Error as StdError;
 use std::fmt;
+use std::fmt::Display;
 use std::hash;
 use std::iter;
 use std::ops::{Deref, DerefMut};
@@ -249,6 +250,18 @@ impl<'a> Candidate<'a> {
             Cow::Owned(ref mut o) => Cow::Owned(o[prefix_len..].to_vec()),
         };
         self.path = c;
+    }
+}
+
+impl Display for Candidate<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_cow_str().as_ref())
+    }
+}
+
+impl<'a> From<Candidate<'a>> for String {
+    fn from(c: Candidate<'a>) -> String {
+        c.to_string()
     }
 }
 impl GlobMatcher {

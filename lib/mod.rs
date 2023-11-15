@@ -395,7 +395,7 @@ fn test_parse() {
     )];
 
     assert_eq!(stmts_[0], prog[0], "\r\nfound first but expected second");
-    let r = parser::parse_rule(Span::new(b": **/ib*.txt |> cp %f %o |> out%h/o%g.txt\n"))
+    let _ = parser::parse_rule(Span::new(b": **/ib*.txt |> cp %f %o |> out%h/o%g.txt\n"))
         .unwrap()
         .1
         .statement;
