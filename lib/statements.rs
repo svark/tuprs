@@ -538,7 +538,7 @@ impl Cat for &PathExpr {
             PathExpr::Sp1 => " ".to_string(),
             PathExpr::Quoted(v) => format!("\"{}\"", v.cat()),
             PathExpr::Group(p, g) => format!("{}<{}>", p.cat(), g.cat()),
-            PathExpr::DeGlob(mp) => format!("{:?}", transform::get_path_str(mp.get_path())),
+            PathExpr::DeGlob(mp) => format!("{:?}", transform::get_path_with_fsep(mp.get_path())),
             PathExpr::TaskRef(name) => format!("&task:/{}", name.to_string()),
             _ => String::new(),
         }

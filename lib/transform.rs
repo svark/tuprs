@@ -148,7 +148,7 @@ impl ParseState {
         statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
     ) -> Self {
         let mut def_vars = HashMap::new();
-        let dir = get_parent_str(cur_file).to_string();
+        let dir = get_parent_with_fsep(cur_file).to_string();
         let pbuffers = Arc::new(RwLock::new(BufferObjects::new(dir.as_str())));
         def_vars.insert("TUP_CWD".to_owned(), vec![dir]);
 
@@ -209,7 +209,7 @@ impl ParseState {
         ))));
         let cur_file_desc = pbuffers.write().add_tup(cur_file.as_ref()).0;
         let cur_file = pbuffers.read().get_tup_path(&cur_file_desc).to_path_buf();
-        let dir = get_parent_str(cur_file.as_path()).to_string().to_string();
+        let dir = get_parent_with_fsep(cur_file.as_path()).to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir]);
 
         ParseState {
@@ -251,7 +251,7 @@ impl ParseState {
         if parent.eq(Path::new("")) {
             self.replace_tup_cwd(".");
         } else {
-            let p = get_path_str(parent);
+            let p = get_path_with_fsep(parent);
             self.replace_tup_cwd(p.to_cow_str().as_ref());
         }
         Ok(())
@@ -977,7 +977,7 @@ impl DollarExprs {
                 let (_, mut lines) = crate::parser::parse_lines(Span::new(body.as_bytes()))
                     .unwrap_or_else(|x| panic!("failed to parse function body: {:?}", x));
                 debug!("call lines: {:?}", lines);
-                let substed_lines : Vec<_>= lines
+                let substed_lines: Vec<_> = lines
                     .drain(..)
                     .map(|(l, _)| l.subst_pe(&mut m, path_searcher))
                     .flatten()
@@ -1188,11 +1188,11 @@ pub(crate) fn get_parent(cur_file: &Path) -> Cow<Path> {
 }
 
 /// parent folder path as a string slice
-pub fn get_parent_str(cur_file: &Path) -> Candidate {
+pub fn get_parent_with_fsep(cur_file: &Path) -> Candidate {
     normalize_path(cur_file.parent().unwrap())
 }
 
-pub(crate) fn get_path_str(cur_file: &Path) -> Candidate {
+pub(crate) fn get_path_with_fsep(cur_file: &Path) -> Candidate {
     normalize_path(cur_file)
 }
 
