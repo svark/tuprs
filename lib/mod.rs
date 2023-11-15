@@ -19,8 +19,6 @@ extern crate regex;
 extern crate thiserror;
 extern crate walkdir;
 
-use std::ops::DerefMut;
-
 pub use buffers::BinDescriptor;
 pub use buffers::GeneratedFiles;
 pub use buffers::GroupPathDescriptor;
@@ -56,6 +54,7 @@ fn test_op() {
     use statements::PathExpr::{Quoted, Sp1};
     use std::fs::File;
     use std::io::Write;
+    use std::ops::DerefMut;
     {
         let mut file = File::create("tupdata0.txt").expect("cannot open file");
         let stmts = b"DEBUG =1\n\
@@ -519,6 +518,7 @@ fn test_parse() {
     //use crate::transform::Subst;
     stmts.subst(&mut m, &path_searcher).expect("subst failure");
     let mut write_guard = m.path_buffers.write();
+    use std::ops::DerefMut;
     stmts
         .resolve_paths(
             Path::new("./Tupfile"),

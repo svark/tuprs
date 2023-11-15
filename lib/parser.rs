@@ -19,7 +19,7 @@ use nom::{
 use nom_locate::{position, LocatedSpan};
 
 use crate::statements::*;
-use crate::transform;
+use crate::{transform};
 
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
@@ -178,6 +178,7 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
             alt((
                 complete(parse_pathexpr_call),
                 complete(parse_pathexpr_dir),
+                complete(parse_pathexpr_eval),
                 complete(parse_pathexpr_fallback),
             )),
         )(i),
@@ -444,14 +445,19 @@ fn parse_pathexpr_word(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_call(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(call")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (var, _)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
+    let (s, (var, mut end)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
     let mut params = Vec::new();
-    while let (s, Some(_)) = opt(tag(","))(s)? {
-        let (s, (p, _)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
-        let (_, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed call var: {:?}", var);
+    let mut rest = s;
+    while end == ',' {
+        let (s, _) = opt(parse_ws)(rest)?;
+        let (s, (p, e)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
+        log::debug!("parsed call param: {:?}", p);
         params.push(p);
+        end = e;
+        rest = s;
     }
-    Ok((s, PathExpr::from(DollarExprs::Call(var, params))))
+    Ok((rest, PathExpr::from(DollarExprs::Call(var, params))))
 }
 
 /// parse wild card $(wildcard pattern...)
@@ -472,6 +478,15 @@ fn parse_pathexpr_firstword(i: Span) -> IResult<Span, PathExpr> {
     let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
     Ok((s, PathExpr::from(DollarExprs::FirstWord(pattern))))
+}
+
+/// parse eval expression $(eval body)
+fn parse_pathexpr_eval(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(eval")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (exps, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::DollarExprs(DollarExprs::Eval(exps))))
 }
 
 /// parse $(dir names...)
@@ -633,10 +648,12 @@ fn parse_pelist_till_delim_with_ws<'a, 'b>(
     input: Span<'a>,
     end_tok: &'b str,
     break_toks: &'static str,
-) -> IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
+) -> IResult<Span<'a>, (Vec<PathExpr>, char)> {
     many_till(
         |i| parse_pathexpr_ws(i, end_tok, break_toks),
-        map(one_of(end_tok), |_| (Span::new(b"".as_ref()))),
+        map(one_of(end_tok), |i| {
+            i
+        })
     )(input)
 }
 // repeatedly invoke the rvalue parser until eof or delim is encountered
@@ -653,10 +670,10 @@ fn parse_pelist_till_delim_no_ws<'a, 'b>(
 }
 
 //  wrapper over the previous parser that handles empty inputs and stops at newline;
-fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
+fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExpr>, char)> {
     alt((
         complete(map(ws0_line_ending, |_| {
-            (Vec::new(), Span::new(b"".as_ref()))
+            (Vec::new(), '\0')
         })),
         complete(|i| parse_pelist_till_delim_with_ws(i, "\r\n", &BRKTOKSWS)),
     ))(input)
@@ -667,7 +684,7 @@ fn parse_pathexpr_list_until_ws_plus(input: Span) -> IResult<Span, (Vec<PathExpr
     many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n", &BRKTOKS), ws1)(input)
 }
 
-pub(crate) fn parse_lines(input: Span) -> IResult<Span, Vec<(Vec<PathExpr>, Span)>> {
+pub(crate) fn parse_lines(input: Span) -> IResult<Span, Vec<(Vec<PathExpr>, char)>> {
     many0(complete(parse_pelist_till_line_end_with_ws))(input)
 }
 
@@ -698,12 +715,24 @@ fn parse_include(i: Span) -> IResult<Span, LocatedStatement> {
     Ok((s, (Statement::Include(r.0), i).into()))
 }
 // parse error expression
-fn parse_error(i: Span) -> IResult<Span, LocatedStatement> {
+fn parse_message(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
-    let (s, _) = tag("error")(s)?;
+    let string_to_enum = |i, s: &[u8]| -> IResult<Span, Level> { match &s[..6] {
+        b"$(erro" => Ok((i, Level::Error)),
+        b"$(warn" => Ok((i, Level::Warning)),
+        b"$(info" => Ok((i, Level::Info)),
+        _ => Err(Err::Error(error_position!(i, ErrorKind::Escaped))),
+    }};
+    let curs = s.clone();
+    let (s, op) = alt((
+        complete(tag("$(error")),
+        complete(tag("$(warn")),
+        complete(tag("$(info")),
+    ))(s)?;
+    let (_, level) = string_to_enum(curs, op.as_bytes()).unwrap();
     let (s, _) = sp1(s)?;
-    let (s, r) = context("error expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
-    Ok((s, (Statement::Err(r.0), i).into()))
+    let (s, r) = context("message expression", cut(|i| parse_pelist_till_delim_with_ws(i, ")", &BRKTOKSWS)))(s)?;
+    Ok((s, (Statement::Message(r.0, level), i).into()))
 }
 
 // parse export expression
@@ -852,7 +881,9 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     let (s, _) = tag("define")(s)?;
     let (s, _) = sp1(s)?;
+    log::debug!("parsing define expression");
     let (s, ident) = context("define expression", cut(parse_lvalue))(s)?;
+    log::debug!("with name: {:?}", ident);
     let (s, _) = multispace0(s)?;
 
     // take until enddef occurs
@@ -863,6 +894,14 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(s)?;
     let (s, _) = tag("enddef")(s)?;
     Ok((s, (Statement::Define(ident, body), i).into()))
+}
+// eval block statements are parsed in the initial phase as regular pathexprs.
+// These will be parsed again in the second phase
+// during substitution as regular statements that can be evaluated
+fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
+    let (s, _) = multispace0(i)?;
+    let (s, (body, _)) = complete(parse_pelist_till_line_end_with_ws)(s)?;
+    Ok((s, (Statement::EvalBlock(body), i).into()))
 }
 
 // parse an assignment expression
@@ -1131,7 +1170,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     Ok((
         s,
         (
-            Statement::MacroAssignment(
+            Statement::MacroRule(
                 macroname_str,
                 Link {
                     source: from_input(
@@ -1164,7 +1203,7 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_if_else_endif),
         complete(parse_ifdef_endif),
         complete(parse_macroassignment),
-        complete(parse_error),
+        complete(parse_message),
         complete(parse_export),
         complete(parse_run),
         complete(parse_preload),
@@ -1172,6 +1211,7 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_define_expr),
         complete(parse_task_statement),
         complete(parse_searchpaths),
+        complete(parse_eval_block),
     ))(i)
 }
 

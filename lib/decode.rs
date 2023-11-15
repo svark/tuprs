@@ -66,6 +66,7 @@ pub struct TaskInstance {
     deps: Vec<PathExpr>,
     recipe: Vec<Vec<PathExpr>>,
     tup_loc: TupLoc,
+    #[allow(dead_code)]
     search_dirs: Vec<PathDescriptor>,
     env: EnvDescriptor,
 }
@@ -149,6 +150,7 @@ impl TaskInstance {
     }
 
     /// dependents of the task
+    #[allow(dead_code)]
     pub(crate) fn get_deps(&self) -> &Vec<PathExpr> {
         &self.deps
     }
@@ -325,7 +327,7 @@ impl PathSearcher for DirSearcher {
                 }
             } else {
                 let base_path = glob_path.get_base_abs_path();
-                if !base_path.is_dir() {
+                if !path_buffers.get_root_dir().join(base_path).is_dir() {
                     debug!("base path {:?} is not a directory", base_path);
                     continue;
                 }
@@ -356,8 +358,9 @@ impl PathSearcher for DirSearcher {
                         entry.ok().filter(|e| e.path().is_file()).map(relative_path)
                     })
                     .filter(|entry| globs.is_match(entry.as_path()));
-                for matching in filtered_paths {
-                    let path = matching.as_path();
+                let mut paths = filtered_paths.collect::<Vec<_>>();
+                paths.sort_by(|a, b| a.cmp(b));
+                for path in paths.iter() {
                     let (path_desc, _) = path_buffers.add_abs(path);
                     pes.push(MatchingPath::with_captures(
                         path_desc,
@@ -435,7 +438,7 @@ impl DecodeInputPaths for PathExpr {
                     glob_paths.push(glob_path);
                 }
 
-                let mut pes = path_searcher.discover_paths(path_buffers, glob_paths.as_slice())?;
+                let pes = path_searcher.discover_paths(path_buffers, glob_paths.as_slice())?;
                 if pes.is_empty() {
                     let (pd, _) = path_buffers.add_abs(abs_path.as_path());
                     vs.push(InputResolvedType::UnResolvedFile(pd));
@@ -1061,7 +1064,7 @@ fn get_deglobbed_rule(
         excluded_targets,
         bin: bin_desc,
         group: group_desc,
-        rule_ref: rule_ref.clone(),
+        tup_loc: rule_ref.clone(),
         env: env.clone(),
         search_dirs: search_dirs.to_vec(),
     })
@@ -1093,7 +1096,7 @@ pub struct ResolvedLink {
     /// same Tupfile that produced them
     bin: Option<BinDescriptor>,
     /// Tupfile and location where the rule was found
-    rule_ref: TupLoc,
+    tup_loc: TupLoc,
     /// Env(environment) needed by this rule
     env: EnvDescriptor,
     /// Vpaths
@@ -1112,7 +1115,7 @@ impl ResolvedLink {
             excluded_targets: vec![],
             group: None,
             bin: None,
-            rule_ref: Default::default(),
+            tup_loc: Default::default(),
             env: Default::default(),
             search_dirs: vec![],
         }
@@ -1252,7 +1255,7 @@ impl ResolvedLink {
 
     /// returns `RuleRef' of this link that referes to the the  tupfile and the location of the rule
     pub fn get_tup_loc(&self) -> &TupLoc {
-        &self.rule_ref
+        &self.tup_loc
     }
 
     /// returns ids of excluded patterns
@@ -1312,6 +1315,11 @@ impl ResolvedLink {
 }
 
 /// ResolvedTask represents a task with its inputs, outputs and command string fully or partially resolved.
+/// Task need not have any outputs or inputs. It may just be a command to be executed (such as echo).
+/// Tasks will be rerun only if the inputs have changed or if the command string has changed or if an output is missing.
+/// Outs are determined at runtime by executing the command string and monitoring its output.
+/// Unmentioned ins are determined at runtime by monitoring the command string for file accesses. These are used to rerun the task if any of these files change.
+/// The command string is expected to be executable or ready for persistence with all  symbols and variable references resolved.
 #[derive(Clone, Debug, Default)]
 pub struct ResolvedTask {
     deps: Vec<InputResolvedType>,
@@ -1341,7 +1349,7 @@ impl ResolvedTask {
         &self.deps
     }
     /// location where the task is defined
-    pub fn get_loc(&self) -> &TupLoc {
+    pub fn get_tup_loc(&self) -> &TupLoc {
         &self.loc
     }
     /// returns the descriptor that identifies the task. Use bufferObjects to dereference the descriptor to get taskinstance
@@ -1354,6 +1362,7 @@ impl ResolvedTask {
         self.env.clone()
     }
 
+    /// descriptor of the tupfile where this task is defined
     pub fn get_tupfile_desc(&self) -> TupPathDescriptor {
         self.loc.get_tupfile_desc().clone()
     }
@@ -1366,7 +1375,7 @@ impl GatherOutputs for ResolvedLink {
         output_handler: &mut impl OutputHandler,
         path_buffers: &mut impl PathBuffers,
     ) -> Result<(), Err> {
-        let rule_ref = &self.rule_ref;
+        let rule_ref = &self.tup_loc;
         struct PathsWithParent {
             pd: PathDescriptor,
             parent_pd: PathDescriptor,
@@ -1681,7 +1690,7 @@ impl LocatedStatement {
 
         let mut tasks = Vec::new();
         if let LocatedStatement {
-            statement: Statement::Task(name, deps, recipe, search_dirs),
+            statement: Statement::Task(name, deps, _, search_dirs),
             loc,
         } = self
         {
@@ -1744,6 +1753,7 @@ pub fn parse_dir(root: &Path) -> Result<(Artifacts, ReadWriteBufferObjects), Err
             tupfiles.push(entry.path().to_path_buf());
         }
     }
+    tupfiles.sort_by(|x, y| x.cmp(y));
     let mut artifacts_all = Artifacts::new();
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new())?;
     for tup_file_path in tupfiles.iter() {

@@ -361,7 +361,7 @@ impl ExpandRun for Statement {
                                         GlobPath::new(dir.as_path(), arg_path, path_buffers)?;
                                     glob_paths.push(glob_path);
                                 }
-                                let mut matches = path_searcher
+                                let matches = path_searcher
                                     .discover_paths(path_buffers, glob_paths.as_slice())
                                     .unwrap_or_else(|_| {
                                         panic!("error matching glob pattern {}", arg)
@@ -955,28 +955,35 @@ impl DollarExprs {
             }
             DollarExprs::Call(ref name, args) => {
                 let args: Vec<_> = args.iter().map(|x| x.subst_pe(m, path_searcher)).collect();
+
                 let name = name.subst_pe(m, path_searcher);
-                let name: String = name
+                let func_name: String = name
                     .cat()
                     .chars()
                     .take_while(|x| !x.is_whitespace())
                     .collect();
                 let body = m
                     .func_map
-                    .get(&name)
-                    .unwrap_or_else(|| panic!("failed to find function: {}", name));
+                    .get(&func_name)
+                    .unwrap_or_else(|| panic!("failed to find function: {}", func_name));
+                debug!("calling function: {}", func_name);
+                debug!("args: {:?}", args);
+                debug!("body: {}", body);
                 let mut m = m.clone();
-                m.expr_map.insert("0".to_string(), vec![name]);
+                m.expr_map.insert("0".to_string(), vec![func_name]);
                 for (i, arg) in args.iter().enumerate() {
                     m.expr_map.insert(format!("{}", i + 1), vec![arg.cat()]);
                 }
                 let (_, mut lines) = crate::parser::parse_lines(Span::new(body.as_bytes()))
                     .unwrap_or_else(|x| panic!("failed to parse function body: {:?}", x));
-                lines
+                debug!("call lines: {:?}", lines);
+                let substed_lines : Vec<_>= lines
                     .drain(..)
                     .map(|(l, _)| l.subst_pe(&mut m, path_searcher))
                     .flatten()
-                    .collect()
+                    .collect();
+                debug!("substed lines: {:?}", substed_lines);
+                substed_lines
             }
 
             DollarExprs::If(cond, then_part, else_part) => {
@@ -989,6 +996,13 @@ impl DollarExprs {
                     let then_part = then_part.subst_pe(m, path_searcher);
                     then_part
                 }
+            }
+            DollarExprs::Eval(pes) => {
+                debug!("eval before subst: {:?}", pes);
+                let subst_val = pes.subst_pe(m, path_searcher);
+                let val = subst_val.cat();
+                log::debug!("eval {}", val);
+                vec![PathExpr::from(val)]
             }
         }
     }
@@ -1436,17 +1450,19 @@ impl LocatedStatement {
             }
             // dont subst inside a macro assignment
             // just update the rule_map
-            Statement::MacroAssignment(name, link) => {
+            Statement::MacroRule(name, link) => {
                 let l = link.clone();
                 parse_state.rule_map.insert(name.clone(), l);
             }
-            Statement::Err(v) => {
+            Statement::Message(v, level) => {
                 let v = v.subst_pe(parse_state, path_searcher);
                 eprintln!("{}\n", &v.cat().as_str());
-                return Err(Error::UserError(
-                    v.cat().as_str().to_string(),
-                    TupLoc::new(&parse_state.cur_file_desc, loc),
-                ));
+                if level == &Level::Error {
+                    return Err(Error::UserError(
+                        v.cat().as_str().to_string(),
+                        TupLoc::new(&parse_state.cur_file_desc, loc),
+                    ));
+                }
             }
             Statement::Preload(v) => {
                 newstats.push(LocatedStatement::new(
@@ -1483,6 +1499,22 @@ impl LocatedStatement {
                 parse_state.func_map.insert(name.to_string(), val.clone());
                 //newstats.push(LocatedStatement::new(Statement::Define(name.clone(),val.clone()), loc.clone()))
             }
+            Statement::EvalBlock(body) => {
+                debug!("evaluating block: {:?}", body);
+                let mut m = parse_state.clone();
+                let mut newstats = Vec::new();
+                {
+                    let body = body.subst_pe(&mut m, path_searcher);
+                    let body = body.cat();
+                    debug!("evaluating block: {:?}", body.as_str());
+                    let lines = parse_statements_until_eof(Span::new(body.as_bytes()))
+                        .unwrap_or_else(|x| panic!("failed to parse eval block: {:?}", x));
+                    debug!("lines in eval block: {:?}", lines);
+                    let stmts = lines.subst(&mut m, path_searcher)?;
+                    debug!("statements in eval block: {:?}", stmts);
+                    newstats.push(stmts);
+                }
+            }
             Statement::Task(name, deps, recipe, _) => {
                 debug!("adding task:{} with deps:{:?}", name.as_str(), &deps);
                 let tup_loc = TupLoc::new(&parse_state.cur_file_desc, loc);
@@ -1508,6 +1540,7 @@ impl LocatedStatement {
                 bo.add_task_path(ti);
             }
             Statement::SearchPaths(paths) => {
+                debug!("adding search paths:{:?}", paths);
                 let paths = paths.subst_pe(&mut parse_state.clone(), path_searcher);
                 let dir = paths.cat();
                 let dirs = dir.split(":").collect::<Vec<_>>();
@@ -1697,6 +1730,7 @@ impl Artifacts {
         }
         out
     }
+    /// returns tasks grouped by tupfiles in which they were defined
     pub fn tasks_by_tup(&self) -> Vec<&'_ [ResolvedTask]> {
         let mut task_iter = self.resolved_tasks.as_slice().iter().peekable();
         let mut out = Vec::new();

@@ -13,4 +13,11 @@ run sh  ./comp.sh patches*.txt
 
 : foreach out[1].txt |> !cp |> new_%1g.txt
 
+define rulei
+    : out$(1).txt |> !cp |> new_rulei_out_$(1).txt
+enddef
+
+## run rulei for i = 1, 2, 7
+$(foreach i, 1 2 7, $(eval $(call rulei, $(i))))
+
 

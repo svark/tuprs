@@ -34,6 +34,22 @@ pub(crate) enum PathExpr {
     // Task Ref
     TaskRef(Ident),
 }
+/// level of the message to display when parsing tupfiles
+#[derive(PartialEq, Debug, Clone, Copy, Eq, Hash)]
+pub enum Level {
+    /// Info message
+    Info,
+    /// Warning message
+    Warning,
+    /// Error message
+    Error,
+}
+
+impl Default for Level {
+    fn default() -> Self {
+        Level::Info
+    }
+}
 /// Variable tracking location of Statement (usually a rule) in a Tupfile
 /// see also [TupLoc] that keeps track of file in which the location is referred
 #[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash)]
@@ -86,6 +102,8 @@ pub(crate) enum DollarExprs {
     Subst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
     /// $(patsubst pattern, replacement, EXPR) --- pattern is a wildcard pattern with %p, replacement is a string
     PatSubst(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
+    // $(eval exprs)
+    Eval(Vec<PathExpr>), // this is read again.
     /// $(filter pattern, EXPR)
     Filter(Vec<PathExpr>, Vec<PathExpr>),
     /// $(filter-out pattern, EXPR)
@@ -134,9 +152,9 @@ pub(crate) struct Ident {
     pub name: String,
 }
 
-impl ToString for Ident {
-    fn to_string(&self) -> String {
-        self.name.clone()
+impl Display for Ident {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name.clone())
     }
 }
 
@@ -339,8 +357,8 @@ pub(crate) enum Statement {
     IncludeRules,
     Include(Vec<PathExpr>),
     Rule(Link, EnvDescriptor, Vec<PathDescriptor>),
-    Err(Vec<PathExpr>),
-    MacroAssignment(String, Link), /* !macro = [inputs] | [order-only inputs] |> command |> [outputs] */
+    Message(Vec<PathExpr>, Level),
+    MacroRule(String, Link), /* !macro = [inputs] | [order-only inputs] |> command |> [outputs] */
     Export(String),
     Import(String, Option<String>),
     Preload(Vec<PathExpr>),
@@ -356,6 +374,7 @@ pub(crate) enum Statement {
         Vec<Vec<PathExpr>>,
         Vec<PathDescriptor>,
     ),
+    EvalBlock(Vec<PathExpr>),
     SearchPaths(Vec<PathExpr>),
 }
 
@@ -457,10 +476,10 @@ impl CleanupPaths for Statement {
             Statement::Include(r) => {
                 r.cleanup();
             }
-            Statement::Err(r) => {
+            Statement::Message(r, _) => {
                 r.cleanup();
             }
-            Statement::MacroAssignment(_, link) => {
+            Statement::MacroRule(_, link) => {
                 link.cleanup();
             }
             Statement::Preload(v) => {
