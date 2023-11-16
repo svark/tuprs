@@ -80,11 +80,11 @@ impl Loc {
 
 impl From<crate::parser::Span<'_>> for Loc {
     fn from(span: crate::parser::Span) -> Loc {
-        Loc {
-            line: span.location_line(),
-            col: span.get_column() as _,
-            span: span.fragment().len() as u32,
-        }
+        Loc::new(
+            span.location_line(),
+            span.get_column() as _,
+            span.fragment().len() as _,
+        )
     }
 }
 

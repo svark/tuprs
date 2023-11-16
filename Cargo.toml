@@ -26,6 +26,7 @@ parking_lot = "0.12.1"
 
 [dev-dependencies]
 env_logger = "0.10.0"
+insta = { version = "1.34.0", features = ["json"] }
 # lua patch over mlua's lua-src-rs crate that adds add_assign (+=) operator to variables
 # Cargo complains that the patch should appear at the workspace level. But adding here anyway for independent usages.
 [patch.crates-io]

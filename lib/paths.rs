@@ -470,8 +470,7 @@ impl InputsAsPaths {
             .iter()
             .map(|x| x.as_path())
             .chain(self.groups_by_name.values().map(Path::new))
-            .map(normalize_path)
-            .map(std::string::String::from)
+            .map(|x| normalize_path(x).into())
             .collect()
     }
 

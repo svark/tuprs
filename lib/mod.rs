@@ -160,7 +160,7 @@ fn test_op() {
                             Literal("%<grp2>".to_string()),
                         ],
                     },
-                    pos: Loc::new(3, 3, 0),
+                    pos: Loc::new(3, 2, 105),
                 },
                 EnvDescriptor::default(),
                 vec![],
@@ -191,7 +191,7 @@ fn test_op() {
                         ],
                         //formula: vec![Literal("type %f > file.txt ".to_string())],
                     },
-                    pos: Loc::new(6, 2, 0),
+                    pos: Loc::new(6, 1, 44),
                 },
                 EnvDescriptor::default(),
                 vec![],
@@ -217,7 +217,7 @@ fn test_op() {
                             Literal("./src/main.rs".to_string()),
                         ],
                     },
-                    pos: Loc::new(8, 2, 0),
+                    pos: Loc::new(8, 1, 19),
                 },
                 EnvDescriptor::default(),
                 vec![],
@@ -246,7 +246,7 @@ fn test_parse() {
     type Span<'a> = LocatedSpan<&'a [u8]>;
     use env_logger;
     use statements::EnvDescriptor;
-    env_logger::init();
+    let _ = env_logger::try_init();
     {
         let sp0 = Span::new(b" ifeq($(DEBUG), 20)\n");
         let res1 = parser::parse_eq(sp0);
@@ -387,7 +387,7 @@ fn test_parse() {
                                                     //Group(vec![Literal("%grp2".to_string())]),
                 ],
             },
-            pos: Loc::new(2, 2, 0),
+            pos: Loc::new(2, 1, 99),
         },
         EnvDescriptor::default(),
         vec![],
@@ -422,7 +422,7 @@ fn test_parse() {
                         Sp1
                     ],
                 },
-                pos: Loc::new(1, 2, 0),
+                pos: Loc::new(1, 1, 36),
                 ..Default::default()
             },
             EnvDescriptor::default(),
