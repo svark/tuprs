@@ -1,6 +1,6 @@
 //! This module handles decoding and de-globbing of rules
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, LinkedList};
 use std::ffi::OsString;
 use std::fmt::Formatter;
 use std::hash::Hash;
@@ -53,10 +53,11 @@ pub struct TupLoc {
 }
 
 /// `RuleFormulaInstance` stores both rule formula and its whereabouts(`TupLoc`) in a Tupfile
+/// Caller locations are stored in the linked list
 #[derive(Debug, Default, PartialEq, Eq, Clone, Hash)]
 pub struct RuleFormulaInstance {
     rule_formula: RuleFormula,
-    rule_ref: TupLoc,
+    rule_ref: LinkedList<TupLoc>,
 }
 
 /// `TaskUsage` stores task name, its dependents, recipe  and its location in Tupfile
@@ -185,6 +186,7 @@ impl TupLoc {
             loc: *loc,
         }
     }
+
     /// Line of Tupfile where portion of rule is found
     pub fn get_line(&self) -> u32 {
         self.loc.get_line()
@@ -208,8 +210,11 @@ impl RuleFormulaInstance {
     pub(crate) fn new(rule_formula: RuleFormula, rule_ref: TupLoc) -> RuleFormulaInstance {
         RuleFormulaInstance {
             rule_formula,
-            rule_ref,
+            rule_ref: std::collections::LinkedList::from([rule_ref]),
         }
+    }
+    pub(crate) fn chain(&mut self, caller_loc: TupLoc) {
+        self.rule_ref.push_back(caller_loc);
     }
     /// `RuleFormula` that this object refers to
     pub(crate) fn get_formula(&self) -> &RuleFormula {
@@ -217,7 +222,7 @@ impl RuleFormulaInstance {
     }
     /// returns `RuleRef' which is the location of the referred rule in a Tupfile
     pub fn get_rule_ref(&self) -> &TupLoc {
-        &self.rule_ref
+        &self.rule_ref.front().unwrap()
     }
 }
 
