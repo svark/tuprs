@@ -213,6 +213,7 @@ impl RuleFormulaInstance {
             rule_ref: std::collections::LinkedList::from([rule_ref]),
         }
     }
+    #[allow(dead_code)]
     pub(crate) fn chain(&mut self, caller_loc: TupLoc) {
         self.rule_ref.push_back(caller_loc);
     }
@@ -1769,13 +1770,21 @@ pub fn parse_dir(root: &Path) -> Result<(Artifacts, ReadWriteBufferObjects), Err
         }
     }
     tupfiles.sort_by(|x, y| x.cmp(y));
+
+    parse_tupfiles(root, &tupfiles)
+}
+
+/// parse tupfiles in the order given
+pub fn parse_tupfiles(
+    root: &Path,
+    tupfiles: &Vec<PathBuf>,
+) -> Result<(Artifacts, ReadWriteBufferObjects), Error> {
     let mut artifacts_all = Artifacts::new();
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new())?;
     for tup_file_path in tupfiles.iter() {
         let artifacts = parser.parse(tup_file_path)?;
         artifacts_all.extend(artifacts);
     }
-
     Ok((
         parser.reresolve(artifacts_all)?,
         parser.read_write_buffers(),

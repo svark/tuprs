@@ -528,17 +528,14 @@ fn test_parse() {
         )
         .expect("resolve failure");
 }
-/*
+
 #[test]
-fn parse_x()
-{
+fn parse_x() {
     use env_logger;
     let _ = env_logger::try_init();
-    use decode::DirSearcher;
     let root = "c:/ws/fegeomscratch";
     std::env::set_current_dir(root).unwrap();
-    let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new()).unwrap();
-    let arts = parser.parse("./devtools/dtcore/cont/Tupfile").unwrap();
-    assert_eq!(arts.get_resolved_links().len(), 375);
+    //let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new()).unwrap();
+    //let arts = parser.parse("make.cfg").unwrap();
+    // assert_eq!(arts.get_resolved_links().len(), 375);
 }
- */

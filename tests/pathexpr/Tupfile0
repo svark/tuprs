@@ -1,0 +1,9 @@
+S = *.cxx *.c
+S += *.cpp
+
+G ?= $(S) *.C
+
+H = $(patsubst %.cxx,%.h,$(S))
+
+
+

@@ -1,0 +1,9 @@
+CFLAGS = -DEBUG -Zm  -DEBUG -Zm -Zi
+define uniq
+  $(eval seen :=)
+  $(foreach word,$1,$(if $(filter $word,${seen}),,$(eval seen += $word)))
+  ${seen}
+endef
+
+CFLAGS = $(call uniq,$(CFLAGS))
+$(info CFLAGS is $(CFLAGS))

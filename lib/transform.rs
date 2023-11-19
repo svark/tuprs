@@ -1,11 +1,13 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::ops::{AddAssign, Deref, DerefMut};
+use std::ffi::{OsStr, OsString};
+use std::ops::ControlFlow::Continue;
+use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Once;
 use std::vec::Drain;
 
 use crossbeam::channel::{Receiver, Sender};
@@ -33,6 +35,28 @@ use crate::paths::{GlobPath, InputResolvedType};
 use crate::platform::*;
 use crate::scriptloader::parse_script;
 use crate::statements::*;
+
+fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
+    static START: Once = Once::new();
+    static mut SHELL: Option<OsString> = None;
+
+    let shell = unsafe {
+        START.call_once(|| {
+            SHELL = Some(
+                std::env::var_os("SHELL").unwrap_or_else(|| OsString::from(String::from("sh"))),
+            )
+        });
+
+        SHELL.as_ref().unwrap()
+    };
+
+    let mut command = std::process::Command::new(shell);
+
+    command.arg("-c");
+    command.arg(cmd);
+
+    command
+}
 
 /// Statements to resolve with their current parse state
 pub struct StatementsToResolve {
@@ -932,26 +956,28 @@ impl DollarExprs {
                 next(&vs)
             }
             DollarExprs::PatSubst(pat, rep, target) => {
-                let pat = pat.subst_pe(m, path_searcher);
-                let rep = rep.subst_pe(m, path_searcher);
+                let pat_pe = pat.subst_pe(m, path_searcher);
+                let rep_pe = rep.subst_pe(m, path_searcher);
                 let target = target.subst_pe(m, path_searcher);
-                let pat: String = pat.cat().replace('%', "*");
-                let rep: String = rep.cat().replace("%", "$1");
-
+                let mut words = target.split(|x| x == &PathExpr::Sp1).map(|x| x.cat());
+                let pat: String = pat_pe.cat().replace('%', "*");
+                let rep: String = rep_pe.cat().replace("%", "$1");
+                debug!("pattern:{}, and its replacement:{}", pat, rep);
                 let glob = MyGlob::new(Candidate::new(pat.as_str())).unwrap();
-                glob.re()
-                    .captures_iter(target.cat().as_bytes())
-                    .map(|cap| {
-                        let mut s = rep.clone();
-                        for i in 0..cap.len() {
-                            s = s.replace(
-                                &format!("${}", i + 1),
-                                std::str::from_utf8(cap.get(i).unwrap().as_bytes()).unwrap_or(""),
-                            )
-                        }
-                        PathExpr::from(s)
-                    })
-                    .collect()
+                let mut ts: Vec<String> = Vec::new();
+                while let Some(word) = words.next() {
+                    let replacement = glob.re().replace(word.as_bytes(), rep.as_bytes());
+                    if !replacement.is_empty() {
+                        ts.push(
+                            std::str::from_utf8(replacement.as_ref())
+                                .unwrap_or("")
+                                .to_owned(),
+                        );
+                    } else {
+                        ts.push(word);
+                    }
+                }
+                intersperse_sp1(ts.as_slice())
             }
             DollarExprs::Call(ref name, args) => {
                 let args: Vec<_> = args.iter().map(|x| x.subst_pe(m, path_searcher)).collect();
@@ -1003,6 +1029,37 @@ impl DollarExprs {
                 let val = subst_val.cat();
                 log::debug!("eval {}", val);
                 vec![PathExpr::from(val)]
+            }
+            DollarExprs::Shell(cmd) => {
+                let subst_val = cmd.subst_pe(m, path_searcher);
+                let args = subst_val.cat();
+                eprintln!("consider rewriting in lua");
+                // run sh -c over the args and process stdout
+                let child = shell(args).stdout(Stdio::piped()).spawn();
+                let outstr = {
+                    child
+                        .map_err(|e| {
+                            Error::new_path_search_error(format!("failed to spawn shell: {}", e))
+                        })
+                        .and_then(|ch| {
+                            ch.wait_with_output()
+                                .map_err(|e| {
+                                    Error::new_path_search_error(format!(
+                                        "failed to get output :{}",
+                                        e
+                                    ))
+                                })
+                                .and_then(|output| -> Result<String, Error> {
+                                    Ok(std::str::from_utf8(output.stdout.as_bytes())
+                                        .unwrap_or("")
+                                        .to_owned())
+                                })
+                        })
+                        .unwrap_or(String::new())
+                };
+                debug!("shell evaluated to {}", outstr);
+
+                vec![PathExpr::from(outstr)]
             }
         }
     }
@@ -1261,6 +1318,51 @@ impl SubstPEs for Link {
     }
 }
 
+impl SubstPEs for EqCond {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self
+    where
+        Self: Sized,
+    {
+        EqCond {
+            lhs: self.lhs.subst_pe(m, path_searcher),
+            rhs: self.rhs.subst_pe(m, path_searcher),
+            not_cond: self.not_cond,
+        }
+    }
+}
+
+impl Subst for CondThenStatements {
+    fn subst(
+        &self,
+        parse_state: &mut ParseState,
+        path_searcher: &impl PathSearcher,
+    ) -> Result<Self, Err>
+    where
+        Self: Sized,
+    {
+        Ok(CondThenStatements {
+            eq: self.eq.subst_pe(parse_state, path_searcher),
+            then_statements: self.then_statements.subst(parse_state, path_searcher)?,
+        })
+    }
+}
+
+impl Subst for CheckedVarThenStatements {
+    fn subst(
+        &self,
+        parse_state: &mut ParseState,
+        path_searcher: &impl PathSearcher,
+    ) -> Result<Self, Err>
+    where
+        Self: Sized,
+    {
+        Ok(CheckedVarThenStatements {
+            checked_var: self.checked_var.clone(),
+            then_statements: self.then_statements.subst(parse_state, path_searcher)?,
+        })
+    }
+}
+
 impl LocatedStatement {
     pub(crate) fn subst(
         &self,
@@ -1339,38 +1441,63 @@ impl LocatedStatement {
             }
 
             Statement::IfElseEndIf {
-                eq,
-                then_statements,
+                then_elif_statements,
                 else_statements,
             } => {
-                let e = EqCond {
-                    lhs: eq.lhs.subst_pe(parse_state, path_searcher),
-                    rhs: eq.rhs.subst_pe(parse_state, path_searcher),
-                    not_cond: eq.not_cond,
-                };
-                debug!("testing {:?} == {:?}", e.lhs, e.rhs);
-                let (ts, es) = if e.not_cond {
-                    (else_statements, then_statements)
-                } else {
-                    (then_statements, else_statements)
-                };
-                if e.lhs.cat().eq(&e.rhs.cat()) {
-                    newstats.append(&mut ts.subst(parse_state, path_searcher)?);
-                } else {
-                    newstats.append(&mut es.subst(parse_state, path_searcher)?);
+                let new_then_elif_statements: ControlFlow<_> =
+                    then_elif_statements.iter().try_for_each(|x| {
+                        let e = x.eq.subst_pe(parse_state, path_searcher);
+                        debug!("testing {:?} == {:?}", e.lhs, e.rhs);
+                        if !e.not_cond == e.lhs.cat().eq(&e.rhs.cat()) {
+                            debug!("condition statisfied");
+                            return ControlFlow::Break(
+                                x.then_statements.subst(parse_state, path_searcher),
+                            );
+                        } else {
+                            debug!("trying alternative branches");
+                            ControlFlow::Continue(())
+                        }
+                    });
+                match new_then_elif_statements {
+                    ControlFlow::Break(Ok(mut new_then_elif_statements)) => {
+                        newstats.append(&mut new_then_elif_statements);
+                    }
+                    ControlFlow::Break(Err(e)) => return Err(e),
+                    _ => {
+                        let mut else_s = else_statements.subst(parse_state, path_searcher)?;
+                        newstats.append(&mut else_s);
+                    }
                 }
             }
             Statement::IfDef {
-                checked_var,
-                then_statements,
+                checked_var_then_statements,
                 else_statements,
             } => {
-                let cvar = PathExpr::AtExpr(checked_var.0.name.clone());
-                debug!("testing ifdef {:?}", cvar);
-                if cvar.subst(parse_state, path_searcher).iter().any(is_empty) == checked_var.1 {
-                    newstats.append(&mut then_statements.subst(parse_state, path_searcher)?);
-                } else {
-                    newstats.append(&mut else_statements.subst(parse_state, path_searcher)?);
+                let r = checked_var_then_statements.iter().try_for_each(|x| {
+                    let cvar = &x.checked_var;
+                    debug!(
+                        "testing if{}def {:?}",
+                        if cvar.1 { "n" } else { "" },
+                        cvar.0
+                    );
+                    if cvar.1 == cvar.0.as_str().is_empty() {
+                        debug!("cvar condition statisfied");
+                        return ControlFlow::Break(
+                            x.then_statements.subst(parse_state, path_searcher),
+                        );
+                    }
+                    debug!("trying alternative branches");
+                    Continue(())
+                });
+                match r {
+                    ControlFlow::Break(Ok(mut new_then_elif_statements)) => {
+                        newstats.append(&mut new_then_elif_statements);
+                    }
+                    ControlFlow::Break(Err(e)) => return Err(e),
+                    _ => {
+                        let mut else_s = else_statements.subst(parse_state, path_searcher)?;
+                        newstats.append(&mut else_s);
+                    }
                 }
             }
 

@@ -135,6 +135,8 @@ pub(crate) enum DollarExprs {
     If(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
     // $(call name, arg1, arg2, ...)
     Call(Vec<PathExpr>, Vec<Vec<PathExpr>>),
+    // $(shell ..)
+    Shell(Vec<PathExpr>),
 }
 
 /// represents the equality condition in if(n)eq (LHS,RHS)
@@ -329,6 +331,32 @@ impl Display for EnvDescriptor {
     }
 }
 
+#[derive(PartialEq, Debug, Clone)]
+pub(crate) struct CondThenStatements {
+    pub(crate) eq: EqCond,
+    pub(crate) then_statements: Vec<LocatedStatement>,
+}
+
+impl CleanupPaths for CondThenStatements {
+    fn cleanup(&mut self) {
+        self.eq.lhs.cleanup();
+        self.eq.rhs.cleanup();
+        self.then_statements.cleanup();
+    }
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub(crate) struct CheckedVarThenStatements {
+    pub(crate) checked_var: CheckedVar,
+    pub(crate) then_statements: Vec<LocatedStatement>,
+}
+
+impl CleanupPaths for CheckedVarThenStatements {
+    fn cleanup(&mut self) {
+        self.then_statements.cleanup();
+    }
+}
+
 /// any of the valid statements that can appear in a tupfile
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) enum Statement {
@@ -345,14 +373,14 @@ pub(crate) enum Statement {
         is_empty_assign: bool,
     },
     IfElseEndIf {
-        eq: EqCond,
-        then_statements: Vec<LocatedStatement>,
-        else_statements: Vec<LocatedStatement>,
+        then_elif_statements: Vec<CondThenStatements>,
+        // many if[n]eq (cond) or else if[n]eq(cond) statements that precede else or endif
+        else_statements: Vec<LocatedStatement>, // final else block
     },
     IfDef {
-        checked_var: CheckedVar,
-        then_statements: Vec<LocatedStatement>,
-        else_statements: Vec<LocatedStatement>,
+        checked_var_then_statements: Vec<CheckedVarThenStatements>,
+        // many ifdef or else if statements that precede  else or endif
+        else_statements: Vec<LocatedStatement>, // final else block
     },
     IncludeRules,
     Include(Vec<PathExpr>),
@@ -466,11 +494,19 @@ impl CleanupPaths for Statement {
                 right.cleanup();
             }
             Statement::IfElseEndIf {
-                eq: _,
-                then_statements,
+                then_elif_statements,
                 else_statements,
             } => {
-                then_statements.cleanup();
+                then_elif_statements.iter_mut().for_each(|i| i.cleanup());
+                else_statements.cleanup();
+            }
+            Statement::IfDef {
+                checked_var_then_statements,
+                else_statements,
+            } => {
+                checked_var_then_statements
+                    .iter_mut()
+                    .for_each(|i| i.cleanup());
                 else_statements.cleanup();
             }
             Statement::Include(r) => {
@@ -510,11 +546,17 @@ impl CleanupPaths for Vec<LocatedStatement> {
         }
     }
 }
-impl Cat for &Vec<PathExpr> {
+
+impl Cat for &[PathExpr] {
     fn cat(self) -> String {
         self.iter()
             .map(|x| x.cat_ref())
             .fold(String::new(), |x, y| x + y.as_ref())
+    }
+}
+impl Cat for &Vec<PathExpr> {
+    fn cat(self) -> String {
+        self.as_slice().cat()
     }
 }
 

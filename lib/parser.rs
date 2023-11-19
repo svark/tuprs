@@ -1,8 +1,10 @@
+use std::cmp::Ordering;
 /// This module handles tokenizing and parsing of statements in a tupfile using nom
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use nom::bytes::complete::{is_a, is_not};
+use nom::character::complete::digit1;
 use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
@@ -212,6 +214,7 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
             alt((
                 complete(parse_pathexpr_strip),
                 complete(parse_pathexpr_subst),
+                complete(parse_pathexpr_shell),
                 complete(parse_pathexpr_word),
                 complete(parse_pathexpr_wildcard),
                 complete(parse_pathexpr_fallback),
@@ -285,7 +288,7 @@ fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
             Ok((s, ("".to_string()).into()))
         }
 
-        b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\}" | b"\\<" | b"\\>" | b"\\^" | b"\\|" => {
+        b"$$" | b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\}" | b"\\<" | b"\\>" | b"\\^" | b"\\|" => {
             let (s, _) = take(1_usize)(i)?;
             let (s, r) = take(1_usize)(s)?;
             let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
@@ -425,10 +428,20 @@ fn parse_pathexpr_filter_out(i: Span) -> IResult<Span, PathExpr> {
     Ok((s, PathExpr::from(DollarExprs::FilterOut(patterns, text))))
 }
 
-fn be_32(s: Span) -> IResult<Span, i32> {
-    nom::number::complete::i32(nom::number::Endianness::Big)(s)
+/// parse $(shell command)
+fn parse_pathexpr_shell(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(shell")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (cmd, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((s, PathExpr::DollarExprs(DollarExprs::Shell(cmd))))
 }
 
+fn be_32(s: Span) -> IResult<Span, i32> {
+    let read_i32 = |i| String::from_utf8_lossy(i).parse::<i32>().unwrap();
+    let x = map(digit1, |i: Span| read_i32(i.fragment()))(s);
+    x
+}
 /// parse $(word n,text)
 /// $(word n,text) is a function that returns the nth word of text.
 fn parse_pathexpr_word(i: Span) -> IResult<Span, PathExpr> {
@@ -928,7 +941,10 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
 // during substitution as regular statements that can be evaluated
 fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
+    //peek to check if the next token is  $(eval or $(foreach or (call..
+    let (s, _) = peek(alt((tag("$(eval"), tag("$(foreach"), tag("$(call"))))(s)?;
     let (s, (body, _)) = complete(parse_pelist_till_line_end_with_ws)(s)?;
+    log::debug!("parsed eval block: {:?}", body);
     let offset = i.offset(&s);
     Ok((s, (Statement::EvalBlock(body), i.slice(..offset)).into()))
 }
@@ -936,7 +952,7 @@ fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
 // parse an assignment expression
 fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
-    let (s, l) = parse_lvalue_ref(s)?;
+    let (s, l) = context("lhs", parse_lvalue_ref)(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, op) = alt((
         complete(tag("=")),
@@ -945,7 +961,9 @@ fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
         complete(tag("+=")),
     ))(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
+    log::debug!("parsing assignment expression with lhs  {:?} {:?}", l, op);
+    let (s, r) = context("rhs", cut(complete(parse_pelist_till_line_end_with_ws)))(s)?;
+    log::debug!("and rhs: {:?}", r);
     let offset = i.offset(&s);
     Ok((
         s,
@@ -1149,7 +1167,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
 
 pub(crate) fn parse_searchpaths(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
-    let (s, _) = tag("searchpaths")(s)?;
+    let (s, _) = alt((complete(tag("searchpaths")), complete(tag("vpath"))))(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context(
         "searchpaths expression",
@@ -1249,13 +1267,21 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
 }
 
 /// parse until the start of else block
-fn parse_statements_until_else(i: Span) -> IResult<Span, (Vec<LocatedStatement>, Span)> {
-    many_till(parse_statement, delimited(opt(ws1), tag("else"), opt(ws1)))(i)
+fn parse_statements_until_else_or_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>, &str)> {
+    let g = map(alt((tag("else"), tag("endif"))), |i: Span| {
+        if i.fragment().slice(..4).cmp(&b"else".as_bytes()) == Ordering::Equal {
+            "else"
+        } else {
+            "endif"
+        }
+    });
+    many_till(parse_statement, g)(i)
 }
 
 /// parse until endif statement
-fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>, Span)> {
-    many_till(parse_statement, delimited(opt(ws1), tag("endif"), opt(ws1)))(i)
+fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>, &str)> {
+    let g = map(tag("endif"), |_| "endif");
+    many_till(parse_statement, g)(i)
 }
 
 /// parse statements till end of file
@@ -1302,43 +1328,58 @@ pub(crate) fn parse_eq(i: Span) -> IResult<Span, EqCond> {
 pub(crate) fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
     let (s, _) = opt(ws1)(i)?;
     let (s, negate) = alt((map(tag("ifdef "), |_| false), map(tag("ifndef "), |_| true)))(s)?;
+    log::debug!("parsing if{}def", if negate { "n" } else { "" });
     let (s, _) = opt(ws1)(s)?;
-    let (s, var) = parse_lvalue(s)?;
+    let (s, var) = cut(complete(parse_lvalue))(s)?;
     let (s, _) = opt(ws1)(s)?;
     Ok((s, CheckedVar(var, negate)))
 }
+
 // parse contents inside if else endif bocks(without condition)
 pub(crate) fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, LocatedStatement> {
-    let (s, then_else_s) = opt(parse_statements_until_else)(i)?;
-    let (s, then_endif_s) = parse_statements_until_endif(s)?;
-    let offset = i.offset(&s);
-    if let Some(then_s) = then_else_s {
-        Ok((
-            s,
-            (
-                Statement::IfElseEndIf {
-                    eq: eqcond,
-                    then_statements: then_s.0,
-                    else_statements: then_endif_s.0,
-                },
-                i.slice(..offset),
-            )
-                .into(),
-        ))
-    } else {
-        Ok((
-            s,
-            (
-                Statement::IfElseEndIf {
-                    eq: eqcond,
-                    then_statements: then_endif_s.0,
-                    else_statements: Vec::new(),
-                },
-                i.slice(..offset),
-            )
-                .into(),
-        ))
+    let (s, then_else_s) = parse_statements_until_else_or_endif(i)?;
+    let mut cvar_then_statements = vec![CondThenStatements {
+        eq: eqcond,
+        then_statements: then_else_s.0,
+    }];
+
+    let mut else_endif_s = Vec::new();
+    let mut rest = s;
+    let mut end_clause = then_else_s.1;
+    while end_clause == "else" {
+        // at this point if else block can continue to add more conditional blocks or finish with endif
+        if let (s, Some(cvarinner)) = opt(preceded(ws1, parse_eq))(rest)? {
+            let (s, _) = opt(ws1)(s)?;
+            let (s, cond_then_s) = parse_statements_until_else_or_endif(s)?;
+            end_clause = cond_then_s.1;
+            let cond_then_statements_inner = CondThenStatements {
+                eq: cvarinner,
+                then_statements: cond_then_s.0,
+            };
+            cvar_then_statements.push(cond_then_statements_inner);
+            rest = s;
+        } else {
+            let (s, _) = opt(ws1)(rest)?;
+            let (s, else_s) = parse_statements_until_endif(s)?;
+            rest = s;
+            else_endif_s = else_s.0;
+            break;
+        }
     }
+
+    let s = rest;
+    let offset = i.offset(&s);
+    Ok((
+        s,
+        (
+            Statement::IfElseEndIf {
+                then_elif_statements: cvar_then_statements,
+                else_statements: else_endif_s,
+            },
+            i.slice(..offset),
+        )
+            .into(),
+    ))
 }
 
 // parse if else endif block along with condition
@@ -1353,45 +1394,61 @@ pub(crate) fn parse_if_else_endif(i: Span) -> IResult<Span, LocatedStatement> {
 
 // parse inside a ifdef block
 pub(crate) fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, LocatedStatement> {
-    let (s, then_else_s) = opt(parse_statements_until_else)(i)?;
-    let (s, then_endif_s) = parse_statements_until_endif(s)?;
-    let offset = i.offset(&s);
-    if let Some(then_s) = then_else_s {
-        Ok((
-            s,
-            (
-                Statement::IfDef {
-                    checked_var: cvar,
-                    then_statements: then_s.0,
-                    else_statements: then_endif_s.0,
-                },
-                i.slice(..offset),
-            )
-                .into(),
-        ))
-    } else {
-        Ok((
-            s,
-            (
-                Statement::IfDef {
-                    checked_var: cvar,
-                    then_statements: then_endif_s.0,
-                    else_statements: Vec::new(),
-                },
-                i.slice(..offset),
-            )
-                .into(),
-        ))
+    let (s, then_else_s) = parse_statements_until_else_or_endif(i)?;
+    let mut cvar_then_statements = vec![CheckedVarThenStatements {
+        checked_var: cvar,
+        then_statements: then_else_s.0,
+    }];
+
+    let mut else_endif_s = Vec::new();
+    let mut rest = s;
+    let mut end_clause = then_else_s.1;
+    while end_clause == "else" {
+        // at this point if else block can continue to add more conditional blocks or finish with endif
+        if let (s, Some(cvarinner)) = opt(preceded(ws1, parse_checked_var))(rest)? {
+            let (s, _) = opt(ws1)(s)?;
+            let (s, cond_then_s) = parse_statements_until_else_or_endif(s)?;
+            end_clause = cond_then_s.1;
+            let cvar_then_statements_inner = CheckedVarThenStatements {
+                checked_var: cvarinner,
+                then_statements: cond_then_s.0,
+            };
+            cvar_then_statements.push(cvar_then_statements_inner);
+            rest = s;
+        } else {
+            let (s, _) = opt(ws1)(rest)?;
+            let (s, else_statements) = parse_statements_until_endif(s)?;
+            rest = s;
+            else_endif_s = else_statements.0;
+            break;
+        }
     }
+
+    let s = rest;
+    let offset = i.offset(&s);
+    Ok((
+        s,
+        (
+            Statement::IfDef {
+                checked_var_then_statements: cvar_then_statements,
+                else_statements: else_endif_s,
+            },
+            i.slice(..offset),
+        )
+            .into(),
+    ))
 }
+
 /// parse if else endif block
 pub(crate) fn parse_ifdef_endif(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, cvar) = parse_checked_var(i)?;
     let (s, _) = opt(ws1)(s)?;
-    context(
-        "ifdef block",
-        cut(move |s| parse_ifdef_inner(s, cvar.clone())),
-    )(s)
+    let ctx = if cvar.1 {
+        "parsing ifndef block"
+    } else {
+        "parsing ifdef block"
+    };
+    context(ctx, cut(move |s| parse_ifdef_inner(s, cvar.clone())))(s)
 }
 
 /// parse statements in a tupfile
