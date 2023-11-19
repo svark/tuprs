@@ -1483,3 +1483,13 @@ pub(crate) fn locate_tuprules<P: AsRef<Path>>(cur_tupfile: P) -> VecDeque<PathBu
     }
     v
 }
+
+/// module only for testing purposes
+pub mod testing {
+    /// parse all statements in this tupfile, used currently only for testing
+    pub fn parse_tupfile<P: AsRef<std::path::Path>>(
+        filename: P,
+    ) -> Result<Vec<crate::statements::LocatedStatement>, crate::errors::Error> {
+        return crate::parser::parse_tupfile(filename);
+    }
+}

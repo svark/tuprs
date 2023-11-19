@@ -1,9 +1,12 @@
 S = *.cxx *.c
 S += *.cpp
 
-G ?= $(S) *.C
+S ?= *.C
 
-H = $(patsubst %.cxx,%.h,$(S))
+O = $(patsubst %.cxx,%.o,$(S))
+
+
+
 
 
 

@@ -4,15 +4,16 @@ extern crate tupparser;
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::path::PathBuf;
 
     use env_logger;
 
-    use tupparser::decode::{parse_dir, parse_tupfiles};
+    use tupparser::decode::parse_dir;
 
     #[test]
     pub fn test_parsedir() {
-        //env_logger::init();
+        let _ = env_logger::try_init();
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("tests/tuptest");
         let (arts, rwbuffers) = parse_dir(d.as_path()).expect("failed to parse!");
@@ -70,26 +71,21 @@ ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b/in1.tx
         let _ = env_logger::try_init();
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("tests/pathexpr");
-        let (arts, rwbuffers) = parse_tupfiles(d.as_path(), &vec![d.join(format!("Tupfile{}", i))])
+        let statements = tupparser::parser::testing::parse_tupfile(d.join(format!("Tupfile{}", i)))
             .expect("failed to parse!");
         //let statements0 = statements[0].get_statements();
         // println!("{:?}", statements);
-        let rlinks = arts.rules_by_tup();
         let mut outs = String::new();
-        let strings = rlinks
+        let strings = statements
             .iter()
-            .map(|rl| rl.iter())
-            .flatten()
-            .map(|r| r.human_readable(rwbuffers.get()))
+            .map(|s| format!("{:?}", s))
             .collect::<Vec<_>>();
 
         outs.pop();
         if log::log_enabled!(log::Level::Debug) {
             let mut f = std::fs::File::create(format!("rlinks_new{}.base", i)).unwrap();
-            use std::io::Write;
             for s in strings.iter() {
-                f.write_all(s.as_bytes()).unwrap();
-                f.write_all(b"\n").unwrap();
+                write!(f, "{:?}\n", s).unwrap();
             }
         }
 
