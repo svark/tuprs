@@ -1,0 +1,10 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: strings
+---
+[
+  "LocatedStatement { statement: AssignExpr { left: Ident { name: \"CFLAGS\" }, right: [Literal(\"-DEBUG\"), Sp1, Literal(\"-Zm\"), Sp1, Literal(\"-DEBUG\"), Sp1, Literal(\"-Zm\"), Sp1, Literal(\"-Zi\")], is_append: false, is_empty_assign: false }, loc: Loc { line: 1, col: 1, span: 37 } }",
+  "LocatedStatement { statement: Define(Ident { name: \"uniq\" }, \"$(eval seen :=)\\r\\n  $(foreach word,$1,$(if $(filter $word,${seen}),,$(eval seen += $word)))\\r\\n  ${seen}\\r\\n\"), loc: Loc { line: 2, col: 1, span: 123 } }",
+  "LocatedStatement { statement: AssignExpr { left: Ident { name: \"CFLAGS\" }, right: [DollarExprs(Call([Literal(\"uniq\")], [[DollarExprs(DollarExpr(\"CFLAGS\"))]]))], is_append: false, is_empty_assign: false }, loc: Loc { line: 6, col: 6, span: 37 } }",
+  "LocatedStatement { statement: Message([Literal(\"CFLAGS\"), Sp1, Literal(\"is\"), Sp1, DollarExprs(DollarExpr(\"CFLAGS\"))], Info), loc: Loc { line: 9, col: 1, span: 27 } }"
+]

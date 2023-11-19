@@ -67,7 +67,7 @@ ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b/in1.tx
         assert_eq!(outs, expected);
     }
 
-    fn parse_pathexprs(i: i32) {
+    fn parse_pathexprs(i: i32) -> Vec<String> {
         let _ = env_logger::try_init();
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("tests/pathexpr");
@@ -90,21 +90,24 @@ ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b/in1.tx
         }
 
         //log::warn!("{}", outs);
-        insta::assert_json_snapshot!(strings);
+        strings
     }
 
     #[test]
     fn parse_pathexprs0() {
-        parse_pathexprs(0);
+        let strings = parse_pathexprs(0);
+        insta::assert_json_snapshot!(strings);
     }
 
     #[test]
     fn parse_pathexprs1() {
-        parse_pathexprs(1);
+        let strings = parse_pathexprs(1);
+        insta::assert_json_snapshot!(strings);
     }
 
     #[test]
     fn parse_pathexprs2() {
-        parse_pathexprs(2);
+        let strings = parse_pathexprs(2);
+        insta::assert_json_snapshot!(strings);
     }
 }
