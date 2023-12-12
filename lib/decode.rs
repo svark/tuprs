@@ -456,7 +456,7 @@ impl DecodeInputPaths for PathExpr {
             }
             PathExpr::Group(_, _) => {
                 let (ref grp_desc, _) =
-                    path_buffers.add_group_pathexpr(tup_cwd, self.cat().as_str());
+                    path_buffers.add_group_pathexpr(tup_cwd, self.cat_ref().as_ref());
                 {
                     debug!(
                         "resolving grp: {:?} with desc:{:?}",
@@ -1063,10 +1063,11 @@ fn get_deglobbed_rule(
             Default::default()
         }
     });
-    let group_desc = t
-        .group
-        .as_ref()
-        .map(|x| path_buffers.add_group_pathexpr(tup_cwd, x.cat().as_str()).0);
+    let group_desc = t.group.as_ref().map(|x| {
+        path_buffers
+            .add_group_pathexpr(tup_cwd, x.cat_ref().as_ref())
+            .0
+    });
 
     let rule_formula_desc = path_buffers
         .add_rule(RuleFormulaInstance::new(resolved_rule, rule_ref.clone()))

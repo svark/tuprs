@@ -331,7 +331,6 @@ fn parse_pathexpr_addsuffix(i: Span) -> IResult<Span, PathExpr> {
     let (s, (list, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed add suffix: {:?} {:?}", suffix, list);
-    // log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
     Ok((s, PathExpr::from(DollarExprs::AddSuffix(suffix, list))))
 }
 
@@ -344,7 +343,6 @@ fn parse_pathexpr_addprefix(i: Span) -> IResult<Span, PathExpr> {
     let (s, (list, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed add prefix: {:?} {:?}", prefix, list);
-    //  log::debug!("rest:{:?}", from_utf8(s).unwrap().as_str());
     Ok((s, PathExpr::from(DollarExprs::AddPrefix(prefix, list))))
 }
 
@@ -359,6 +357,12 @@ fn parse_pathexpr_subst(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!(
+        "parsed subst: from : {:?} to:{:?} on text:{:?}",
+        from,
+        to,
+        text
+    );
     Ok((s, PathExpr::from(DollarExprs::Subst(from, to, text))))
 }
 
@@ -372,6 +376,12 @@ fn parse_pathexpr_patsubst(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!(
+        "parsed patsubst: from : {:?} to:{:?} on text:{:?}",
+        from,
+        to,
+        text
+    );
     Ok((s, PathExpr::from(DollarExprs::PatSubst(from, to, text))))
 }
 
@@ -384,6 +394,7 @@ fn parse_pathexpr_findstring(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (in_, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed findstring: {:?} {:?}", find, in_);
     Ok((s, PathExpr::from(DollarExprs::FindString(find, in_))))
 }
 
@@ -400,6 +411,7 @@ fn parse_pathexpr_foreach(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed foreach: {:?} {:?}", list, text);
     Ok((s, PathExpr::from(DollarExprs::ForEach(var, list, text))))
 }
 
@@ -412,6 +424,7 @@ fn parse_pathexpr_filter(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed filter: {:?} {:?}", patterns, text);
     Ok((s, PathExpr::from(DollarExprs::Filter(patterns, text))))
 }
 
@@ -424,6 +437,7 @@ fn parse_pathexpr_filter_out(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed filter-out: {:?} {:?}", patterns, text);
     Ok((s, PathExpr::from(DollarExprs::FilterOut(patterns, text))))
 }
 
@@ -433,6 +447,7 @@ fn parse_pathexpr_shell(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = parse_ws(s)?;
     let (s, (cmd, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed shell: {:?}", cmd);
     Ok((s, PathExpr::DollarExprs(DollarExprs::Shell(cmd))))
 }
 
@@ -450,6 +465,7 @@ fn parse_pathexpr_word(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed word at {n} on {:?}", text);
     Ok((s, PathExpr::from(DollarExprs::Word(n, text))))
 }
 
@@ -469,6 +485,7 @@ fn parse_pathexpr_call(i: Span) -> IResult<Span, PathExpr> {
         end = e;
         rest = s;
     }
+    log::debug!("parsed call var {:?} with params: {:?}", var, params);
     Ok((rest, PathExpr::from(DollarExprs::Call(var, params))))
 }
 
@@ -479,6 +496,7 @@ fn parse_pathexpr_wildcard(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = parse_ws(s)?;
     let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed wildcard: {:?}", pattern);
     Ok((s, PathExpr::from(DollarExprs::WildCard(pattern))))
 }
 
@@ -489,6 +507,7 @@ fn parse_pathexpr_firstword(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = parse_ws(s)?;
     let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed firstword: {:?}", pattern);
     Ok((s, PathExpr::from(DollarExprs::FirstWord(pattern))))
 }
 
@@ -498,6 +517,7 @@ fn parse_pathexpr_eval(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = parse_ws(s)?;
     let (s, (exps, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed eval: {:?}", exps);
     Ok((s, PathExpr::DollarExprs(DollarExprs::Eval(exps))))
 }
 
@@ -508,6 +528,7 @@ fn parse_pathexpr_dir(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = parse_ws(s)?;
     let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed dir: {:?}", pattern);
     Ok((s, PathExpr::from(DollarExprs::Dir(pattern))))
 }
 
@@ -518,6 +539,7 @@ fn parse_pathexpr_nodir(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = parse_ws(s)?;
     let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed nodir: {:?}", pattern);
     Ok((s, PathExpr::from(DollarExprs::NotDir(pattern))))
 }
 
@@ -528,6 +550,7 @@ fn parse_pathexpr_abspath(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = parse_ws(s)?;
     let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed abspath: {:?}", pattern);
     Ok((s, PathExpr::from(DollarExprs::AbsPath(pattern))))
 }
 
@@ -539,9 +562,8 @@ fn parse_pathexpr_if(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(if")(i)?;
     let (s, _) = parse_ws(s)?;
     let (s, (condition, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
-    let (s, (then_part, _)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
-    let (s, o) = opt(tag(","))(s)?;
-    if o == None {
+    let (s, (then_part, endchar)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
+    if endchar == ')' {
         return Ok((
             s,
             PathExpr::from(DollarExprs::If(condition, then_part, Vec::new())),
@@ -549,6 +571,7 @@ fn parse_pathexpr_if(i: Span) -> IResult<Span, PathExpr> {
     }
     let (s, (else_part, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed if: {:?} {:?} {:?}", condition, then_part, else_part);
     Ok((
         s,
         PathExpr::from(DollarExprs::If(condition, then_part, else_part)),
@@ -926,11 +949,13 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
 }
 // eval block statements are parsed in the initial phase as regular pathexprs.
 // These will be parsed again in the second phase
-// during substitution as regular statements that can be evaluated
+// during substitution as regular statements that can be evaluated.
+// examples are $(foreach... and $(if... and $(eval ..)
+// even raw pathexprs are parsed as eval blocks.. Later is useful as return values of functions.
+// See test case in Tupfile2
 fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
-    //peek to check if the next token is  $(eval or $(foreach or (call..
-    let (s, _) = peek(alt((tag("$(eval"), tag("$(foreach"), tag("$(call"))))(s)?;
+    // there is no standard way to determine we are parsing an eval block. Any string of tokens can be an eval block.
     let (s, (body, _)) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     log::debug!("parsed eval block: {:?}", body);
     let offset = i.offset(&s);

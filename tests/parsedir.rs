@@ -10,6 +10,7 @@ mod tests {
     use env_logger;
 
     use tupparser::decode::parse_dir;
+    use tupparser::statements::LocatedStatement;
 
     #[test]
     pub fn test_parsedir() {
@@ -67,7 +68,8 @@ ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b/in1.tx
         assert_eq!(outs, expected);
     }
 
-    fn parse_pathexprs(i: i32) -> Vec<String> {
+    #[cfg(test)]
+    fn parse_pathexprs(i: i32) -> Vec<LocatedStatement> {
         let _ = env_logger::try_init();
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("tests/pathexpr");
@@ -75,6 +77,12 @@ ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b/in1.tx
             .expect("failed to parse!");
         //let statements0 = statements[0].get_statements();
         // println!("{:?}", statements);
+
+        //log::warn!("{}", outs);
+        statements
+    }
+
+    fn convert_to_str(i: i32, statements: &Vec<LocatedStatement>) -> Vec<String> {
         let mut outs = String::new();
         let strings = statements
             .iter()
@@ -88,26 +96,34 @@ ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b/in1.tx
                 write!(f, "{:?}\n", s).unwrap();
             }
         }
-
-        //log::warn!("{}", outs);
         strings
     }
 
     #[test]
     fn parse_pathexprs0() {
-        let strings = parse_pathexprs(0);
+        let statements = parse_pathexprs(0);
+        let strings = convert_to_str(0, &statements);
         insta::assert_json_snapshot!(strings);
     }
 
     #[test]
     fn parse_pathexprs1() {
-        let strings = parse_pathexprs(1);
+        let statements = parse_pathexprs(1);
+        let strings = convert_to_str(1, &statements);
         insta::assert_json_snapshot!(strings);
     }
 
     #[test]
     fn parse_pathexprs2() {
-        let strings = parse_pathexprs(2);
+        let statements = parse_pathexprs(2);
+        let strings = convert_to_str(2, &statements);
         insta::assert_json_snapshot!(strings);
+
+        let (_, v2) = tupparser::transform::testing::resolve_statements(
+            std::path::Path::new("Tupfile2"),
+            statements,
+        )
+        .unwrap();
+        insta::assert_snapshot!(v2.get("CFLAGS").unwrap().join(" "));
     }
 }

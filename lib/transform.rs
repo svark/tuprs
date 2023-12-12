@@ -34,7 +34,11 @@ use crate::paths::{normalize_path, NormalPath};
 use crate::paths::{GlobPath, InputResolvedType};
 use crate::platform::*;
 use crate::scriptloader::parse_script;
+use crate::statements::DollarExprs;
+use crate::statements::DollarExprs::AbsPath;
+use crate::statements::PathExpr::DollarExprs as DExpr;
 use crate::statements::*;
+use crate::transform::ParseContext::Expression;
 
 fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     static START: Once = Once::new();
@@ -78,6 +82,18 @@ impl StatementsToResolve {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ParseContext {
+    Statement,
+    Expression,
+}
+
+impl Default for ParseContext {
+    fn default() -> Self {
+        ParseContext::Statement
+    }
+}
+
 /// ParseState holds maps tracking current state of variable replacements as we read a tupfile
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ParseState {
@@ -107,8 +123,29 @@ pub(crate) struct ParseState {
     pub(crate) statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
     /// Buffers to store files, groups, bins, env with its id.
     pub(crate) path_buffers: Arc<RwLock<BufferObjects>>,
+    /// tracks the context of parsing for substitutions
+    pub(crate) parse_context: ParseContext,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CallArgsMap {
+    // call args
+    pub(crate) call_args: HashMap<String, String>,
+}
+
+impl CallArgsMap {
+    pub(crate) fn new() -> Self {
+        CallArgsMap {
+            call_args: HashMap::new(),
+        }
+    }
+    pub(crate) fn insert(&mut self, k: String, v: String) {
+        self.call_args.insert(k, v);
+    }
+    pub(crate) fn get(&self, k: &str) -> Option<&String> {
+        self.call_args.get(k)
+    }
+}
 // Default Env to feed into every tupfile
 fn init_env() -> Env {
     let mut def_exported = HashMap::new();
@@ -225,7 +262,6 @@ impl ParseState {
 
     /// Initialize ParseState for var-subst-ing `cur_file' with no conf_map.
     /// This is useful for testing.
-    #[cfg(test)]
     pub fn new_at<P: AsRef<Path>>(cur_file: P) -> Self {
         let mut def_vars = HashMap::new();
         let pbuffers = Arc::new(RwLock::new(BufferObjects::new(get_parent(
@@ -359,7 +395,8 @@ impl ExpandRun for Statement {
                 if let Some(script) = script_args.first() {
                     let mut acnt = 0;
                     let mut cmd = if !cfg!(windows)
-                        || Path::new(script.cat().as_str()).extension() == Some(OsStr::new("sh"))
+                        || Path::new(script.cat_ref().as_ref()).extension()
+                            == Some(OsStr::new("sh"))
                         || script.cat_ref() == "sh"
                     {
                         acnt = (script.cat_ref() == "sh").into();
@@ -368,7 +405,7 @@ impl ExpandRun for Statement {
                         std::process::Command::new("cmd.exe")
                     };
                     for arg_expr in script_args.iter().skip(acnt) {
-                        let arg = arg_expr.cat();
+                        let arg = arg_expr.cat_ref();
                         let arg = arg.trim();
                         if arg.contains('*') {
                             let arg_path = Path::new(arg);
@@ -461,7 +498,7 @@ impl ExpandRun for Statement {
                         );
                         }
 
-                        let lstmts = parse_statements_until_eof(Span::new(contents.as_bytes()))
+                        let lstmts = parse_statements_until_eof(Span::new(contents.as_slice()))
                             .expect("failed to parse output of tup run");
                         let mut lstmts = lstmts
                             .subst(parse_state, path_searcher)
@@ -539,6 +576,22 @@ impl PathExpr {
             false
         }
     }
+
+    fn subst_ca(&self, m: &mut CallArgsMap) -> Vec<PathExpr> {
+        match self {
+            DExpr(ref x) => x.subst_ca(m),
+            PathExpr::Quoted(ref x) => {
+                vec![PathExpr::Quoted(x.subst_ca(m))]
+            }
+            PathExpr::Group(ref xs, ref ys) => {
+                let newxs = xs.subst_ca(m);
+                let newys = ys.subst_ca(m);
+                debug!("grpdir:{:?} grpname:{:?}", newxs, newys);
+                vec![PathExpr::Group(newxs, newys)]
+            }
+            _ => vec![self.clone()],
+        }
+    }
     /// substitute a single pathexpr into an array of literal pathexpr
     /// SFINAE holds
 
@@ -548,7 +601,7 @@ impl PathExpr {
             PathExpr::AtExpr(ref x) => {
                 if let Some(val) = m.conf_map.get(x.as_str()) {
                     intersperse_sp1(val)
-                } else if !x.contains('%') {
+                } else if m.parse_context != Expression && !x.contains('%') {
                     log::warn!("atexpr {} not found", x);
                     vec![PathExpr::Literal("".to_owned())]
                 } else {
@@ -584,13 +637,134 @@ impl PathExpr {
 }
 
 impl DollarExprs {
+    fn subst_ca(&self, m: &mut CallArgsMap) -> Vec<PathExpr> {
+        match self {
+            DollarExprs::DollarExpr(x) => {
+                if let Some(val) = m.get(x.as_str()) {
+                    vec![PathExpr::from(val.clone())]
+                } else {
+                    vec![PathExpr::DollarExprs(DollarExprs::DollarExpr(x.clone()))]
+                }
+            }
+            DollarExprs::AddPrefix(ref vs, ref prefix) => {
+                let vs = vs.subst_ca(m);
+                let prefix = prefix.subst_ca(m);
+                vec![DExpr(DollarExprs::AddPrefix(vs, prefix))]
+            }
+            DollarExprs::AddSuffix(ref vs, ref suffix) => {
+                let vs = vs.subst_ca(m);
+                let suffix = suffix.subst_ca(m);
+                vec![DExpr(DollarExprs::AddSuffix(vs, suffix))]
+            }
+            DollarExprs::Filter(ref filter, ref vs) => {
+                let vs = vs.subst_ca(m);
+                let filter = filter.subst_ca(m);
+                vec![DExpr(DollarExprs::Filter(filter, vs))]
+            }
+            DollarExprs::Subst(ref from, ref to, ref vs) => {
+                let vs = vs.subst_ca(m);
+                let to = to.subst_ca(m);
+                let from = from.subst_ca(m);
+                vec![DExpr(DollarExprs::Subst(from, to, vs))]
+            }
+            DollarExprs::PatSubst(ref from, ref to, ref vs) => {
+                let vs = vs.subst_ca(m);
+                let to = to.subst_ca(m);
+                let from = from.subst_ca(m);
+                vec![DExpr(DollarExprs::PatSubst(from, to, vs))]
+            }
+            DollarExprs::FilterOut(ref filter, ref vs) => {
+                let vs = vs.subst_ca(m);
+                let filter = filter.subst_ca(m);
+                vec![DExpr(DollarExprs::FilterOut(filter, vs))]
+            }
+            DollarExprs::ForEach(s, ref vs, ref body) => {
+                let vs = vs.subst_ca(m);
+                let body = body.subst_ca(m);
+                vec![DExpr(DollarExprs::ForEach(s.clone(), vs, body))]
+            }
+            DollarExprs::FindString(ref needle, ref text) => {
+                let needle = needle.subst_ca(m);
+                let text = text.subst_ca(m);
+                vec![DExpr(DollarExprs::FindString(needle, text))]
+            }
+            DollarExprs::WildCard(ref glob) => {
+                let glob = glob.subst_ca(m);
+                vec![DExpr(DollarExprs::WildCard(glob))]
+            }
+            DollarExprs::Strip(ref vs) => {
+                let vs = vs.subst_ca(m);
+                vec![DExpr(DollarExprs::Strip(vs))]
+            }
+            DollarExprs::NotDir(ref vs) => {
+                let vs = vs.subst_ca(m);
+                vec![DExpr(DollarExprs::NotDir(vs))]
+            }
+            DollarExprs::Dir(ref vs) => {
+                let vs = vs.subst_ca(m);
+                vec![DExpr(DollarExprs::Dir(vs))]
+            }
+            DollarExprs::AbsPath(ref vs) => {
+                let vs = vs.subst_ca(m);
+                vec![DExpr(AbsPath(vs))]
+            }
+            DollarExprs::BaseName(ref vs) => {
+                let vs = vs.subst_ca(m);
+                vec![DExpr(DollarExprs::BaseName(vs))]
+            }
+            DollarExprs::RealPath(ref vs) => {
+                let vs = vs.subst_ca(m);
+                vec![DExpr(DollarExprs::RealPath(vs))]
+            }
+            DollarExprs::Word(ref n, ref vs) => {
+                let vs = vs.subst_ca(m);
+                vec![DExpr(DollarExprs::Word(*n, vs))]
+            }
+
+            DollarExprs::FirstWord(ref vs) => {
+                let vs = vs.subst_ca(m);
+                vec![DExpr(DollarExprs::FirstWord(vs))]
+            }
+            DollarExprs::If(ref cond, ref if_part, ref else_part) => {
+                log::debug!(
+                    "if cond:{:?} if_part:{:?} else_part:{:?}",
+                    cond,
+                    if_part,
+                    else_part
+                );
+                let cond = cond.subst_ca(m);
+                let if_part = if_part.subst_ca(m);
+                let else_part = else_part.subst_ca(m);
+                log::debug!(
+                    "if cond:{:?} if_part:{:?} else_part:{:?}",
+                    cond,
+                    if_part,
+                    else_part
+                );
+                vec![DExpr(DollarExprs::If(cond, if_part, else_part))]
+            }
+            DollarExprs::Call(ref name, ref args) => {
+                let args: Vec<_> = args.iter().map(|x| x.subst_ca(m)).collect();
+                vec![DExpr(DollarExprs::Call(name.clone(), args))]
+            }
+            DollarExprs::Shell(ref vs) => {
+                let vs = vs.subst_ca(m);
+                vec![DExpr(DollarExprs::Shell(vs))]
+            }
+
+            DollarExprs::Eval(ref e) => {
+                let vs = e.subst_ca(m);
+                vec![DExpr(DollarExprs::Eval(vs))]
+            }
+        }
+    }
     fn subst(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Vec<PathExpr> {
         match self {
             DollarExprs::DollarExpr(x) => {
                 if let Some(val) = m.expr_map.get(x.as_str()) {
                     let vs = intersperse_sp1(val);
                     vs
-                } else if x.contains('%') {
+                } else if m.parse_context == Expression || x.contains('%') {
                     log::warn!("dollarexpr {} not found", x);
                     vec![self.clone().into()]
                 } else {
@@ -673,18 +847,38 @@ impl DollarExprs {
                     return vec![];
                 }
                 //let body = body.subst_pe(m);
+                let body_str = body.cat() + "\n";
+                log::debug!("eval foreach body as statements:\n{:?}", body_str);
+                let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
+                    .expect("failed to parse body of for-each");
                 let mut vs = Vec::new();
                 for l in list.iter_mut() {
                     if let PathExpr::Literal(ref s) = l {
-                        m.expr_map.insert(var.clone(), vec![s.clone()]);
+                        let oldval = m.expr_map.insert(var.clone(), vec![s.clone()]);
 
-                        let b = &mut body
-                            .iter()
-                            .flat_map(|x| x.subst(m, path_searcher))
-                            .collect::<Vec<PathExpr>>();
-                        vs.append(b);
+                        let mut vs = Self::subst_as_statements(
+                            m,
+                            path_searcher,
+                            body_str.clone(),
+                            stmts.clone(),
+                        );
+                        vs.push(PathExpr::from("\n".to_owned()));
                         vs.push(PathExpr::Sp1);
-                        m.expr_map.remove(var);
+                        log::debug!(
+                            "substed list var {}={} in foreach body :\n{:?}",
+                            var.as_str(),
+                            s.as_str(),
+                            vs
+                        );
+                        log::debug!(
+                            "$seen:{}",
+                            m.expr_map.get("seen").unwrap_or(&vec![]).join(" ")
+                        );
+                        if let Some(v) = oldval {
+                            m.expr_map.insert(var.clone(), v);
+                        } else {
+                            m.expr_map.remove(var);
+                        }
                     }
                 }
                 while let Some(pe) = vs.iter().next_back() {
@@ -988,47 +1182,82 @@ impl DollarExprs {
                     .chars()
                     .take_while(|x| !x.is_whitespace())
                     .collect();
+                debug!("calling function: {}", func_name);
                 let body = m
                     .func_map
                     .get(&func_name)
-                    .unwrap_or_else(|| panic!("failed to find function: {}", func_name));
-                debug!("calling function: {}", func_name);
-                debug!("args: {:?}", args);
+                    .unwrap_or_else(|| panic!("failed to find function: {}", func_name))
+                    .clone();
+                debug!("wht args: {:?}", args);
                 debug!("body: {}", body);
-                let mut m = m.clone();
-                m.expr_map.insert("0".to_string(), vec![func_name]);
+
+                let mut call_args_map = CallArgsMap::new();
+                let mut args_str = String::new();
                 for (i, arg) in args.iter().enumerate() {
-                    m.expr_map.insert(format!("{}", i + 1), vec![arg.cat()]);
+                    let arg_name = format!("{}", i + 1);
+                    args_str.push_str(format!("__arg{}__ = {}\n", i + 1, arg.cat()).as_str());
+                    call_args_map.insert(arg_name, format!("$(__arg{}__)", i + 1))
                 }
+
+                let body = args_str + body.as_str();
                 let (_, mut lines) = crate::parser::parse_lines(Span::new(body.as_bytes()))
                     .unwrap_or_else(|x| panic!("failed to parse function body: {:?}", x));
                 debug!("call lines: {:?}", lines);
                 let substed_lines: Vec<_> = lines
                     .drain(..)
-                    .map(|(l, _)| l.subst_pe(&mut m, path_searcher))
-                    .flatten()
+                    .map(|(l, _)| l.subst_ca(&mut call_args_map))
+                    .map(|x| x.cat())
                     .collect();
-                debug!("substed lines: {:?}", substed_lines);
-                substed_lines
+
+                let substed_lines_str = substed_lines.join("\n");
+                debug!("substed lines: {:?}", substed_lines_str);
+                vec![PathExpr::from(substed_lines_str)]
             }
 
             DollarExprs::If(cond, then_part, else_part) => {
                 let cond = cond.subst_pe(m, path_searcher);
                 let cond = cond.cat();
                 if cond.is_empty() {
-                    let else_part = else_part.subst_pe(m, path_searcher);
-                    else_part
+                    let else_part_str = else_part.cat() + "\n";
+                    let else_part = parse_statements_until_eof(Span::new(else_part_str.as_bytes()))
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "failed to parse else part of if statement: {:?} with error: {}",
+                                else_part, e
+                            )
+                        });
+                    Self::subst_as_statements(m, path_searcher, else_part_str, else_part)
                 } else {
-                    let then_part = then_part.subst_pe(m, path_searcher);
-                    then_part
+                    let then_part_str = then_part.cat() + "\n";
+                    let then_part = parse_statements_until_eof(Span::new(then_part_str.as_bytes()))
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "failed to parse then part of if statement: {:?} with error: {}",
+                                then_part_str.as_str(),
+                                e
+                            )
+                        });
+                    Self::subst_as_statements(m, path_searcher, then_part_str, then_part)
                 }
             }
             DollarExprs::Eval(pes) => {
                 debug!("eval before subst: {:?}", pes);
-                let subst_val = pes.subst_pe(m, path_searcher);
-                let val = subst_val.cat();
-                log::debug!("eval {}", val);
-                vec![PathExpr::from(val)]
+                // let subst_val = pes.subst_pe(m, path_searcher);
+                if m.parse_context == Expression {
+                    let mut val = pes.cat();
+                    val.push('\n');
+                    debug!("evaluating {}", val);
+                    let stmts = parse_statements_until_eof(Span::new(val.as_bytes()))
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "failed to parse eval body statements statement: {:?} with error: {}",
+                                val.as_str(), e
+                            )
+                        });
+                    Self::subst_as_statements(m, path_searcher, val, stmts)
+                } else {
+                    pes.subst_pe(m, path_searcher)
+                }
             }
             DollarExprs::Shell(cmd) => {
                 let subst_val = cmd.subst_pe(m, path_searcher);
@@ -1063,6 +1292,28 @@ impl DollarExprs {
             }
         }
     }
+
+    fn subst_as_statements(
+        m: &mut ParseState,
+        path_searcher: &impl PathSearcher,
+        val: String,
+        stmts_: Vec<LocatedStatement>,
+    ) -> Vec<PathExpr> {
+        log::debug!("eval stmts before subst: {:?}", stmts_);
+        let mut stmts = stmts_.subst(m, path_searcher).unwrap_or_else(|e| {
+            panic!(
+                "failed to subst eval body statements statement: {:?} with error: {}",
+                val.as_str(),
+                e
+            )
+        });
+        log::debug!("eval stmts after subst: {:?}", stmts);
+        stmts.cleanup();
+        let v: Vec<_> = stmts.iter().map(|x| x.cat()).collect();
+        let str = v.join(" ");
+        log::debug!("eval returned {}", str.as_str());
+        vec![PathExpr::from(str)]
+    }
 }
 
 /// creates [PathExpr] array separated by PathExpr::Sp1
@@ -1082,12 +1333,31 @@ trait SubstPEs {
         Self: Sized;
 }
 
+trait CallArgs {
+    fn subst_ca(&self, m: &mut CallArgsMap) -> Self
+    where
+        Self: Sized;
+}
+
 impl SubstPEs for Vec<PathExpr> {
     /// call subst on each path expr and flatten/cleanup the output.
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         let mut newpe: Vec<_> = self
             .iter()
             .flat_map(|x| x.subst(m, path_searcher))
+            .filter(|x| !is_empty(x))
+            .collect();
+        newpe.cleanup();
+        newpe
+    }
+}
+
+impl CallArgs for Vec<PathExpr> {
+    /// call subst on each path expr and flatten/cleanup the output.
+    fn subst_ca(&self, m: &mut CallArgsMap) -> Self {
+        let mut newpe: Vec<_> = self
+            .iter()
+            .flat_map(|x| x.subst_ca(m))
             .filter(|x| !is_empty(x))
             .collect();
         newpe.cleanup();
@@ -1401,14 +1671,12 @@ impl LocatedStatement {
                 ]
                 .subst_pe(parse_state, path_searcher)
                 .cat();
+                let mut ps = parse_state.clone();
+                ps.parse_context = ParseContext::Expression;
                 let subst_right: Vec<String> = right
                     .split(|x| x == &PathExpr::Sp1)
                     .map(|x| {
-                        prefix.clone()
-                            + x.to_vec()
-                                .subst_pe(parse_state, path_searcher)
-                                .cat()
-                                .as_str()
+                        prefix.clone() + x.to_vec().subst_pe(&mut ps, path_searcher).cat().as_str()
                     })
                     .collect();
 
@@ -1628,18 +1896,20 @@ impl LocatedStatement {
             }
             Statement::EvalBlock(body) => {
                 debug!("evaluating block: {:?}", body);
-                let mut m = parse_state.clone();
-                let mut newstats = Vec::new();
                 {
-                    let body = body.subst_pe(&mut m, path_searcher);
-                    let body = body.cat();
-                    debug!("evaluating block: {:?}", body.as_str());
-                    let lines = parse_statements_until_eof(Span::new(body.as_bytes()))
-                        .unwrap_or_else(|x| panic!("failed to parse eval block: {:?}", x));
-                    debug!("lines in eval block: {:?}", lines);
-                    let stmts = lines.subst(&mut m, path_searcher)?;
-                    debug!("statements in eval block: {:?}", stmts);
-                    newstats.push(stmts);
+                    let body = body.subst_pe(parse_state, path_searcher);
+                    let body_str = body.cat() + "\n";
+                    debug!("evaluating block: {:?}", body_str.as_str());
+                    let lines = parse_statements_until_eof(Span::new(body_str.as_bytes()))
+                        .unwrap_or_else(|e| panic!("failed to parse eval block: {:?}", e));
+                    if lines.len() == 1 && lines.first().unwrap() == self {
+                        newstats.push(self.clone())
+                    } else {
+                        debug!("lines in eval block: {:?}", lines);
+                        let mut stmts = lines.subst(parse_state, path_searcher)?;
+                        debug!("statements in eval block: {:?}", stmts);
+                        newstats.append(&mut stmts);
+                    }
                 }
             }
             Statement::Task(name, deps, recipe, _) => {
@@ -1694,41 +1964,56 @@ impl LocatedStatement {
         is_empty_assign: &bool,
         app: bool,
     ) {
+        let mut ps = parse_state.clone();
+        let op = if app {
+            "+"
+        } else if *is_empty_assign {
+            "?"
+        } else {
+            ""
+        };
+        debug!("assign: {:?} {}= {:?}", left.name, op, right);
+        ps.parse_context = ParseContext::Expression;
         let subst_right_pe: Vec<_> = right
             .iter()
-            .flat_map(|x| x.subst(parse_state, path_searcher))
+            .flat_map(|x| x.subst(&mut ps, path_searcher))
             //.filter_map(|x| if !matches!(x, PathExpr::Sp1) { Some(x.cat())} else { None})
             .collect();
         let subst_right: Vec<String> = subst_right_pe
             .split(|x| matches!(x, PathExpr::Sp1))
-            .map(|x| x.iter().map(|x| x.cat()).collect::<Vec<String>>().join(""))
+            .map(|x| {
+                x.iter()
+                    .map(|x| x.cat_ref().to_string())
+                    .collect::<Vec<String>>()
+                    .join("")
+            })
             .collect();
 
         let curright: Vec<String> = if app {
             match parse_state.expr_map.get(left.name.as_str()) {
-                Some(prevright) => prevright.iter().cloned().chain(subst_right).collect(),
-                _ => subst_right,
+                Some(prevright) => prevright
+                    .iter()
+                    .cloned()
+                    .filter(|x| !x.is_empty())
+                    .chain(subst_right)
+                    .collect(),
+                _ => {
+                    debug!("no previous value for {:?}", left.name);
+                    subst_right
+                }
             }
         } else if *is_empty_assign {
             match parse_state.expr_map.get(left.name.as_str()) {
                 Some(prevright) => prevright.iter().cloned().collect(),
-                _ => subst_right,
+                _ => {
+                    debug!("no previous value for {:?} during empty assign", left.name);
+                    subst_right
+                }
             }
         } else {
             subst_right
         };
-        debug!(
-            "let expr: {:?} {}= {:?}",
-            left.name,
-            if *is_empty_assign {
-                "?"
-            } else if app {
-                "+"
-            } else {
-                ""
-            },
-            curright
-        );
+        debug!("let expr: {:?} = {:?}", left.name, curright);
         parse_state.expr_map.insert(left.name.clone(), curright);
     }
 }
@@ -2259,4 +2544,30 @@ pub fn locate_file<P: AsRef<Path>>(
         cwd = parent;
     }
     None
+}
+
+/// functions for testing transformations
+pub mod testing {
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    use crate::decode::DirSearcher;
+    use crate::statements::LocatedStatement;
+    use crate::transform::ParseState;
+
+    /// perform variable substition, resolve calls, evals, foreach etc
+    pub fn resolve_statements(
+        filename: &Path,
+        statements: Vec<crate::statements::LocatedStatement>,
+    ) -> Result<(Vec<LocatedStatement>, HashMap<String, Vec<String>>), crate::errors::Error> {
+        let mut parse_state = ParseState::new_at(filename);
+        let mut stmts = statements;
+        let mut v = Vec::new();
+        let searcher = DirSearcher::new();
+        for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
+            let mut vs = stmt.subst(&mut parse_state, &searcher)?;
+            v.append(&mut vs);
+        }
+        Ok((v, parse_state.expr_map))
+    }
 }

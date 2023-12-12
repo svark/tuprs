@@ -560,6 +560,11 @@ impl Cat for &Vec<PathExpr> {
     }
 }
 
+impl Cat for PathExpr {
+    fn cat(self) -> String {
+        self.cat_ref().into_owned()
+    }
+}
 // conversion to from string
 impl From<String> for PathExpr {
     fn from(s: String) -> PathExpr {
@@ -573,27 +578,101 @@ impl From<DollarExprs> for PathExpr {
     }
 }
 
-impl Cat for &PathExpr {
-    fn cat(self) -> String {
-        match self {
-            PathExpr::Literal(x) => x.clone(),
-            PathExpr::Sp1 => " ".to_string(),
-            PathExpr::Quoted(v) => format!("\"{}\"", v.cat()),
-            PathExpr::Group(p, g) => format!("{}<{}>", p.cat(), g.cat()),
-            PathExpr::DeGlob(mp) => format!("{:?}", transform::get_path_with_fsep(mp.get_path())),
-            PathExpr::TaskRef(name) => format!("&task:/{}", name.to_string()),
-            _ => String::new(),
-        }
-    }
-}
-
 impl CatRef for PathExpr {
     fn cat_ref(&self) -> Cow<str> {
         match self {
             PathExpr::Literal(x) => Cow::Borrowed(x.as_str()),
-            PathExpr::DeGlob(mp) => mp.get_path().to_string_lossy(),
+            PathExpr::DeGlob(mp) => Cow::Owned(format!(
+                "{:?}",
+                transform::get_path_with_fsep(mp.get_path())
+            )),
             PathExpr::Sp1 => Cow::Borrowed(" "),
-            _ => Cow::Borrowed(""),
+            PathExpr::DollarExprs(d) => d.cat_ref(),
+            PathExpr::Quoted(qstr) => {
+                let mut s = String::new();
+                for q in qstr.iter() {
+                    s += q.cat_ref().as_ref();
+                }
+                Cow::Owned(format!("\"{}\"", s))
+            }
+            PathExpr::ExcludePattern(_) => Cow::Owned("".to_string()),
+            PathExpr::AtExpr(expr) => Cow::Owned(format!("@({})", expr.as_str())),
+            PathExpr::AmpExpr(expr) => Cow::Owned(format!("&({})", expr.as_str())),
+            PathExpr::Group(path, grp) => Cow::Owned(format!("{}<{}>", path.cat(), grp.cat())),
+            PathExpr::Bin(bin) => Cow::Owned(format!("{{{}}}", bin.as_str())),
+            PathExpr::MacroRef(mref) => Cow::Owned(format!("!{}", mref.as_str())),
+            PathExpr::TaskRef(tref) => Cow::Owned(format!("&task:/{}", tref.as_str())),
+        }
+    }
+}
+
+impl CatRef for DollarExprs {
+    fn cat_ref(&self) -> Cow<str> {
+        match self {
+            DollarExprs::DollarExpr(s) => Cow::Owned(format!("$({})", s.as_str())),
+            DollarExprs::AddPrefix(prefix, list) => {
+                Cow::Owned(format!("$(addprefix {},{})", prefix.cat(), list.cat()))
+            }
+            DollarExprs::AddSuffix(suffix, list) => {
+                Cow::Owned(format!("$(addsuffix {},{})", suffix.cat(), list.cat()))
+            }
+            DollarExprs::Subst(from, to, text) => Cow::Owned(format!(
+                "$(subst {},{},{})",
+                from.cat(),
+                to.cat(),
+                text.cat()
+            )),
+            DollarExprs::PatSubst(frrom, to, text) => Cow::Owned(format!(
+                "$(patsubst {},{},{})",
+                frrom.cat(),
+                to.cat(),
+                text.cat()
+            )),
+            DollarExprs::Eval(body) => Cow::Owned(format!("$(eval {})", body.cat())),
+            DollarExprs::Filter(pattern, text) => {
+                log::debug!("pattern: {:?}, text: {:?}", pattern, text);
+                Cow::Owned(format!("$(filter {},{})", pattern.cat(), text.cat()))
+            }
+            DollarExprs::FilterOut(pattern, text) => {
+                Cow::Owned(format!("$(filter-out {},{})", pattern.cat(), text.cat()))
+            }
+            DollarExprs::ForEach(var, list, text) => Cow::Owned(format!(
+                "$(foreach {},{},{})",
+                var.as_str(),
+                list.cat(),
+                text.cat()
+            )),
+            DollarExprs::FindString(find, in_) => {
+                Cow::Owned(format!("$(findstring {},{})", find.cat(), in_.cat()))
+            }
+            DollarExprs::WildCard(pattern) => Cow::Owned(format!("$(wildcard {})", pattern.cat())),
+            DollarExprs::Strip(text) => Cow::Owned(format!("$(strip {})", text.cat())),
+            DollarExprs::NotDir(p) => Cow::Owned(format!("$(notdir {})", p.cat())),
+            DollarExprs::Dir(p) => Cow::Owned(format!("$(dir {})", p.cat())),
+            DollarExprs::AbsPath(p) => Cow::Owned(format!("$(abspath {})", p.cat())),
+            DollarExprs::BaseName(p) => Cow::Owned(format!("$(basename {})", p.cat())),
+            DollarExprs::RealPath(p) => Cow::Owned(format!("$(realpath {})", p.cat())),
+            DollarExprs::Word(n, text) => Cow::Owned(format!("$(word {},{})", n, text.cat())),
+            DollarExprs::FirstWord(names) => Cow::Owned(format!("$(firstword {})", names.cat())),
+            DollarExprs::If(cond, then_, else_) => {
+                log::debug!(
+                    "cond: {:?}, then: {:?}, else: {:?}",
+                    cond.cat(),
+                    then_,
+                    else_
+                );
+                Cow::Owned(format!(
+                    "$(if {},{},{})",
+                    cond.cat(),
+                    then_.cat(),
+                    else_.cat()
+                ))
+            }
+            DollarExprs::Call(var, param) => {
+                let str = param.iter().fold(var.cat(), |x, y| x + "," + &*y.cat());
+                Cow::Owned(format!("$(call {})", str))
+            }
+            DollarExprs::Shell(cmd) => Cow::Owned(format!("$(shell {})", cmd.cat())),
         }
     }
 }
@@ -656,6 +735,7 @@ impl Cat for &Statement {
             ) => {
                 format!("{} {}: {}", r.description.cat(), r.formula.cat(), pos)
             }
+            Statement::EvalBlock(body) => body.cat(),
             _ => "".to_owned(),
         }
     }
