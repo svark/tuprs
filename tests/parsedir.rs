@@ -126,4 +126,18 @@ ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b/in1.tx
         .unwrap();
         insta::assert_snapshot!(v2.get("CFLAGS").unwrap().join(" "));
     }
+
+    #[test]
+    fn parse_pathexprs3() {
+        let statements = parse_pathexprs(3);
+        let strings = convert_to_str(2, &statements);
+        insta::assert_json_snapshot!(strings);
+
+        let (_, v2) = tupparser::transform::testing::resolve_statements(
+            std::path::Path::new("Tupfile3"),
+            statements,
+        )
+        .unwrap();
+        insta::assert_snapshot!(v2.get("CXX_FLAGS").unwrap().join(" "));
+    }
 }

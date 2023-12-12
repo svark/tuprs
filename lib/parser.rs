@@ -517,6 +517,7 @@ fn parse_pathexpr_eval(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = parse_ws(s)?;
     let (s, (exps, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
+    let (s, _) = opt(tag(";"))(s)?;
     log::debug!("parsed eval: {:?}", exps);
     Ok((s, PathExpr::DollarExprs(DollarExprs::Eval(exps))))
 }
