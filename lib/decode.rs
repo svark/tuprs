@@ -37,6 +37,9 @@ pub trait PathSearcher {
     /// Find Outputs
     fn get_outs(&self) -> &OutputHolder;
 
+    /// Root of the tup hierarchy, where tupfiles are found
+    fn get_root(&self) -> &Path;
+
     /// Merge outputs from previous outputs
     fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error>;
 }
@@ -277,6 +280,7 @@ pub trait OutputHandler {
 /// Searcher of paths in directory tree and those stored in [OutputHolder]
 #[derive(Debug, Default, Clone)]
 pub struct DirSearcher {
+    root: PathBuf,
     output_holder: OutputHolder,
 }
 
@@ -284,6 +288,14 @@ impl DirSearcher {
     ///  Constructs a blank `DirSearcher`
     pub fn new() -> DirSearcher {
         DirSearcher {
+            root: PathBuf::from("."),
+            output_holder: OutputHolder::new(),
+        }
+    }
+    /// Constructs a `DirSearcher` with a given root
+    pub fn new_at<P: AsRef<Path>>(p: P) -> Self {
+        DirSearcher {
+            root: p.as_ref().to_path_buf(),
             output_holder: OutputHolder::new(),
         }
     }
@@ -397,9 +409,12 @@ impl PathSearcher for DirSearcher {
         }
         Ok(pes)
     }
-
     fn get_outs(&self) -> &OutputHolder {
         &self.output_holder
+    }
+
+    fn get_root(&self) -> &Path {
+        self.root.as_path()
     }
 
     fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error> {

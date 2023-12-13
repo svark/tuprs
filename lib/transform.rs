@@ -211,7 +211,7 @@ impl ParseState {
         let mut def_vars = HashMap::new();
         let dir = get_parent_with_fsep(cur_file).to_string();
         let pbuffers = Arc::new(RwLock::new(BufferObjects::new(dir.as_str())));
-        def_vars.insert("TUP_CWD".to_owned(), vec![dir]);
+        def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
 
         ParseState {
             conf_map: conf_map.clone(),
@@ -270,7 +270,7 @@ impl ParseState {
         let cur_file_desc = pbuffers.write().add_tup(cur_file.as_ref()).0;
         let cur_file = pbuffers.read().get_tup_path(&cur_file_desc).to_path_buf();
         let dir = get_parent_with_fsep(cur_file.as_path()).to_string();
-        def_vars.insert("TUP_CWD".to_owned(), vec![dir]);
+        def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
 
         ParseState {
             expr_map: def_vars,
@@ -1531,49 +1531,66 @@ fn tovecstring(right: &[PathExpr]) -> Vec<String> {
         .collect()
 }
 
+/// load config vars from tup.config file
+pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>, Error> {
+    let mut conf_vars = HashMap::new();
+    if conf_file.is_file() {
+        if let Some(fstr) = conf_file.to_str() {
+            for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
+                if let Statement::AssignExpr { left, right, .. } = statement {
+                    if let Some(rest) = left.name.strip_prefix("CONFIG_") {
+                        log::warn!("conf var:{} = {}", rest, right.cat());
+                        conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
+                    }
+                }
+            }
+            // @(TUP_PLATFORM)
+            //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
+            //     @(TUP_ARCH)
+            //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
+            if !conf_vars.contains_key("TUP_PLATFORM") {
+                conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform()]);
+            }
+            if !conf_vars.contains_key("TUP_ARCH") {
+                conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch()]);
+            }
+            return Ok(conf_vars);
+        }
+    }
+    Ok(conf_vars)
+}
+
 /// load the conf variables in tup.config in the root directory
 /// TUP_PLATFORM and TUP_ARCH are automatically assigned based on how this program is built
-pub fn load_conf_vars(filename: &Path) -> Result<HashMap<String, Vec<String>>, Error> {
+pub fn load_conf_vars_relative_to(filename: &Path) -> Result<HashMap<String, Vec<String>>, Error> {
     let mut conf_vars = HashMap::new();
     debug!(
         "attempting loading conf vars from tup.config at {:?}",
         filename
     );
-    let mut loaded = false;
     if let Some(conf_file) = Path::new(filename).parent().map(|x| x.join("tup.config")) {
-        if conf_file.is_file() {
-            if let Some(fstr) = conf_file.to_str() {
-                debug!("loading conf vars from tup.config at {:?}", filename);
-                loaded = true;
-                for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
-                    if let Statement::AssignExpr { left, right, .. } = statement {
-                        if let Some(rest) = left.name.strip_prefix("CONFIG_") {
-                            log::warn!("conf var:{} = {}", rest, right.cat());
-                            conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if !loaded {
+        debug!("loading conf vars from tup.config at {:?}", filename);
+        conf_vars = load_conf_vars(conf_file)?;
+    } else {
         debug!(
             "no tup.config file found at folder corresponding to {:?}",
             filename
         );
     }
-    // @(TUP_PLATFORM)
-    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
-    //     @(TUP_ARCH)
-    //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
-    if !conf_vars.contains_key("TUP_PLATFORM") {
-        conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform()]);
-    }
-    if !conf_vars.contains_key("TUP_ARCH") {
-        conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch()]);
-    }
 
     Ok(conf_vars)
+}
+
+/// convert statements to strings for benchmarking
+pub fn convert_to_str(statements: &Vec<LocatedStatement>) -> Vec<String> {
+    let mut outs = String::new();
+    let strings = statements
+        .iter()
+        .map(|s| format!("{:?}", s))
+        .collect::<Vec<_>>();
+
+    outs.pop();
+    strings
 }
 
 impl SubstPEs for Link {
@@ -1780,7 +1797,10 @@ impl LocatedStatement {
                         f.as_path(),
                         |parse_state| -> Result<(), Error> {
                             //let cf = switch_to_reading(tup_desc, tup_path, m, bo);
-                            let include_stmts = get_or_insert_parsed_statement(parse_state)?;
+                            let include_stmts = get_or_insert_parsed_statement(
+                                path_searcher.get_root(),
+                                parse_state,
+                            )?;
                             newstats.append(&mut include_stmts.subst(parse_state, path_searcher)?);
                             found = true;
                             Ok(())
@@ -1798,14 +1818,16 @@ impl LocatedStatement {
                 debug!("Include:{:?}", s.cat());
                 let s = s.subst_pe(parse_state, path_searcher);
                 let scat = &s.cat();
+                debug!("found in current file:{:?}", parse_state.cur_file.as_path());
                 let longp = get_parent(parse_state.cur_file.as_path());
                 let pscat = Path::new(scat.as_str());
+                debug!("longp:{:?}, pscat:{:?}", longp, pscat);
                 let fullp = NormalPath::absolute_from(pscat, longp.as_ref());
 
                 let p = if pscat.is_relative() {
-                    fullp.as_path()
+                    path_searcher.get_root().join(fullp.as_path())
                 } else {
-                    pscat
+                    path_searcher.get_root().join(pscat)
                 };
                 debug!(
                     "cur path to include:{:?} at {:?}",
@@ -1814,9 +1836,12 @@ impl LocatedStatement {
                 );
                 if p.is_file() {
                     parse_state.switch_tupfile_and_process(
-                        p,
+                        &p,
                         |parse_state| -> Result<(), Error> {
-                            let include_stmts = get_or_insert_parsed_statement(parse_state)?;
+                            let include_stmts = get_or_insert_parsed_statement(
+                                path_searcher.get_root(),
+                                parse_state,
+                            )?;
                             newstats.append(&mut include_stmts.subst(parse_state, path_searcher)?);
                             Ok(())
                         },
@@ -2037,6 +2062,7 @@ impl Subst for Vec<LocatedStatement> {
 }
 
 fn get_or_insert_parsed_statement(
+    root: &Path,
     parse_state: &mut ParseState,
 ) -> Result<Vec<LocatedStatement>, Error> {
     let tup_desc = *parse_state.get_cur_file_desc();
@@ -2048,7 +2074,7 @@ fn get_or_insert_parsed_statement(
         Ok(vs)
     } else {
         debug!("Parsing {:?}", parse_state.get_cur_file());
-        let res = parse_tupfile(parse_state.get_cur_file())?;
+        let res = parse_tupfile(&root.join(parse_state.get_cur_file()))?;
         debug!("Got: {:?} statements", res.len());
         parse_state.add_statements_to_cache(&tup_desc, res.clone());
         Ok(res)
@@ -2284,7 +2310,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
 
         let root = tup_ini.parent().ok_or(RootNotFound)?;
         log::debug!("root folder: {:?}", root);
-        let conf_vars = load_conf_vars(tup_ini.as_path())?;
+        let conf_vars = load_conf_vars_relative_to(tup_ini.as_path())?;
         Ok(TupParser::new_from(
             root,
             conf_vars,
@@ -2552,11 +2578,11 @@ pub mod testing {
     use std::path::Path;
 
     use crate::decode::DirSearcher;
-    use crate::statements::LocatedStatement;
-    use crate::transform::ParseState;
+    use crate::statements::{CleanupPaths, LocatedStatement};
+    use crate::transform::{get_parent, ParseState};
 
     /// perform variable substition, resolve calls, evals, foreach etc
-    pub fn resolve_statements(
+    pub fn subst_statements(
         filename: &Path,
         statements: Vec<crate::statements::LocatedStatement>,
     ) -> Result<(Vec<LocatedStatement>, HashMap<String, Vec<String>>), crate::errors::Error> {
@@ -2568,6 +2594,27 @@ pub mod testing {
             let mut vs = stmt.subst(&mut parse_state, &searcher)?;
             v.append(&mut vs);
         }
+        Ok((v, parse_state.expr_map))
+    }
+
+    /// perform variable substition, resolve calls, evals, foreach etc
+    pub fn subst_statements_with_conf(
+        filename: &Path,
+        statements: Vec<crate::statements::LocatedStatement>,
+        conf_map: HashMap<String, Vec<String>>,
+    ) -> Result<(Vec<LocatedStatement>, HashMap<String, Vec<String>>), crate::errors::Error> {
+        log::debug!("statements:{:?} in file:{:?}", statements, filename);
+        let mut parse_state = ParseState::new_at(filename);
+        //parse_state.set_cwd(filename).unwrap();
+        parse_state.conf_map = conf_map;
+        let mut stmts = statements;
+        let mut v = Vec::new();
+        let searcher = DirSearcher::new_at(get_parent(filename));
+        for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
+            let mut vs = stmt.subst(&mut parse_state, &searcher)?;
+            v.append(&mut vs);
+        }
+        v.cleanup();
         Ok((v, parse_state.expr_map))
     }
 }

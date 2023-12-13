@@ -1,0 +1,8 @@
+DEBUG =1
+ifdef CVAR
+PRVSRCS=impl/*.cxx
+endif
+SRCS=*.cxx $(PRVSRCS)
+#comment
+SRCS +=*.cpp
+!CC = |> "visual studio/cl" %f /Fout:%o |>

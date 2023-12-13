@@ -957,6 +957,10 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
 fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(i)?;
     // there is no standard way to determine we are parsing an eval block. Any string of tokens can be an eval block.
+    log::debug!(
+        "attemptint to parse input as eval block: {:?}",
+        from_utf8(i)
+    );
     let (s, (body, _)) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     log::debug!("parsed eval block: {:?}", body);
     let offset = i.offset(&s);

@@ -1,0 +1,9 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: strings
+---
+[
+  "LocatedStatement { statement: Rule(Link { source: Source { primary: [Literal(\"*.cxx\"), Sp1, Literal(\"impl/*.cxx\"), Sp1, Literal(\"*.cpp\"), Sp1, Group([Literal(\"../\")], [Literal(\"grp\")]), Sp1, Group([Literal(\"../\")], [Literal(\"grp2\")])], for_each: true, secondary: [] }, target: Target { primary: [], secondary: [Sp1, Literal(\"command.pch\"), Sp1, ExcludePattern(\"exclude_pattern.*\")], group: None, bin: Some(Bin(\"objs\")) }, rule_formula: RuleFormula { description: [], formula: [Quoted([Literal(\"visual studio/cl\")]), Sp1, Literal(\"%f\"), Sp1, Literal(\"/Fout:%o\"), Sp1, Literal(\"%<grp>\"), Sp1, Literal(\"%<grp2>\")] }, pos: Loc { line: 5, col: 1, span: 107 } }, EnvDescriptor(18446744073709551615), []), loc: Loc { line: 5, col: 1, span: 107 } }",
+  "LocatedStatement { statement: Rule(Link { source: Source { primary: [Literal(\"./src/main.rs\")], for_each: false, secondary: [] }, target: Target { primary: [Literal(\"file.txt\")], secondary: [], group: None, bin: None }, rule_formula: RuleFormula { description: [], formula: [Literal(\"type\"), Sp1, Literal(\"%f\"), Sp1, Literal(\">\"), Sp1, Literal(\"file.txt\")] }, pos: Loc { line: 10, col: 1, span: 46 } }, EnvDescriptor(18446744073709551615), []), loc: Loc { line: 10, col: 1, span: 46 } }",
+  "LocatedStatement { statement: Rule(Link { source: Source { primary: [], for_each: false, secondary: [] }, target: Target { primary: [], secondary: [], group: None, bin: None }, rule_formula: RuleFormula { description: [], formula: [Literal(\"type\"), Sp1, Literal(\"./src/main.rs\")] }, pos: Loc { line: 13, col: 1, span: 19 } }, EnvDescriptor(18446744073709551615), []), loc: Loc { line: 13, col: 1, span: 19 } }"
+]

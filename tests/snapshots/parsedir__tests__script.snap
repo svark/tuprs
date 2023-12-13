@@ -1,0 +1,8 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: outs
+---
+[
+  "ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: a/in0.txt, path: NormalPath { inner: \"a/in0.txt\" }, glob_descriptor: None, captured_globs: [] })], secondary_sources: [], rule_formula_desc: cp -r in0.txt outs.txt, primary_targets: [a/outs.txt], secondary_targets: [], excluded_targets: [], group: Some(<mygrp>), bin: None, tup_loc: TupLoc { tup_path_desc: a/Tupfile.lua, loc: Loc { line: 5, col: 0, span: 0 } }, env: EnvDescriptor(0), search_dirs: [] }",
+  "ResolvedLink { primary_sources: [Deglob(MatchingPath { path_descriptor: b/in1.txt, path: NormalPath { inner: \"b/in1.txt\" }, glob_descriptor: None, captured_globs: [] })], secondary_sources: [GroupEntry(<mygrp>, a/outs.txt)], rule_formula_desc: cp -r in1.txt outs.txt, primary_targets: [b/outs.txt], secondary_targets: [], excluded_targets: [], group: None, bin: Some(b/mybin), tup_loc: TupLoc { tup_path_desc: b/Tupfile.lua, loc: Loc { line: 5, col: 0, span: 0 } }, env: EnvDescriptor(0), search_dirs: [] }"
+]
