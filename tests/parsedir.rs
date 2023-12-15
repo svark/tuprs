@@ -82,11 +82,12 @@ mod tests {
         let strings = convert_to_str(&statements);
         insta::assert_json_snapshot!(strings);
 
-        let (_, v2) = tupparser::transform::testing::subst_statements(
+        let (stmts, v2) = tupparser::transform::testing::subst_statements(
             std::path::Path::new("Tupfile2"),
             statements,
         )
         .unwrap();
+        assert_eq!(stmts.len(), 0);
         insta::assert_snapshot!(v2.get("CFLAGS").unwrap().join(" "));
     }
 
@@ -97,11 +98,12 @@ mod tests {
         let strings = convert_to_str(&statements);
         insta::assert_json_snapshot!(strings);
 
-        let (_, v2) = tupparser::transform::testing::subst_statements(
+        let (stmts, v2) = tupparser::transform::testing::subst_statements(
             std::path::Path::new("Tupfile3"),
             statements,
         )
         .unwrap();
+        assert_eq!(stmts.len(), 0);
         insta::assert_snapshot!(v2.get("CXX_FLAGS").unwrap().join(" "));
     }
 

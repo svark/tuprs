@@ -2,6 +2,8 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
+use std::io::BufWriter;
+use std::io::Write;
 
 use crate::paths::MatchingPath;
 use crate::{transform, PathDescriptor};
@@ -149,7 +151,7 @@ pub(crate) struct EqCond {
 
 /// name of a variable in let expressions such as X=1 or
 /// &X = 1
-#[derive(PartialEq, Debug, Clone, Hash, Eq)]
+#[derive(PartialEq, Debug, Clone, Hash, Eq, Default)]
 pub(crate) struct Ident {
     pub name: String,
 }
@@ -225,6 +227,51 @@ impl Display for Loc {
             self.get_col(),
             self.get_col() + self.get_span()
         )
+    }
+}
+
+impl Source {
+    fn write_fmt<W: std::io::Write>(&self, f: &mut BufWriter<W>) {
+        if self.for_each {
+            write!(f, "foreach ").unwrap();
+        }
+        write_pathexprs(f, &self.primary);
+        if self.secondary.len() > 0 {
+            write!(f, " | ").unwrap();
+            write_pathexprs(f, &self.secondary);
+        }
+    }
+}
+
+impl Target {
+    fn write_fmt<W: std::io::Write>(&self, f: &mut BufWriter<W>) {
+        write_pathexprs(f, &self.primary);
+        if self.secondary.len() > 0 {
+            write!(f, " | ").unwrap();
+            write_pathexprs(f, &self.secondary);
+        }
+    }
+}
+
+impl RuleFormula {
+    fn write_fmt<W: std::io::Write>(&self, f: &mut BufWriter<W>) {
+        if self.description.len() > 0 {
+            write!(f, "^").unwrap();
+            write_pathexprs(f, &self.description);
+            write!(f, "^").unwrap();
+        }
+        write_pathexprs(f, &self.formula);
+    }
+}
+
+impl Link {
+    fn write_fmt<W: std::io::Write>(&self, f: &mut BufWriter<W>) {
+        write!(f, ":").unwrap();
+        self.source.write_fmt(f);
+        write!(f, " |>").unwrap();
+        self.rule_formula.write_fmt(f);
+        write!(f, " |> ").unwrap();
+        self.target.write_fmt(f);
     }
 }
 
@@ -357,6 +404,38 @@ impl CleanupPaths for CheckedVarThenStatements {
     }
 }
 
+#[derive(PartialEq, Debug, Clone, Default)]
+pub(crate) struct TaskDetail {
+    target: Ident,
+    deps: Vec<PathExpr>,
+    body: Vec<Vec<PathExpr>>,
+    search_dirs: Vec<PathDescriptor>,
+}
+
+impl TaskDetail {
+    pub(crate) fn new(target: Ident, deps: Vec<PathExpr>, body: Vec<Vec<PathExpr>>) -> Self {
+        Self {
+            target,
+            deps,
+            body,
+            search_dirs: Vec::new(),
+        }
+    }
+
+    pub(crate) fn get_target(&self) -> &Ident {
+        &self.target
+    }
+    pub(crate) fn get_deps(&self) -> &Vec<PathExpr> {
+        &self.deps
+    }
+    pub(crate) fn get_body(&self) -> &Vec<Vec<PathExpr>> {
+        &self.body
+    }
+    pub(crate) fn get_search_dirs(&self) -> &Vec<PathDescriptor> {
+        &self.search_dirs
+    }
+}
+
 /// any of the valid statements that can appear in a tupfile
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) enum Statement {
@@ -396,12 +475,7 @@ pub(crate) enum Statement {
     /// define name { body }
     /// body is a list of statements
     Define(Ident, String),
-    Task(
-        Ident,
-        Vec<PathExpr>,
-        Vec<Vec<PathExpr>>,
-        Vec<PathDescriptor>,
-    ),
+    Task(TaskDetail),
     EvalBlock(Vec<PathExpr>),
     SearchPaths(Vec<PathExpr>),
 }
@@ -549,9 +623,9 @@ impl CleanupPaths for Vec<LocatedStatement> {
 
 impl Cat for &[PathExpr] {
     fn cat(self) -> String {
-        self.iter()
-            .map(|x| x.cat_ref())
-            .fold(String::new(), |x, y| x + y.as_ref())
+        let mut s: Vec<u8> = Vec::new();
+        write_pathexprs(&mut BufWriter::new(&mut s), self);
+        std::str::from_utf8(&s).unwrap().to_string()
     }
 }
 impl Cat for &Vec<PathExpr> {
@@ -560,12 +634,6 @@ impl Cat for &Vec<PathExpr> {
     }
 }
 
-impl Cat for PathExpr {
-    fn cat(self) -> String {
-        self.cat_ref().into_owned()
-    }
-}
-// conversion to from string
 impl From<String> for PathExpr {
     fn from(s: String) -> PathExpr {
         PathExpr::Literal(s)
@@ -582,100 +650,372 @@ impl CatRef for PathExpr {
     fn cat_ref(&self) -> Cow<str> {
         match self {
             PathExpr::Literal(x) => Cow::Borrowed(x.as_str()),
-            PathExpr::DeGlob(mp) => Cow::Owned(format!(
-                "{:?}",
-                transform::get_path_with_fsep(mp.get_path())
-            )),
-            PathExpr::Sp1 => Cow::Borrowed(" "),
-            PathExpr::DollarExprs(d) => d.cat_ref(),
-            PathExpr::Quoted(qstr) => {
-                let mut s = String::new();
-                for q in qstr.iter() {
-                    s += q.cat_ref().as_ref();
-                }
-                Cow::Owned(format!("\"{}\"", s))
+            _ => {
+                let mut s: Vec<u8> = Vec::new();
+                write_pathexpr(&mut BufWriter::new(&mut s), self);
+                Cow::Owned(std::str::from_utf8(&s).unwrap().to_string())
             }
-            PathExpr::ExcludePattern(_) => Cow::Owned("".to_string()),
-            PathExpr::AtExpr(expr) => Cow::Owned(format!("@({})", expr.as_str())),
-            PathExpr::AmpExpr(expr) => Cow::Owned(format!("&({})", expr.as_str())),
-            PathExpr::Group(path, grp) => Cow::Owned(format!("{}<{}>", path.cat(), grp.cat())),
-            PathExpr::Bin(bin) => Cow::Owned(format!("{{{}}}", bin.as_str())),
-            PathExpr::MacroRef(mref) => Cow::Owned(format!("!{}", mref.as_str())),
-            PathExpr::TaskRef(tref) => Cow::Owned(format!("&task:/{}", tref.as_str())),
         }
     }
 }
 
-impl CatRef for DollarExprs {
-    fn cat_ref(&self) -> Cow<str> {
-        match self {
-            DollarExprs::DollarExpr(s) => Cow::Owned(format!("$({})", s.as_str())),
-            DollarExprs::AddPrefix(prefix, list) => {
-                Cow::Owned(format!("$(addprefix {},{})", prefix.cat(), list.cat()))
+fn write_pathexprs<T: std::io::Write>(writer: &mut BufWriter<T>, pathexprs: &[PathExpr]) {
+    pathexprs.iter().for_each(|pathexpr| {
+        write_pathexpr(writer, pathexpr);
+    })
+}
+
+fn write_pathexpr<T: std::io::Write>(writer: &mut BufWriter<T>, pathexpr: &PathExpr) {
+    match pathexpr {
+        PathExpr::Literal(s) => {
+            write!(writer, "{}", s).unwrap();
+        }
+        PathExpr::Sp1 => {
+            write!(writer, " ").unwrap();
+        }
+        PathExpr::Quoted(pe) => {
+            write!(writer, "\"").unwrap();
+            write_pathexprs(writer, pe);
+            write!(writer, "\"").unwrap();
+        }
+        PathExpr::DollarExprs(d) => match d {
+            DollarExprs::DollarExpr(v) => {
+                write!(writer, "$({})", v).unwrap();
             }
-            DollarExprs::AddSuffix(suffix, list) => {
-                Cow::Owned(format!("$(addsuffix {},{})", suffix.cat(), list.cat()))
+            DollarExprs::AddPrefix(p, a) => {
+                write!(writer, "$(addprefix ").unwrap();
+                write_pathexprs(writer, p);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, a);
+                write!(writer, ")").unwrap();
             }
-            DollarExprs::Subst(from, to, text) => Cow::Owned(format!(
-                "$(subst {},{},{})",
-                from.cat(),
-                to.cat(),
-                text.cat()
-            )),
-            DollarExprs::PatSubst(frrom, to, text) => Cow::Owned(format!(
-                "$(patsubst {},{},{})",
-                frrom.cat(),
-                to.cat(),
-                text.cat()
-            )),
-            DollarExprs::Eval(body) => Cow::Owned(format!("$(eval {})", body.cat())),
-            DollarExprs::Filter(pattern, text) => {
-                log::debug!("pattern: {:?}, text: {:?}", pattern, text);
-                Cow::Owned(format!("$(filter {},{})", pattern.cat(), text.cat()))
+            DollarExprs::AddSuffix(s, a) => {
+                write!(writer, "$(addsuffix ").unwrap();
+                write_pathexprs(writer, s);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, a);
+                write!(writer, ")").unwrap();
             }
-            DollarExprs::FilterOut(pattern, text) => {
-                Cow::Owned(format!("$(filter-out {},{})", pattern.cat(), text.cat()))
+            DollarExprs::Subst(p, r, text) => {
+                write!(writer, "$(subst ").unwrap();
+                write_pathexprs(writer, p);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, r);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, text);
+                write!(writer, ")").unwrap();
             }
-            DollarExprs::ForEach(var, list, text) => Cow::Owned(format!(
-                "$(foreach {},{},{})",
-                var.as_str(),
-                list.cat(),
-                text.cat()
-            )),
-            DollarExprs::FindString(find, in_) => {
-                Cow::Owned(format!("$(findstring {},{})", find.cat(), in_.cat()))
+            DollarExprs::PatSubst(p, r, t) => {
+                write!(writer, "$(patsubst ").unwrap();
+                write_pathexprs(writer, p);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, r);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, t);
+                write!(writer, ")").unwrap();
             }
-            DollarExprs::WildCard(pattern) => Cow::Owned(format!("$(wildcard {})", pattern.cat())),
-            DollarExprs::Strip(text) => Cow::Owned(format!("$(strip {})", text.cat())),
-            DollarExprs::NotDir(p) => Cow::Owned(format!("$(notdir {})", p.cat())),
-            DollarExprs::Dir(p) => Cow::Owned(format!("$(dir {})", p.cat())),
-            DollarExprs::AbsPath(p) => Cow::Owned(format!("$(abspath {})", p.cat())),
-            DollarExprs::BaseName(p) => Cow::Owned(format!("$(basename {})", p.cat())),
-            DollarExprs::RealPath(p) => Cow::Owned(format!("$(realpath {})", p.cat())),
-            DollarExprs::Word(n, text) => Cow::Owned(format!("$(word {},{})", n, text.cat())),
-            DollarExprs::FirstWord(names) => Cow::Owned(format!("$(firstword {})", names.cat())),
-            DollarExprs::If(cond, then_, else_) => {
-                log::debug!(
-                    "cond: {:?}, then: {:?}, else: {:?}",
-                    cond.cat(),
-                    then_,
-                    else_
-                );
-                Cow::Owned(format!(
-                    "$(if {},{},{})",
-                    cond.cat(),
-                    then_.cat(),
-                    else_.cat()
-                ))
+            DollarExprs::Filter(f, t) => {
+                write!(writer, "$(filter ").unwrap();
+                write_pathexprs(writer, f);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, t);
+                write!(writer, ")").unwrap();
             }
-            DollarExprs::Call(var, param) => {
-                let str = param.iter().fold(var.cat(), |x, y| x + "," + &*y.cat());
-                Cow::Owned(format!("$(call {})", str))
+            DollarExprs::FilterOut(fo, t) => {
+                write!(writer, "$(filter-out ").unwrap();
+                write_pathexprs(writer, fo);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, t);
+                write!(writer, ")").unwrap();
             }
-            DollarExprs::Shell(cmd) => Cow::Owned(format!("$(shell {})", cmd.cat())),
+            DollarExprs::ForEach(v, arr, body) => {
+                write!(writer, "$(foreach ").unwrap();
+                write!(writer, "{}, ", v).unwrap();
+                write_pathexprs(writer, arr);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, body);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::FindString(p, text) => {
+                write!(writer, "$(findstring ").unwrap();
+                write_pathexprs(writer, p);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, text);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::WildCard(a) => {
+                write!(writer, "$(wildcard ").unwrap();
+                write_pathexprs(writer, a);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::Strip(s) => {
+                write!(writer, "$(strip ").unwrap();
+                write_pathexprs(writer, s);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::NotDir(nd) => {
+                write!(writer, "$(notdir ").unwrap();
+                write_pathexprs(writer, nd);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::Dir(d) => {
+                write!(writer, "$(dir ").unwrap();
+                write_pathexprs(writer, d);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::AbsPath(paths) => {
+                write!(writer, "$(abspath ").unwrap();
+                write_pathexprs(writer, paths);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::BaseName(path) => {
+                write!(writer, "$(basename ").unwrap();
+                write_pathexprs(writer, path);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::RealPath(paths) => {
+                write!(writer, "$(realpath ").unwrap();
+                write_pathexprs(writer, paths);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::Word(i, t) => {
+                write!(writer, "$(word {}, ", i).unwrap();
+                write_pathexprs(writer, t);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::FirstWord(t) => {
+                write!(writer, "$(firstword ").unwrap();
+                write_pathexprs(writer, t);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::If(cond, then_part, else_part) => {
+                write!(writer, "$(if ").unwrap();
+                write_pathexprs(writer, cond);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, then_part);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, else_part);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::Call(name, args) => {
+                write!(writer, "$(call ").unwrap();
+                write_pathexprs(writer, name);
+                write!(writer, ", ").unwrap();
+                for arg in args {
+                    write_pathexprs(writer, arg);
+                    write!(writer, ", ").unwrap();
+                }
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::Eval(e) => {
+                write!(writer, "$(eval ").unwrap();
+                write_pathexprs(writer, e);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::Shell(script) => {
+                write!(writer, "$(shell ").unwrap();
+                write_pathexprs(writer, script);
+                write!(writer, ")").unwrap();
+            }
+        },
+        PathExpr::ExcludePattern(pattern) => {
+            write!(writer, "^{}", pattern).unwrap();
+        }
+        PathExpr::AtExpr(expr) => {
+            write!(writer, "@({})", expr).unwrap();
+        }
+        PathExpr::AmpExpr(expr) => {
+            write!(writer, "&({})", expr).unwrap();
+        }
+        PathExpr::Group(p, name) => {
+            write_pathexprs(writer, p);
+            write!(writer, "<").unwrap();
+            write_pathexprs(writer, name);
+            write!(writer, ">").unwrap();
+        }
+        PathExpr::Bin(name) => {
+            write!(writer, "{{{}}}", name).unwrap();
+        }
+        PathExpr::MacroRef(macroref) => {
+            write!(writer, "!{}", macroref).unwrap();
+        }
+        PathExpr::DeGlob(mp) => {
+            let mp = transform::get_path_with_fsep(mp.get_path());
+            write!(writer, "{}", mp.to_cow_str()).unwrap();
+        }
+        PathExpr::TaskRef(tref) => {
+            write!(writer, "&task:/{}", tref.as_str()).unwrap();
         }
     }
 }
+
+pub(crate) fn write_statement<T: std::io::Write>(
+    writer: &mut BufWriter<T>,
+    stmt: &LocatedStatement,
+) {
+    match stmt.get_statement() {
+        Statement::AssignExpr {
+            left,
+            right,
+            is_append,
+            is_empty_assign,
+        } => {
+            let left_str = left.to_string();
+            if *is_append {
+                write!(writer, "{} += ", left_str).unwrap();
+            } else if *is_empty_assign {
+                write!(writer, "{} ?= ", left_str).unwrap();
+            } else {
+                write!(writer, "{} = ", left_str).unwrap();
+            }
+            write_pathexprs(writer, &right);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::IfElseEndIf {
+            then_elif_statements,
+            else_statements,
+        } => {
+            for stmt in then_elif_statements {
+                write!(writer, "ifeq ").unwrap();
+                write_pathexprs(writer, &stmt.eq.lhs);
+                write!(writer, ", ").unwrap();
+                write_pathexprs(writer, &stmt.eq.rhs);
+                write!(writer, "\n").unwrap();
+                for stmt in &stmt.then_statements {
+                    write!(writer, "    ").unwrap();
+                    write_statement(writer, &stmt);
+                }
+            }
+            if !else_statements.is_empty() {
+                write!(writer, "else\n").unwrap();
+                for stmt in else_statements {
+                    write!(writer, "    ").unwrap();
+                    write_statement(writer, &stmt);
+                }
+            }
+            write!(writer, "endif\n").unwrap();
+        }
+        Statement::IfDef {
+            checked_var_then_statements,
+            else_statements,
+        } => {
+            for stmt in checked_var_then_statements {
+                write!(writer, "ifdef ").unwrap();
+                write!(writer, "{}\n", stmt.checked_var.0.name).unwrap();
+                for stmt in &stmt.then_statements {
+                    write!(writer, "    ").unwrap();
+                    write_statement(writer, &stmt);
+                }
+            }
+            if !else_statements.is_empty() {
+                write!(writer, "else\n").unwrap();
+                for stmt in else_statements {
+                    write!(writer, "    ").unwrap();
+                    write_statement(writer, &stmt);
+                }
+            }
+            write!(writer, "endif\n").unwrap();
+        }
+        Statement::Include(f) => {
+            write!(writer, "include ").unwrap();
+            write_pathexprs(writer, f);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::Message(pe, e) => {
+            if e.eq(&Level::Info) {
+                write!(writer, "$(info ").unwrap();
+            } else if e.eq(&Level::Warning) {
+                write!(writer, "$(warning ").unwrap();
+            } else if e.eq(&Level::Error) {
+                write!(writer, "$(error ").unwrap();
+            }
+            write_pathexprs(writer, pe);
+            write!(writer, ")\n").unwrap();
+        }
+        Statement::SearchPaths(paths) => {
+            write!(writer, "preload ").unwrap();
+            write_pathexprs(writer, paths);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::Define(d, v) => {
+            write!(writer, "define ").unwrap();
+            write!(writer, "{}\n", d.name).unwrap();
+            write!(writer, "{}\n", v).unwrap();
+            write!(writer, "endef\n").unwrap();
+        }
+        Statement::Task(t) => {
+            write!(writer, "definetask").unwrap();
+            write!(writer, " {} ", t.get_target().name).unwrap();
+            write!(writer, " : ").unwrap();
+            write_pathexprs(writer, t.get_deps());
+            write!(writer, "\n").unwrap();
+            for cmd in t.get_body() {
+                write!(writer, "\t").unwrap();
+                write_pathexprs(writer, cmd);
+                write!(writer, "\n").unwrap();
+            }
+            write!(writer, "endef\n").unwrap();
+        }
+        Statement::EvalBlock(body) => {
+            write_pathexprs(writer, body);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::Export(var) => {
+            write!(writer, "export {}\n", var).unwrap();
+        }
+        Statement::Comment => {
+            writeln!(writer, "#-").unwrap();
+        }
+        Statement::Rule(l, _, _) => {
+            l.write_fmt(writer);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::Run(body) => {
+            write!(writer, "run ").unwrap();
+            write_pathexprs(writer, body);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::AsignRefExpr {
+            left,
+            right,
+            is_append,
+            is_empty_assign,
+        } => {
+            write!(writer, "&{}", left.name).unwrap();
+            if *is_append {
+                write!(writer, " += ").unwrap();
+            } else if *is_empty_assign {
+                write!(writer, " ?= ").unwrap();
+            } else {
+                write!(writer, " = ").unwrap();
+            }
+            write_pathexprs(writer, &right);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::MacroRule(name, link) => {
+            write!(writer, "!{} = ", name).unwrap();
+            link.write_fmt(writer);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::Preload(paths) => {
+            write!(writer, "preload ").unwrap();
+            write_pathexprs(writer, paths);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::IncludeRules => {
+            write!(writer, "includerules\n").unwrap();
+        }
+        Statement::Import(name, alias) => {
+            write!(writer, "import ").unwrap();
+            write!(writer, "{}", name).unwrap();
+            if let Some(alias) = alias {
+                write!(writer, " as {}", alias).unwrap();
+            }
+            write!(writer, "\n").unwrap();
+        }
+    }
+}
+
 impl Cat for &RuleFormula {
     fn cat(self) -> String {
         if self.description.is_empty() {

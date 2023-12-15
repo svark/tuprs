@@ -2,6 +2,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::io::BufWriter;
 use std::ops::ControlFlow::Continue;
 use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -1583,14 +1584,16 @@ pub fn load_conf_vars_relative_to(filename: &Path) -> Result<HashMap<String, Vec
 
 /// convert statements to strings for benchmarking
 pub fn convert_to_str(statements: &Vec<LocatedStatement>) -> Vec<String> {
-    let mut outs = String::new();
-    let strings = statements
-        .iter()
-        .map(|s| format!("{:?}", s))
-        .collect::<Vec<_>>();
-
-    outs.pop();
-    strings
+    let mut o: Vec<u8> = Vec::new();
+    let mut buffered_writer = BufWriter::new(&mut o);
+    statements.iter().for_each(|x| {
+        write_statement(&mut buffered_writer, x);
+    });
+    std::str::from_utf8(buffered_writer.buffer())
+        .unwrap()
+        .split_terminator('\n')
+        .map(|x| x.to_owned())
+        .collect()
 }
 
 impl SubstPEs for Link {
@@ -1937,7 +1940,11 @@ impl LocatedStatement {
                     }
                 }
             }
-            Statement::Task(name, deps, recipe, _) => {
+            Statement::Task(t) => {
+                let name = t.get_target();
+                let deps = t.get_deps();
+                let recipe = t.get_body();
+                let search_dirs = t.get_search_dirs();
                 debug!("adding task:{} with deps:{:?}", name.as_str(), &deps);
                 let tup_loc = TupLoc::new(&parse_state.cur_file_desc, loc);
                 let tup_dir = parse_state.get_tup_dir().to_path_buf();
@@ -1955,7 +1962,7 @@ impl LocatedStatement {
                     deps.clone(),
                     recipe.clone(),
                     tup_loc,
-                    vec![],
+                    search_dirs.clone(),
                     env_desc,
                 );
                 let mut bo = parse_state.path_buffers.write();

@@ -1594,22 +1594,6 @@ impl ResolvePaths for ResolvedLink {
                 _ => rlink.secondary_sources.push(i.clone()),
             }
         }
-        /* group placeholders cannot be resolved right away.. Delay until rule execution
-        let rule_ref = self.get_rule_ref();
-        let rule_str = path_buffers.get_rule(self.get_rule_desc()).get_formula().cat();
-        if GRPRE.is_match(rule_str.as_str()) {
-            let mut primary_inps =
-                InputsAsPaths::new(tupfile, &rlink.primary_sources[..], path_buffers, rule_ref.clone());
-            let secondary_inps =
-                InputsAsPaths::new(tupfile, &rlink.secondary_sources[..], path_buffers, rule_ref.clone());
-            primary_inps
-                .groups_by_name
-                .extend(secondary_inps.groups_by_name);
-            let rs = decode_group_captures(&primary_inps, rule_ref, rule_str)?;
-            let r = RuleFormula::new_from_raw(rs.as_str());
-            let (rule_desc, _) = path_buffers.add_rule(RuleFormulaUsage::new(r, rule_ref.clone()));
-            rlink.rule_formula_desc = rule_desc;
-        } */
         let mut out = OutputHolder::new();
         self.gather_outputs(&mut out, path_buffers)?;
         path_searcher.merge(path_buffers, &mut out)?;
@@ -1722,11 +1706,14 @@ impl LocatedStatement {
 
         let mut tasks = Vec::new();
         if let LocatedStatement {
-            statement: Statement::Task(name, deps, _, search_dirs),
+            statement: Statement::Task(task_detail),
             loc,
         } = self
         {
             let tup_loc = &TupLoc::new(tup_desc, loc);
+            let name = task_detail.get_target();
+            let deps = task_detail.get_deps();
+            let search_dirs = task_detail.get_search_dirs();
             let task_desc = *path_buffers
                 .try_get_task_desc(tup_cwd, name.as_str())
                 .ok_or(Err::TaskNotFound(

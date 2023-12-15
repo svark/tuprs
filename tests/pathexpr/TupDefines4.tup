@@ -5,4 +5,4 @@ endif
 SRCS=*.cxx $(PRVSRCS)
 #comment
 SRCS +=*.cpp
-!CC = |> "visual studio/cl" %f /Fout:%o |>
+!CC = |> " CC %f" gcc %f /Fout:%o |>

@@ -3,7 +3,12 @@ source: tuprs/tests/parsedir.rs
 expression: strings
 ---
 [
-  "LocatedStatement { statement: AssignExpr { left: Ident { name: \"CFLAGS\" }, right: [Literal(\"-DEBUG\"), Sp1, Literal(\"-Zm\"), Sp1, Literal(\"-DEBUG\"), Sp1, Literal(\"-Zm\"), Sp1, Literal(\"-Zi\")], is_append: false, is_empty_assign: false }, loc: Loc { line: 1, col: 1, span: 37 } }",
-  "LocatedStatement { statement: Define(Ident { name: \"uniq\" }, \"seen :=\\r\\n  $(foreach word,$(1),$(if $(filter $(word),${seen}),,seen += $(word)))\\r\\n  ${seen}\\r\\n\"), loc: Loc { line: 2, col: 1, span: 113 } }",
-  "LocatedStatement { statement: AssignExpr { left: Ident { name: \"CFLAGS\" }, right: [DollarExprs(Eval([DollarExprs(Call([Literal(\"uniq\")], [[DollarExprs(DollarExpr(\"CFLAGS\"))]]))]))], is_append: false, is_empty_assign: false }, loc: Loc { line: 6, col: 6, span: 45 } }"
+  "CFLAGS = -DEBUG -Zm -DEBUG -Zm -Zi",
+  "define uniq",
+  "seen :=\r",
+  "  $(foreach word,$(1),$(if $(filter $(word),${seen}),,seen += $(word)))\r",
+  "  ${seen}\r",
+  "",
+  "endef",
+  "CFLAGS = $(eval $(call uniq, $(CFLAGS), ))"
 ]

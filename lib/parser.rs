@@ -891,7 +891,11 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
     let offset = i.offset(&s);
     Ok((
         s,
-        (Statement::Task(name, deps, body, vec![]), i.slice(..offset)).into(),
+        (
+            Statement::Task(TaskDetail::new(name, deps, body)),
+            i.slice(..offset),
+        )
+            .into(),
     ))
 }
 

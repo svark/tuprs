@@ -3,8 +3,11 @@ source: tuprs/tests/parsedir.rs
 expression: strings
 ---
 [
-  "LocatedStatement { statement: Define(Ident { name: \"enable_warnings\" }, \"$(eval CXX_FLAGS := $(subst -W3,-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505,$(CXX_FLAGS)));\\r\\n\"), loc: Loc { line: 1, col: 1, span: 126 } }",
-  "LocatedStatement { statement: AssignExpr { left: Ident { name: \"CXX_FLAGS\" }, right: [Literal(\"-std=c++11\"), Sp1, Literal(\"-Wall\"), Sp1, Literal(\"-Wextra\"), Sp1, Literal(\"-Wpedantic\"), Sp1, Literal(\"-Werror\"), Sp1, Literal(\"-W3\"), Sp1, Literal(\"-Wno-unused-parameter\")], is_append: false, is_empty_assign: false }, loc: Loc { line: 3, col: 6, span: 85 } }",
-  "LocatedStatement { statement: EvalBlock([DollarExprs(Call([Literal(\"enable_warnings\")], []))]), loc: Loc { line: 5, col: 1, span: 24 } }",
-  "LocatedStatement { statement: Message([Literal(\"CXX_FLAGS\"), Sp1, Literal(\"is\"), Sp1, DollarExprs(DollarExpr(\"CXX_FLAGS\"))], Info), loc: Loc { line: 5, col: 25, span: 34 } }"
+  "define enable_warnings",
+  "$(eval CXX_FLAGS := $(subst -W3,-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505,$(CXX_FLAGS)));\r",
+  "",
+  "endef",
+  "CXX_FLAGS = -std=c++11 -Wall -Wextra -Wpedantic -Werror -W3 -Wno-unused-parameter",
+  "$(call enable_warnings, )",
+  "$(info CXX_FLAGS is $(CXX_FLAGS))"
 ]

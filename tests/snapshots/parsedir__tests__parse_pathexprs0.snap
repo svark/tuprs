@@ -3,8 +3,8 @@ source: tuprs/tests/parsedir.rs
 expression: strings
 ---
 [
-  "LocatedStatement { statement: AssignExpr { left: Ident { name: \"S\" }, right: [Literal(\"*.cxx\"), Sp1, Literal(\"*.c\")], is_append: false, is_empty_assign: false }, loc: Loc { line: 1, col: 1, span: 15 } }",
-  "LocatedStatement { statement: AssignExpr { left: Ident { name: \"S\" }, right: [Literal(\"*.cpp\")], is_append: true, is_empty_assign: false }, loc: Loc { line: 2, col: 1, span: 12 } }",
-  "LocatedStatement { statement: AssignExpr { left: Ident { name: \"S\" }, right: [Literal(\"*.C\")], is_append: false, is_empty_assign: true }, loc: Loc { line: 3, col: 1, span: 12 } }",
-  "LocatedStatement { statement: AssignExpr { left: Ident { name: \"O\" }, right: [DollarExprs(PatSubst([Literal(\"%.cxx\")], [Literal(\"%.o\")], [DollarExprs(DollarExpr(\"S\"))]))], is_append: false, is_empty_assign: false }, loc: Loc { line: 5, col: 1, span: 34 } }"
+  "S = *.cxx *.c",
+  "S += *.cpp",
+  "S ?= *.C",
+  "O = $(patsubst %.cxx, %.o, $(S))"
 ]
