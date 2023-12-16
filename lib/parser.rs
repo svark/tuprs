@@ -52,9 +52,6 @@ fn is_ident(c: u8) -> bool {
 fn is_ident_perc(c: u8) -> bool {
     nom::character::is_alphanumeric(c) || c == b'_' || c == b'-' || c == b'.' || c == b'%'
 }
-fn ws1(input: Span) -> IResult<Span, Span> {
-    alt((manynewlineesc, space1))(input)
-}
 
 fn manynewlineesc(input: Span) -> IResult<Span, Span> {
     let (s, _) = many1(preceded(tag("\\"), line_ending))(input)?;
@@ -829,6 +826,7 @@ fn parse_preload(i: Span) -> IResult<Span, LocatedStatement> {
         "preload expression",
         cut(parse_pelist_till_line_end_with_ws),
     )(s)?;
+    log::debug!("parsed preload: {:?} ", r.0);
     let (s, _) = multispace0(s)?;
     let offset = i.offset(&s);
     Ok((s, (Statement::Preload(r.0), i.slice(..offset)).into()))
@@ -846,6 +844,7 @@ fn parse_run(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, r) = context("run expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
     let (s, _) = multispace0(s)?;
     let offset = i.offset(&s);
+    log::debug!("parsed run: {:?} ", r.0);
     Ok((s, (Statement::Run(r.0), i.slice(..offset)).into()))
 }
 // parse include_rules expresssion
@@ -854,6 +853,7 @@ fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = tag("include_rules")(s)?;
     let (s, _) = complete(ws0_line_ending)(s)?;
     let offset = i.offset(&s);
+    log::debug!("parsed include_rules");
     Ok((s, (Statement::IncludeRules, i.slice(..offset)).into()))
 }
 
@@ -871,7 +871,7 @@ fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
 /// dep1 dep2 could be outputs, group, bin or another task
 fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
-    let (s, _) = tag("task")(s)?;
+    let (s, _) = tag("definetask")(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, name) = context(
         "task name",
@@ -1380,7 +1380,7 @@ pub(crate) fn parse_eq(i: Span) -> IResult<Span, EqCond> {
 }
 
 fn parse_eq_inner(s: Span) -> IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)> {
-    let (s, _) = opt(ws1)(s)?;
+    let (s, _) = opt(sp1)(s)?;
     let (s, _) = char('(')(s)?;
     let (s, (e1, _)) = parse_pelist_till_delim_no_ws(s, ",", &BRKTOKS)?;
     let (s, _) = opt(sp1)(s)?;
@@ -1391,12 +1391,13 @@ fn parse_eq_inner(s: Span) -> IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)> {
 
 pub(crate) fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
     let s = i;
-    let (s, negate) = alt((map(tag("ifdef "), |_| false), map(tag("ifndef "), |_| true)))(s)?;
+    let (s, negate) = alt((value(false, tag("ifdef")), value(true, tag("ifndef"))))(s)?;
+
     let c = if negate { "n" } else { "" };
     log::debug!("parsing if{}def", c);
-    let (s, _) = opt(ws1)(s)?;
+    let (s, _) = opt(sp1)(s)?;
     let (s, var) = cut(complete(parse_lvalue))(s)?;
-    let (s, _) = opt(ws1)(s)?;
+    let (s, _) = opt(sp1)(s)?;
     log::debug!("parsed if{}def var: {:?}", c, var);
     Ok((s, CheckedVar::new(var, negate)))
 }
@@ -1417,8 +1418,8 @@ pub(crate) fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, 
     }
     while end_clause == "else" {
         // at this point if else block can continue to add more conditional blocks or finish with endif
-        if let (s, Some(cvarinner)) = opt(preceded(ws1, parse_eq))(rest)? {
-            let (s, _) = opt(ws1)(s)?;
+        if let (s, Some(cvarinner)) = opt(preceded(sp1, parse_eq))(rest)? {
+            let (s, _) = opt(sp1)(s)?;
             let (s, cond_then_s) = parse_statements_until_else_or_endif(s)?;
             end_clause = cond_then_s.1;
             let cond_then_statements_inner = CondThenStatements {
@@ -1428,7 +1429,7 @@ pub(crate) fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, 
             cvar_then_statements.push(cond_then_statements_inner);
             rest = s;
         } else {
-            let (s, _) = opt(ws1)(rest)?;
+            let (s, _) = opt(sp1)(rest)?;
             let (s, else_s) = parse_statements_until_endif(s)?;
             rest = s;
             else_endif_s = else_s.0;
@@ -1455,7 +1456,7 @@ pub(crate) fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, 
 pub(crate) fn parse_if_else_endif(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, eqcond) = parse_eq(i)?;
     log::debug!("parsed eqcond: {:?}", eqcond);
-    let (s, _) = opt(ws1)(s)?;
+    let (s, _) = opt(sp1)(s)?;
     context(
         "if else block",
         cut(move |s| parse_ifelseendif_inner(s, eqcond.clone())),
@@ -1480,8 +1481,8 @@ pub(crate) fn parse_ifdef_inner(
     }
     while end_clause == "else" {
         // at this point if else block can continue to add more conditional blocks or finish with endif
-        if let (s, Some(cvarinner)) = opt(preceded(ws1, parse_checked_var))(rest)? {
-            let (s, _) = opt(ws1)(s)?;
+        if let (s, Some(cvarinner)) = opt(preceded(sp1, parse_checked_var))(rest)? {
+            let (s, _) = opt(sp1)(s)?;
             let (s, cond_then_s) = parse_statements_until_else_or_endif(s)?;
             end_clause = cond_then_s.1;
             let cvar_then_statements_inner = CheckedVarThenStatements {
@@ -1491,7 +1492,7 @@ pub(crate) fn parse_ifdef_inner(
             cvar_then_statements.push(cvar_then_statements_inner);
             rest = s;
         } else {
-            let (s, _) = opt(ws1)(rest)?;
+            let (s, _) = opt(sp1)(rest)?;
             let (s, else_statements) = parse_statements_until_endif(s)?;
             rest = s;
             else_endif_s = else_statements.0;
@@ -1517,7 +1518,7 @@ pub(crate) fn parse_ifdef_inner(
 /// parse if else endif block
 pub(crate) fn parse_ifdef_endif(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, cvar) = parse_checked_var(i)?;
-    let (s, _) = opt(ws1)(s)?;
+    let (s, _) = opt(sp1)(s)?;
     let ctx: &str = if cvar.is_not_cond() {
         "parsing ifndef block"
     } else {
