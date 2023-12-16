@@ -1203,7 +1203,8 @@ impl DollarExprs {
                     call_args_map.insert(arg_name, format!("$(__arg{}__)", i + 1))
                 }
 
-                let body = args_str + body.as_str();
+                let body = args_str + body.as_str() + "\n";
+                debug!("parsing lines in body:{}", body.as_str());
                 let (_, mut lines) = crate::parser::parse_lines(Span::new(body.as_bytes()))
                     .unwrap_or_else(|x| panic!("failed to parse function body: {:?}", x));
                 debug!("call lines: {:?}", lines);
@@ -1915,17 +1916,20 @@ impl LocatedStatement {
                 debug!("evaluating block: {:?}", body);
                 {
                     let body = body.subst_pe(parse_state, path_searcher);
-                    let body_str = body.cat() + "\n";
-                    debug!("evaluating block: {:?}", body_str.as_str());
-                    let lines = parse_statements_until_eof(Span::new(body_str.as_bytes()))
-                        .unwrap_or_else(|e| panic!("failed to parse eval block: {:?}", e));
-                    if lines.len() == 1 && lines.first().unwrap() == self {
-                        newstats.push(self.clone())
-                    } else {
-                        debug!("lines in eval block: {:?}", lines);
-                        let mut stmts = lines.subst(parse_state, path_searcher)?;
-                        debug!("statements in eval block: {:?}", stmts);
-                        newstats.append(&mut stmts);
+                    if !body.is_empty() {
+                        let body_str = body.cat() + "\n";
+
+                        debug!("evaluating block: {:?}", body_str.as_str());
+                        let lines = parse_statements_until_eof(Span::new(body_str.as_bytes()))
+                            .unwrap_or_else(|e| panic!("failed to parse eval block: {:?}", e));
+                        if lines.len() == 1 && lines.first().unwrap() == self {
+                            newstats.push(self.clone())
+                        } else {
+                            debug!("lines in eval block: {:?}", lines);
+                            let mut stmts = lines.subst(parse_state, path_searcher)?;
+                            debug!("statements in eval block: {:?}", stmts);
+                            newstats.append(&mut stmts);
+                        }
                     }
                 }
             }

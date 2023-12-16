@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use nom::bytes::complete::{is_a, is_not};
 use nom::character::complete::{line_ending, multispace0, space0, space1};
 use nom::character::complete::{multispace1, newline, not_line_ending};
-use nom::combinator::{complete, cut, eof, map, map_res, opt, peek, value};
+use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
 use nom::number::{complete, Endianness};
@@ -64,8 +64,14 @@ fn sp1(input: Span) -> IResult<Span, Span> {
 
 /// ignore until line ending
 fn ws0_line_ending(i: Span) -> IResult<Span, ()> {
+    if i.is_empty() {
+        return Err(Err::Error(error_position!(i, ErrorKind::Eof)));
+    }
     let (s, _) = space0(i)?;
-    let (s, _) = alt((line_ending, eof))(s)?;
+    if s.is_empty() {
+        return Ok((s, ()));
+    }
+    let (s, _) = alt((line_ending, tag("\r")))(s)?;
     Ok((s, ()))
 }
 // checks for presence of a group expression that begins with some path.`
@@ -87,6 +93,7 @@ fn parse_pathexpr_ref_raw_curl(input: Span) -> IResult<Span, String> {
     let (s, r) = take_while(is_ident_perc)(s)?;
     let (s, _) = tag("}")(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
+    log::debug!("parsed $({})", raw);
     Ok((s, raw.to_owned()))
 }
 
