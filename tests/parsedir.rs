@@ -10,7 +10,8 @@ mod tests {
 
     use tupparser::decode::parse_dir;
     use tupparser::statements::LocatedStatement;
-    use tupparser::transform::{convert_to_str, load_conf_vars};
+    use tupparser::transform::load_conf_vars;
+    use tupparser::writer::convert_to_str;
 
     #[test]
     pub fn test_parsedir() {

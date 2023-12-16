@@ -44,6 +44,7 @@ mod platform;
 mod scriptloader;
 pub mod statements;
 pub mod transform;
+pub mod writer;
 
 #[test]
 fn test_parse() {

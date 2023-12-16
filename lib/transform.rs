@@ -2,7 +2,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::io::BufWriter;
 use std::ops::ControlFlow::Continue;
 use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -1580,20 +1579,6 @@ pub fn load_conf_vars_relative_to(filename: &Path) -> Result<HashMap<String, Vec
     }
 
     Ok(conf_vars)
-}
-
-/// convert statements to strings for benchmarking
-pub fn convert_to_str(statements: &Vec<LocatedStatement>) -> Vec<String> {
-    let mut o: Vec<u8> = Vec::new();
-    let mut buffered_writer = BufWriter::new(&mut o);
-    statements.iter().for_each(|x| {
-        write_statement(&mut buffered_writer, x);
-    });
-    std::str::from_utf8(buffered_writer.buffer())
-        .unwrap()
-        .split_terminator('\n')
-        .map(|x| x.to_owned())
-        .collect()
 }
 
 impl SubstPEs for Link {
