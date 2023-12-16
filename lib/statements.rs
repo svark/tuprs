@@ -174,8 +174,23 @@ impl Ident {
 }
 /// variable being checked for defined
 #[derive(PartialEq, Debug, Clone)]
-pub(crate) struct CheckedVar(pub Ident, pub bool);
+pub(crate) struct CheckedVar {
+    var: Ident,
+    not_cond: bool,
+}
 
+impl CheckedVar {
+    pub fn new(v: Ident, not_cond: bool) -> Self {
+        Self { var: v, not_cond }
+    }
+    pub fn is_not_cond(&self) -> bool {
+        self.not_cond
+    }
+
+    pub fn get_var(&self) -> &Ident {
+        &self.var
+    }
+}
 /// represents source of a link (tup rule)
 #[derive(PartialEq, Debug, Clone, Default)]
 pub(crate) struct Source {
@@ -431,6 +446,14 @@ impl TaskDetail {
     pub(crate) fn get_body(&self) -> &Vec<Vec<PathExpr>> {
         &self.body
     }
+    pub(crate) fn get_mut_body(&mut self) -> &mut Vec<Vec<PathExpr>> {
+        &mut self.body
+    }
+
+    pub(crate) fn get_mut_deps(&mut self) -> &mut Vec<PathExpr> {
+        &mut self.deps
+    }
+
     pub(crate) fn get_search_dirs(&self) -> &Vec<PathDescriptor> {
         &self.search_dirs
     }
@@ -601,7 +624,14 @@ impl CleanupPaths for Statement {
             Statement::SearchPaths(v) => {
                 v.cleanup();
             }
-            _ => (),
+            Statement::EvalBlock(v) => {
+                v.cleanup();
+            }
+            Statement::Task(t) => {
+                t.get_mut_body().iter_mut().for_each(|x| x.cleanup());
+                t.get_mut_deps().cleanup();
+            }
+            _ => {}
         }
     }
 }
@@ -876,7 +906,11 @@ pub(crate) fn write_statement<T: std::io::Write>(
             else_statements,
         } => {
             for stmt in then_elif_statements {
-                write!(writer, "ifeq ").unwrap();
+                if stmt.eq.not_cond {
+                    write!(writer, "ifneq ").unwrap();
+                } else {
+                    write!(writer, "ifeq ").unwrap();
+                }
                 write_pathexprs(writer, &stmt.eq.lhs);
                 write!(writer, ", ").unwrap();
                 write_pathexprs(writer, &stmt.eq.rhs);
@@ -900,8 +934,12 @@ pub(crate) fn write_statement<T: std::io::Write>(
             else_statements,
         } => {
             for stmt in checked_var_then_statements {
-                write!(writer, "ifdef ").unwrap();
-                write!(writer, "{}\n", stmt.checked_var.0.name).unwrap();
+                let ifclause = if stmt.checked_var.is_not_cond() {
+                    "ifndef"
+                } else {
+                    "ifdef"
+                };
+                write!(writer, "{} {}\n", ifclause, stmt.checked_var.get_var()).unwrap();
                 for stmt in &stmt.then_statements {
                     write!(writer, "    ").unwrap();
                     write_statement(writer, &stmt);

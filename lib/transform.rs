@@ -1765,10 +1765,10 @@ impl LocatedStatement {
                     let cvar = &x.checked_var;
                     debug!(
                         "testing if{}def {:?}",
-                        if cvar.1 { "n" } else { "" },
-                        cvar.0
+                        if cvar.is_not_cond() { "n" } else { "" },
+                        cvar.get_var()
                     );
-                    if cvar.1 == cvar.0.as_str().is_empty() {
+                    if cvar.is_not_cond() == cvar.get_var().as_str().is_empty() {
                         debug!("cvar condition statisfied");
                         return ControlFlow::Break(
                             x.then_statements.subst(parse_state, path_searcher),

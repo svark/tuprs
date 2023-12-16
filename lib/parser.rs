@@ -3,11 +3,12 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use nom::bytes::complete::{is_a, is_not};
-use nom::character::complete::{digit1, newline};
+use nom::character::complete::newline;
 use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
+use nom::number::{complete, Endianness};
 use nom::sequence::{delimited, preceded};
 use nom::Err;
 use nom::IResult;
@@ -452,10 +453,9 @@ fn parse_pathexpr_shell(i: Span) -> IResult<Span, PathExpr> {
 }
 
 fn be_32(s: Span) -> IResult<Span, i32> {
-    let read_i32 = |i| String::from_utf8_lossy(i).parse::<i32>().unwrap();
-    let x = map(digit1, |i: Span| read_i32(i.fragment()))(s);
-    x
+    complete::i32(Endianness::Big)(s)
 }
+
 /// parse $(word n,text)
 /// $(word n,text) is a function that returns the nth word of text.
 fn parse_pathexpr_word(i: Span) -> IResult<Span, PathExpr> {
@@ -1351,7 +1351,7 @@ pub(crate) fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
     let (s, _) = opt(ws1)(s)?;
     let (s, var) = cut(complete(parse_lvalue))(s)?;
     let (s, _) = opt(ws1)(s)?;
-    Ok((s, CheckedVar(var, negate)))
+    Ok((s, CheckedVar::new(var, negate)))
 }
 
 // parse contents inside if else endif bocks(without condition)
@@ -1416,16 +1416,18 @@ pub(crate) fn parse_if_else_endif(i: Span) -> IResult<Span, LocatedStatement> {
 }
 
 // parse inside a ifdef block
-pub(crate) fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, LocatedStatement> {
-    let (s, then_else_s) = parse_statements_until_else_or_endif(i)?;
+pub(crate) fn parse_ifdef_inner(
+    i: Span,
+    checked_var: CheckedVar,
+) -> IResult<Span, LocatedStatement> {
+    let (s, (then_else_s, mut end_clause)) = parse_statements_until_else_or_endif(i)?;
     let mut cvar_then_statements = vec![CheckedVarThenStatements {
-        checked_var: cvar,
-        then_statements: then_else_s.0,
+        checked_var,
+        then_statements: then_else_s,
     }];
 
     let mut else_endif_s = Vec::new();
     let mut rest = s;
-    let mut end_clause = then_else_s.1;
     if end_clause == "endif" {
         log::debug!("endif reached");
     }
@@ -1469,7 +1471,7 @@ pub(crate) fn parse_ifdef_inner(i: Span, cvar: CheckedVar) -> IResult<Span, Loca
 pub(crate) fn parse_ifdef_endif(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, cvar) = parse_checked_var(i)?;
     let (s, _) = opt(ws1)(s)?;
-    let ctx = if cvar.1 {
+    let ctx: &str = if cvar.is_not_cond() {
         "parsing ifndef block"
     } else {
         "parsing ifdef block"
@@ -1488,7 +1490,6 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)
         .map_err(|e| Err::IoError(e, Loc::default()))?;
-    //contents.retain( |e| *e != b'\r');
     parse_statements_until_eof(Span::new(contents.as_bytes()))
 }
 
