@@ -207,10 +207,10 @@ impl ParseState {
         cur_file_desc: TupPathDescriptor,
         cur_env_desc: EnvDescriptor,
         statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
+        bo: Arc<RwLock<BufferObjects>>,
     ) -> Self {
         let mut def_vars = HashMap::new();
         let dir = get_parent_with_fsep(cur_file).to_string();
-        let pbuffers = Arc::new(RwLock::new(BufferObjects::new(dir.as_str())));
         def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
 
         ParseState {
@@ -221,7 +221,7 @@ impl ParseState {
             cur_file_desc,
             cur_env_desc,
             statement_cache: statement_cache.clone(),
-            path_buffers: pbuffers,
+            path_buffers: bo,
             ..ParseState::default()
         }
     }
@@ -246,6 +246,9 @@ impl ParseState {
     {
         let mut pb = self.path_buffers.write();
         f(pb.deref_mut())
+    }
+    pub fn get_path_buffers(&self) -> Arc<RwLock<BufferObjects>> {
+        self.path_buffers.clone()
     }
 
     pub fn switch_tupfile_and_process(
@@ -362,7 +365,6 @@ trait ExpandRun {
         &self,
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        path_buffers: &mut impl PathBuffers,
         loc: &Loc,
         res: &mut Vec<LocatedStatement>,
     ) -> Result<(), Error>
@@ -377,11 +379,14 @@ impl ExpandRun for Statement {
         &self,
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        path_buffers: &mut impl PathBuffers,
         loc: &Loc,
         res: &mut Vec<LocatedStatement>,
     ) -> Result<(), Error> {
         let rule_ref = TupLoc::new(&parse_state.cur_file_desc, loc);
+
+        let path_buffers = parse_state.get_path_buffers();
+        let mut path_buffers = path_buffers.write();
+        let path_buffers = path_buffers.deref_mut();
         match self {
             Statement::Preload(v) => {
                 let dir = v.cat();
@@ -521,7 +526,6 @@ impl ExpandRun for Vec<LocatedStatement> {
         &self,
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        path_buffers: &mut impl PathBuffers,
         _: &Loc,
         res: &mut Vec<LocatedStatement>,
     ) -> Result<(), Error>
@@ -532,7 +536,7 @@ impl ExpandRun for Vec<LocatedStatement> {
             .map(|l| -> Result<(), Error> {
                 let loc = l.get_loc();
                 l.get_statement()
-                    .expand_run(parse_state, path_searcher, path_buffers, loc, res)
+                    .expand_run(parse_state, path_searcher, loc, res)
             })
             .collect()
     }
@@ -2392,6 +2396,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             tup_desc,
             env_desc,
             self.statement_cache.clone(),
+            self.path_buffers.clone(),
         );
         // now we ready to parse the tupfile or tupfile.lua
         {
@@ -2446,6 +2451,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             tup_desc,
             env_desc,
             self.statement_cache.clone(),
+            self.path_buffers.clone(),
         );
         // now we ready to parse the tupfile or tupfile.lua
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
@@ -2469,32 +2475,30 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         let mut parse_state = statements_to_resolve.parse_state;
         let mut stmts = statements_to_resolve.statements;
         let tup_desc = *parse_state.get_cur_file_desc();
-        let res =
-            self.with_path_buffers_do(|bo_ref_mut| -> Result<Vec<LocatedStatement>, Error> {
-                let mut res = Vec::new();
-                // create a transform function that will substitute variables in the statements
-                for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
-                    let searcher = self.get_path_searcher();
-                    let vs = stmt.subst(&mut parse_state, searcher.deref())?;
-                    // create a vector generator over the statements
-                    if vs
-                        .iter()
-                        .map(|l| l.get_statement())
-                        .any(|s| matches!(s, Statement::Run(_)))
-                    {
-                        vs.expand_run(
-                            &mut parse_state,
-                            self.get_path_searcher().deref(),
-                            bo_ref_mut,
-                            &Loc::new(0, 0, 0),
-                            &mut res,
-                        )?;
-                    } else {
-                        res.extend(vs);
-                    }
+        let res = {
+            let mut res = Vec::new();
+            // create a transform function that will substitute variables in the statements
+            for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
+                let searcher = self.get_path_searcher();
+                let vs = stmt.subst(&mut parse_state, searcher.deref())?;
+                // create a vector generator over the statements
+                if vs
+                    .iter()
+                    .map(|l| l.get_statement())
+                    .any(|s| matches!(s, Statement::Run(_)))
+                {
+                    vs.expand_run(
+                        &mut parse_state,
+                        self.get_path_searcher().deref(),
+                        &Loc::new(0, 0, 0),
+                        &mut res,
+                    )?;
+                } else {
+                    res.extend(vs);
                 }
-                Ok(res)
-            })?;
+            }
+            Ok::<Vec<LocatedStatement>, Err>(res)
+        }?;
         let stmts = res;
         debug!(
             "num statements after expand run:{:?} in tupfile {:?}",

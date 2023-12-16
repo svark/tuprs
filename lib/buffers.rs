@@ -990,6 +990,12 @@ impl PathBuffers for BufferObjects {
     /// add environment variable to the list of variables active in current tupfile until now
     /// This appends a new env var current list of env vars.
     fn add_env_var(&mut self, var: String, cur_env_desc: &EnvDescriptor) -> EnvDescriptor {
+        debug!(
+            "add env var {} to cur env :{} in ebo with size:{}",
+            var.as_str(),
+            cur_env_desc,
+            self.ebo.0.len()
+        );
         if let Some(env) = self.try_get_env(cur_env_desc) {
             if env.contains(&var) {
                 cur_env_desc.clone()

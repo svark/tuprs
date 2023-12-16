@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use nom::bytes::complete::{is_a, is_not};
-use nom::character::complete::newline;
-use nom::character::complete::{line_ending, multispace0, multispace1, space0, space1};
+use nom::character::complete::{line_ending, multispace0, space0, space1};
+use nom::character::complete::{multispace1, newline, not_line_ending};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
@@ -26,6 +26,7 @@ use crate::transform;
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
 
+const END_KEYWORDS: [&str; 3] = ["else", "endif", "endef"];
 fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
 }
@@ -52,12 +53,9 @@ fn is_ident_perc(c: u8) -> bool {
     nom::character::is_alphanumeric(c) || c == b'_' || c == b'-' || c == b'.' || c == b'%'
 }
 fn ws1(input: Span) -> IResult<Span, Span> {
-    alt((
-        preceded(tag("\\"), line_ending),
-        multispace1,
-        map(peek(one_of("<{")), |_| Span::new(b"".as_ref())),
-    ))(input)
+    alt((manynewlineesc, space1))(input)
 }
+
 fn manynewlineesc(input: Span) -> IResult<Span, Span> {
     let (s, _) = many1(preceded(tag("\\"), line_ending))(input)?;
     Ok((s, default_inp()))
@@ -713,7 +711,10 @@ fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExp
 
 // read all pathexpr separated by whitespaces, pausing at BRKTOKS
 fn parse_pathexpr_list_until_ws_plus(input: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
-    many_till(|i| parse_pathexpr_no_ws(i, " \t\r\n", &BRKTOKS), ws1)(input)
+    many_till(
+        |i| parse_pathexpr_no_ws(i, " \t\r\n", &BRKTOKS),
+        multispace1,
+    )(input)
 }
 
 pub(crate) fn parse_lines(input: Span) -> IResult<Span, Vec<(Vec<PathExpr>, char)>> {
@@ -738,18 +739,19 @@ impl From<(Statement, Span<'_>)> for LocatedStatement {
 
 // parse include expression
 fn parse_include(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("include")(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context("include statement", cut(parse_pathexpr_list_until_ws_plus))(s)?;
     let (s, _) = multispace0(s)?;
     //let (s, _) = line_ending(s)?;
     let offset = i.offset(&s);
+    log::debug!("parsed include: {:?} ", r.0);
     Ok((s, (Statement::Include(r.0), i.slice(..offset)).into()))
 }
 // parse error expression
 fn parse_message(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, level) = alt((
         value(Level::Error, tag("$(error")),
         value(Level::Warning, tag("$(warn")),
@@ -770,7 +772,7 @@ fn parse_message(i: Span) -> IResult<Span, LocatedStatement> {
 // parse export expression
 // export VARIABLE
 fn parse_export(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("export")(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context("export expression", cut(take_while(is_ident)))(s)?;
@@ -794,7 +796,7 @@ fn parse_export(i: Span) -> IResult<Span, LocatedStatement> {
 // Unlike 'export', the import command does not pass the variables to the sub-process's environment.
 // In the previous example, the CC environment variable is therefore not set in the subprocess, unless 'export CC' was also in the Tupfile.
 fn parse_import(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("import")(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context("import expression", cut(take_while(is_ident)))(s)?;
@@ -819,11 +821,14 @@ fn parse_import(i: Span) -> IResult<Span, LocatedStatement> {
 // parse preload expression
 // preload directory
 fn parse_preload(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("preload")(s)?;
     let (s, _) = sp1(s)?;
     // preload a single directory
-    let (s, r) = context("preload expression", cut(parse_pathexpr_list_until_ws_plus))(s)?;
+    let (s, r) = context(
+        "preload expression",
+        cut(parse_pelist_till_line_end_with_ws),
+    )(s)?;
     let (s, _) = multispace0(s)?;
     let offset = i.offset(&s);
     Ok((s, (Statement::Preload(r.0), i.slice(..offset)).into()))
@@ -834,7 +839,7 @@ fn parse_preload(i: Span) -> IResult<Span, LocatedStatement> {
 // reading other directories requires preload
 // run ./build.sh *.c src/*.c
 fn parse_run(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("run")(s)?;
     let (s, _) = sp1(s)?;
     // run  script paths
@@ -845,7 +850,7 @@ fn parse_run(i: Span) -> IResult<Span, LocatedStatement> {
 }
 // parse include_rules expresssion
 fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("include_rules")(s)?;
     let (s, _) = complete(ws0_line_ending)(s)?;
     let offset = i.offset(&s);
@@ -854,7 +859,7 @@ fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
 
 // parse comment expresssion
 fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("#")(s)?;
     let (s, _) = opt(is_not("\n\r"))(s)?;
     let (s, _) = line_ending(s)?;
@@ -865,7 +870,7 @@ fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
 ///       commands..
 /// dep1 dep2 could be outputs, group, bin or another task
 fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("task")(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, name) = context(
@@ -901,17 +906,16 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
 
 /// parse an assignment expression
 fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     // parse the left side of the assignment
     let (s, left) = parse_lvalue(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, op) = alt((tag("="), tag(":="), tag("?="), tag("+=")))(s)?;
-    log::debug!("parsing assignment expression with lhs  \n{:?}", left.name);
+    log::debug!("parsing assignment expression with lhs {:?}", left.name);
     log::debug!("op:{:?}", std::str::from_utf8(op.fragment()).unwrap_or(""));
     let (s, _) = opt(sp1)(s)?;
     let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     log::debug!("and rhs: {:?}", r);
-    let (s, _) = opt(many0(newline))(s)?;
     let right = r.0;
     let offset = i.offset(&s);
     Ok((
@@ -931,7 +935,7 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
 
 /// parse a define statement and its body until enddef occurs
 fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("define")(s)?;
     let (s, _) = sp1(s)?;
     log::debug!("parsing define expression");
@@ -952,6 +956,7 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
         (Statement::Define(ident, body), i.slice(..offset)).into(),
     ))
 }
+
 // eval block statements are parsed in the initial phase as regular pathexprs.
 // These will be parsed again in the second phase
 // during substitution as regular statements that can be evaluated.
@@ -959,21 +964,31 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
 // even raw pathexprs are parsed as eval blocks.. Later is useful as return values of functions.
 // See test case in Tupfile2
 fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
     // there is no standard way to determine we are parsing an eval block. Any string of tokens can be an eval block.
+    let s = i;
     log::debug!(
-        "attemptint to parse input as eval block: {:?}",
-        from_utf8(i)
+        "attempting to parse input as eval block: {:?}",
+        from_utf8(s)
     );
     let (s, (body, _)) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     log::debug!("parsed eval block: {:?}", body);
+    if body.is_empty() {
+        return Err(Err::Error(error_position!(s, ErrorKind::Escaped)));
+    }
+    if let PathExpr::Literal(v) = body.first().unwrap() {
+        for keyword in END_KEYWORDS {
+            if v.as_str().eq(keyword) {
+                return Err(Err::Error(error_position!(s, ErrorKind::Escaped)));
+            }
+        }
+    }
     let offset = i.offset(&s);
     Ok((s, (Statement::EvalBlock(body), i.slice(..offset)).into()))
 }
 
 // parse an assignment expression
 fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, l) = context("lhs", parse_lvalue_ref)(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, op) = alt((
@@ -1003,7 +1018,7 @@ fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
 }
 // parse description insude a rule (between ^^)
 fn parse_rule_flags_or_description(i: Span) -> IResult<Span, String> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("^")(s)?;
     let (s, r) = cut(map_res(take_until("^"), from_utf8))(s)?;
     let (s, _) = tag("^")(s)?;
@@ -1118,7 +1133,7 @@ fn parse_primary_output0(i: Span) -> IResult<Span, (Vec<PathExpr>, bool)> {
 /// parse a rule expression of the form
 /// : \[foreach\] \[inputs\] \[ \| order-only inputs\] \|\> command \|\> \[outputs\] \[ | extra outputs\] \[exclusions\] \[<group>\] \[{bin}\]
 pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag(":")(s)?;
     log::debug!("parsing rule expression at line:{}", i.location_line());
     let (s, _) = opt(sp1)(s)?;
@@ -1187,7 +1202,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
 }
 
 pub(crate) fn parse_searchpaths(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = alt((complete(tag("searchpaths")), complete(tag("vpath"))))(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context(
@@ -1201,7 +1216,7 @@ pub(crate) fn parse_searchpaths(i: Span) -> IResult<Span, LocatedStatement> {
 // parse a macro assignment which is more or less same as parsing a rule expression
 // !macro = [inputs] | [order-only inputs] |> command |> [outputs]
 pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> {
-    let (s, _) = multispace0(i)?;
+    let s = i;
     let (s, _) = tag("!")(s)?;
     let (s, macroname) = take_while(is_ident)(s)?;
     let (s, _) = opt(sp1)(s)?;
@@ -1265,6 +1280,21 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
 
 // parse any of the different types of statements in a tupfile
 pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
+    let (s, _) = multispace0(i)?;
+    if s.is_empty() {
+        return Err(Err::Error(error_position!(s, ErrorKind::Eof)));
+    }
+    if log::log_enabled!(log::Level::Debug) {
+        let (_, c) = opt(peek(many_till(not_line_ending, line_ending)))(s)?;
+        if let Some(c) = c {
+            let l =
+                c.0.iter()
+                    .cloned()
+                    .map(|c| from_utf8(c).unwrap())
+                    .collect::<Vec<_>>();
+            log::debug!("line: {:?}", l.join(" "));
+        }
+    }
     alt((
         complete(parse_comment),
         complete(parse_include),
@@ -1284,21 +1314,24 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_task_statement),
         complete(parse_searchpaths),
         complete(parse_eval_block),
-    ))(i)
+    ))(s)
 }
 
 /// parse until the start of else block
 fn parse_statements_until_else_or_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>, &str)> {
     let g = alt((
-        value("else", preceded(opt(ws1), tag("else"))),
-        value("endif", preceded(opt(ws1), tag("endif"))),
+        value("else", preceded(multispace0, tag("else"))),
+        value("endif", preceded(multispace0, tag("endif"))),
     ));
     many_till(parse_statement, g)(i)
 }
 
 /// parse until endif statement
 fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>, &str)> {
-    let g = value("endif", delimited(opt(ws1), tag("endif"), ws0_line_ending));
+    let g = value(
+        "endif",
+        delimited(multispace0, tag("endif"), ws0_line_ending),
+    );
     many_till(parse_statement, g)(i)
 }
 
@@ -1323,17 +1356,19 @@ pub(crate) fn parse_statements_until_eof(
 
 // parse equality condition (only the condition, not the statements that follow if)
 pub(crate) fn parse_eq(i: Span) -> IResult<Span, EqCond> {
-    let (s, _) = opt(ws1)(i)?;
+    let s = i;
     let (s, not_cond) = alt((
         complete(value(false, tag("ifeq"))),
         complete(value(true, tag("ifneq"))),
     ))(s)?;
-    let (s, _) = opt(ws1)(s)?;
-    let (s, _) = char('(')(s)?;
-    let (s, (e1, _)) = parse_pelist_till_delim_no_ws(s, ",", &BRKTOKS)?;
-    let (s, _) = opt(sp1)(s)?;
-    let (s, (e2, _)) = parse_pelist_till_delim_no_ws(s, ")", &BRKTOKS)?;
-    let (s, _) = many0(newline)(s)?;
+    let (s, (e1, e2)) = context("parsing eq condition", cut(complete(parse_eq_inner)))(s)?;
+    log::debug!(
+        "parsed eq condition: {:?} {}= {:?}",
+        e1,
+        if not_cond { "!" } else { "" },
+        e2
+    );
+
     Ok((
         s,
         EqCond {
@@ -1344,13 +1379,25 @@ pub(crate) fn parse_eq(i: Span) -> IResult<Span, EqCond> {
     ))
 }
 
+fn parse_eq_inner(s: Span) -> IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)> {
+    let (s, _) = opt(ws1)(s)?;
+    let (s, _) = char('(')(s)?;
+    let (s, (e1, _)) = parse_pelist_till_delim_no_ws(s, ",", &BRKTOKS)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, (e2, _)) = parse_pelist_till_delim_no_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = many0(newline)(s)?;
+    Ok((s, (e1, e2)))
+}
+
 pub(crate) fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
-    let (s, _) = opt(ws1)(i)?;
+    let s = i;
     let (s, negate) = alt((map(tag("ifdef "), |_| false), map(tag("ifndef "), |_| true)))(s)?;
-    log::debug!("parsing if{}def", if negate { "n" } else { "" });
+    let c = if negate { "n" } else { "" };
+    log::debug!("parsing if{}def", c);
     let (s, _) = opt(ws1)(s)?;
     let (s, var) = cut(complete(parse_lvalue))(s)?;
     let (s, _) = opt(ws1)(s)?;
+    log::debug!("parsed if{}def var: {:?}", c, var);
     Ok((s, CheckedVar::new(var, negate)))
 }
 

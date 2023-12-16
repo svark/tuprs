@@ -272,14 +272,14 @@ pub(crate) fn write_statement<T: std::io::Write>(
         } => {
             for stmt in then_elif_statements {
                 if stmt.eq.not_cond {
-                    write!(writer, "ifneq ").unwrap();
+                    write!(writer, "ifneq (").unwrap();
                 } else {
-                    write!(writer, "ifeq ").unwrap();
+                    write!(writer, "ifeq (").unwrap();
                 }
                 write_pathexprs(writer, &stmt.eq.lhs);
                 write!(writer, ", ").unwrap();
                 write_pathexprs(writer, &stmt.eq.rhs);
-                write!(writer, "\n").unwrap();
+                write!(writer, ")\n").unwrap();
                 for stmt in &stmt.then_statements {
                     write!(writer, "    ").unwrap();
                     write_statement(writer, &stmt);
