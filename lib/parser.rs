@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use nom::bytes::complete::{is_a, is_not};
 use nom::character::complete::{line_ending, multispace0, space0, space1};
 use nom::character::complete::{multispace1, newline, not_line_ending};
-use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
+use nom::combinator::{complete, cut, eof, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
 use nom::number::{complete, Endianness};
@@ -64,8 +64,8 @@ fn sp1(input: Span) -> IResult<Span, Span> {
 
 /// ignore until line ending
 fn ws0_line_ending(i: Span) -> IResult<Span, ()> {
-    let (s, _) = opt(many0(space0))(i)?;
-    let (s, _) = line_ending(s)?;
+    let (s, _) = space0(i)?;
+    let (s, _) = alt((line_ending, eof))(s)?;
     Ok((s, ()))
 }
 // checks for presence of a group expression that begins with some path.`
@@ -741,7 +741,6 @@ fn parse_include(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = sp1(s)?;
     let (s, r) = context("include statement", cut(parse_pathexpr_list_until_ws_plus))(s)?;
     let (s, _) = multispace0(s)?;
-    //let (s, _) = line_ending(s)?;
     let offset = i.offset(&s);
     log::debug!("parsed include: {:?} ", r.0);
     Ok((s, (Statement::Include(r.0), i.slice(..offset)).into()))
@@ -1419,6 +1418,7 @@ pub(crate) fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, 
     while end_clause == "else" {
         // at this point if else block can continue to add more conditional blocks or finish with endif
         if let (s, Some(cvarinner)) = opt(preceded(sp1, parse_eq))(rest)? {
+            log::debug!("parsing else if block");
             let (s, _) = opt(sp1)(s)?;
             let (s, cond_then_s) = parse_statements_until_else_or_endif(s)?;
             end_clause = cond_then_s.1;
@@ -1426,17 +1426,21 @@ pub(crate) fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, 
                 eq: cvarinner,
                 then_statements: cond_then_s.0,
             };
+            log::debug!("parsed else if block: {:?}", cond_then_statements_inner);
             cvar_then_statements.push(cond_then_statements_inner);
             rest = s;
         } else {
+            log::debug!("parsing else block until endif");
             let (s, _) = opt(sp1)(rest)?;
             let (s, else_s) = parse_statements_until_endif(s)?;
             rest = s;
+            log::debug!("parsed else block: {:?}", else_s);
             else_endif_s = else_s.0;
             break;
         }
     }
 
+    log::debug!("parsed if else endif block");
     let s = rest;
     let offset = i.offset(&s);
     Ok((
