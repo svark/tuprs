@@ -21,7 +21,7 @@ use crate::glob::{Candidate, GlobBuilder, GlobMatcher};
 use crate::paths::{GlobPath, InputResolvedType, MatchingPath, NormalPath};
 use crate::statements::{Cat, Env, EnvDescriptor};
 use crate::transform::get_parent;
-use crate::{errors, glob, paths};
+use crate::{glob, paths};
 
 /// Methods to store and retrieve paths, groups, bins, rules from in-memory buffers
 /// This way we can identify paths /groups/bins and environment by their unique descriptors (ids)
@@ -158,7 +158,7 @@ pub(crate) struct GenTaskBufferObject(BiBTreeMap<TaskInstance, TaskDescriptor>);
 
 impl<T> GenPathBufferObject<T>
 where
-    T: Eq + Clone + Hash + From<usize> + std::fmt::Display,
+    T: Eq + Clone + Hash + From<usize> + Display,
 {
     /// Construct  that stores paths and its descriptors as a `BiMap' relative to root_dir
     pub fn new<P: AsRef<Path>>(root_dir: P) -> Self {
@@ -618,7 +618,7 @@ impl GeneratedFiles {
         &mut self,
         path_buffers: &impl PathBuffers,
         new_outputs: &impl OutputHandler,
-    ) -> Result<(), errors::Error> {
+    ) -> Result<(), Error> {
         for (k, new_paths) in new_outputs.get_groups().iter() {
             self.groups
                 .entry(*k)
@@ -633,7 +633,7 @@ impl GeneratedFiles {
         &mut self,
         path_buffers: &impl PathBuffers,
         other: &impl OutputHandler,
-    ) -> Result<(), errors::Error> {
+    ) -> Result<(), Error> {
         for (k, new_paths) in other.get_bins().iter() {
             self.bins
                 .entry(*k)
@@ -650,7 +650,7 @@ impl GeneratedFiles {
         &mut self,
         path_buffers: &impl PathBuffers,
         out: &impl OutputHandler,
-    ) -> Result<(), errors::Error> {
+    ) -> Result<(), Error> {
         self.merge_group_tags(path_buffers, out)?;
         self.merge_output_files(path_buffers, out)?;
         self.merge_bin_tags(path_buffers, out)
@@ -662,7 +662,7 @@ impl GeneratedFiles {
         &mut self,
         path_buffers: &impl PathBuffers,
         new_outputs: &impl OutputHandler,
-    ) -> Result<(), errors::Error> {
+    ) -> Result<(), Error> {
         self.output_files
             .extend(new_outputs.get_output_files().iter().cloned());
         for (dir, ch) in new_outputs.get_children().iter() {
@@ -684,12 +684,12 @@ impl GeneratedFiles {
         path_buffers: &impl PathBuffers,
         new_parent_rule: &HashMap<PathDescriptor, TupLoc>,
         new_path_descs: &HashSet<PathDescriptor>,
-    ) -> Result<(), errors::Error> {
+    ) -> Result<(), Error> {
         for new_path_desc in new_path_descs.iter() {
             let new_parent = new_parent_rule
                 .get(new_path_desc)
                 .expect("parent rule not found");
-            log::debug!(
+            debug!(
                 "Setting parent for  path: {:?} to rule:{:?}:{:?}",
                 path_buffers.get_path(new_path_desc),
                 path_buffers.get_tup_path(new_parent.get_tupfile_desc()),
@@ -708,7 +708,7 @@ impl GeneratedFiles {
                             old_rule_path,
                             old_rule_line
                         );
-                        return Err(errors::Error::MultipleRulesToSameOutput(
+                        return Err(Error::MultipleRulesToSameOutput(
                             *new_path_desc,
                             new_parent.clone(),
                             pe.get().clone(),
@@ -826,11 +826,7 @@ impl OutputHandler for OutputHolder {
         self.get_mut().add_bin_entry(bin_desc, pd)
     }
 
-    fn merge(
-        &mut self,
-        p: &impl PathBuffers,
-        out: &impl OutputHandler,
-    ) -> Result<(), errors::Error> {
+    fn merge(&mut self, p: &impl PathBuffers, out: &impl OutputHandler) -> Result<(), Error> {
         self.get_mut().merge(p, out)
     }
 }

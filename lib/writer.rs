@@ -44,7 +44,7 @@ impl RuleFormula {
 }
 
 impl Link {
-    fn write_fmt<W: std::io::Write>(&self, f: &mut BufWriter<W>) {
+    fn write_fmt<W: Write>(&self, f: &mut BufWriter<W>) {
         write!(f, ":").unwrap();
         self.source.write_fmt(f);
         write!(f, " |>").unwrap();
@@ -65,6 +65,9 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
         PathExpr::Literal(s) => {
             write!(writer, "{}", s).unwrap();
         }
+        PathExpr::NL => {
+            write!(writer, "\n").unwrap();
+        }
         PathExpr::Sp1 => {
             write!(writer, " ").unwrap();
         }
@@ -80,61 +83,61 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
             DollarExprs::AddPrefix(p, a) => {
                 write!(writer, "$(addprefix ").unwrap();
                 write_pathexprs(writer, p);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, a);
                 write!(writer, ")").unwrap();
             }
             DollarExprs::AddSuffix(s, a) => {
                 write!(writer, "$(addsuffix ").unwrap();
                 write_pathexprs(writer, s);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, a);
                 write!(writer, ")").unwrap();
             }
             DollarExprs::Subst(p, r, text) => {
                 write!(writer, "$(subst ").unwrap();
                 write_pathexprs(writer, p);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, r);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, text);
                 write!(writer, ")").unwrap();
             }
             DollarExprs::PatSubst(p, r, t) => {
                 write!(writer, "$(patsubst ").unwrap();
                 write_pathexprs(writer, p);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, r);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, t);
                 write!(writer, ")").unwrap();
             }
             DollarExprs::Filter(f, t) => {
                 write!(writer, "$(filter ").unwrap();
                 write_pathexprs(writer, f);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, t);
                 write!(writer, ")").unwrap();
             }
             DollarExprs::FilterOut(fo, t) => {
                 write!(writer, "$(filter-out ").unwrap();
                 write_pathexprs(writer, fo);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, t);
                 write!(writer, ")").unwrap();
             }
             DollarExprs::ForEach(v, arr, body) => {
                 write!(writer, "$(foreach ").unwrap();
-                write!(writer, "{}, ", v).unwrap();
+                write!(writer, "{},", v).unwrap();
                 write_pathexprs(writer, arr);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, body);
                 write!(writer, ")").unwrap();
             }
             DollarExprs::FindString(p, text) => {
                 write!(writer, "$(findstring ").unwrap();
                 write_pathexprs(writer, p);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, text);
                 write!(writer, ")").unwrap();
             }
@@ -174,7 +177,7 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
                 write!(writer, ")").unwrap();
             }
             DollarExprs::Word(i, t) => {
-                write!(writer, "$(word {}, ", i).unwrap();
+                write!(writer, "$(word {},", i).unwrap();
                 write_pathexprs(writer, t);
                 write!(writer, ")").unwrap();
             }
@@ -186,16 +189,18 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
             DollarExprs::If(cond, then_part, else_part) => {
                 write!(writer, "$(if ").unwrap();
                 write_pathexprs(writer, cond);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, then_part);
-                write!(writer, ", ").unwrap();
+                write!(writer, ",").unwrap();
                 write_pathexprs(writer, else_part);
                 write!(writer, ")").unwrap();
             }
             DollarExprs::Call(name, args) => {
                 write!(writer, "$(call ").unwrap();
                 write_pathexprs(writer, name);
-                write!(writer, ", ").unwrap();
+                if !args.is_empty() {
+                    write!(writer, ",").unwrap();
+                }
                 for arg in args {
                     write_pathexprs(writer, arg);
                     write!(writer, ", ").unwrap();
@@ -244,10 +249,7 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
     }
 }
 
-pub(crate) fn write_statement<T: std::io::Write>(
-    writer: &mut BufWriter<T>,
-    stmt: &LocatedStatement,
-) {
+pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &LocatedStatement) {
     match stmt.get_statement() {
         Statement::AssignExpr {
             left,
@@ -263,6 +265,12 @@ pub(crate) fn write_statement<T: std::io::Write>(
             } else {
                 write!(writer, "{} = ", left_str).unwrap();
             }
+            write_pathexprs(writer, &right);
+            write!(writer, "\n").unwrap();
+        }
+        Statement::LazyAssignExpr { left, right } => {
+            let left_str = left.to_string();
+            write!(writer, "{} ~= ", left_str).unwrap();
             write_pathexprs(writer, &right);
             write!(writer, "\n").unwrap();
         }
@@ -324,15 +332,15 @@ pub(crate) fn write_statement<T: std::io::Write>(
             write_pathexprs(writer, f);
             write!(writer, "\n").unwrap();
         }
-        Statement::Message(pe, e) => {
-            if e.eq(&Level::Info) {
+        Statement::Message(e, level) => {
+            if Level::Info.eq(level) {
                 write!(writer, "$(info ").unwrap();
-            } else if e.eq(&Level::Warning) {
+            } else if Level::Warning.eq(level) {
                 write!(writer, "$(warning ").unwrap();
-            } else if e.eq(&Level::Error) {
+            } else {
                 write!(writer, "$(error ").unwrap();
             }
-            write_pathexprs(writer, pe);
+            write_pathexprs(writer, e);
             write!(writer, ")\n").unwrap();
         }
         Statement::SearchPaths(paths) => {
@@ -343,7 +351,7 @@ pub(crate) fn write_statement<T: std::io::Write>(
         Statement::Define(d, v) => {
             write!(writer, "define ").unwrap();
             write!(writer, "{}\n", d.name).unwrap();
-            write!(writer, "{}\n", v).unwrap();
+            write_pathexprs(writer, v);
             write!(writer, "endef\n").unwrap();
         }
         Statement::Task(t) => {
@@ -378,7 +386,7 @@ pub(crate) fn write_statement<T: std::io::Write>(
             write_pathexprs(writer, body);
             write!(writer, "\n").unwrap();
         }
-        Statement::AsignRefExpr {
+        Statement::AssignRefExpr {
             left,
             right,
             is_append,
@@ -390,7 +398,7 @@ pub(crate) fn write_statement<T: std::io::Write>(
             } else if *is_empty_assign {
                 write!(writer, " ?= ").unwrap();
             } else {
-                write!(writer, " = ").unwrap();
+                write!(writer, " := ").unwrap();
             }
             write_pathexprs(writer, &right);
             write!(writer, "\n").unwrap();

@@ -35,7 +35,6 @@ use crate::paths::{GlobPath, InputResolvedType};
 use crate::platform::*;
 use crate::scriptloader::parse_script;
 use crate::statements::DollarExprs;
-use crate::statements::DollarExprs::AbsPath;
 use crate::statements::PathExpr::DollarExprs as DExpr;
 use crate::statements::*;
 use crate::transform::ParseContext::Expression;
@@ -102,7 +101,7 @@ pub(crate) struct ParseState {
     /// tupfile reference variables to be substituted
     pub(crate) rexpr_map: HashMap<String, Vec<String>>,
     // defined functions
-    pub(crate) func_map: HashMap<String, String>,
+    pub(crate) func_map: HashMap<String, Vec<PathExpr>>,
     // defered variables that will be substituted at the call site
     //pub (crate) defered_expr_map : HashMap<String, PathExpr>,
     /// configuration values read from tup.config
@@ -609,7 +608,7 @@ impl PathExpr {
                     log::warn!("atexpr {} not found", x);
                     vec![PathExpr::Literal("".to_owned())]
                 } else {
-                    log::debug!("delay subst of atexpr {}", x);
+                    debug!("delay subst of atexpr {}", x);
                     vec![self.clone()]
                 }
             }
@@ -620,7 +619,7 @@ impl PathExpr {
                     log::warn!("ampexpr {} not found", x);
                     vec![PathExpr::from("".to_owned())]
                 } else {
-                    log::debug!("delay subst of ampexpr {}", x);
+                    debug!("delay subst of ampexpr {}", x);
                     vec![self.clone()]
                 }
             }
@@ -640,6 +639,18 @@ impl PathExpr {
     }
 }
 
+fn to_regex(pat: &str) -> String {
+    let mut regex_pattern = String::new();
+    for c in pat.chars() {
+        match c {
+            '%' => regex_pattern.push_str(".*"),
+            '.' => regex_pattern.push_str(r"\."),
+            _ => regex_pattern.push(c),
+        }
+    }
+    regex_pattern.push('$');
+    regex_pattern
+}
 impl DollarExprs {
     fn subst_ca(&self, m: &mut CallArgsMap) -> Vec<PathExpr> {
         match self {
@@ -710,7 +721,7 @@ impl DollarExprs {
             }
             DollarExprs::AbsPath(ref vs) => {
                 let vs = vs.subst_ca(m);
-                vec![DExpr(AbsPath(vs))]
+                vec![DExpr(DollarExprs::AbsPath(vs))]
             }
             DollarExprs::BaseName(ref vs) => {
                 let vs = vs.subst_ca(m);
@@ -730,20 +741,16 @@ impl DollarExprs {
                 vec![DExpr(DollarExprs::FirstWord(vs))]
             }
             DollarExprs::If(ref cond, ref if_part, ref else_part) => {
-                log::debug!(
+                debug!(
                     "if cond:{:?} if_part:{:?} else_part:{:?}",
-                    cond,
-                    if_part,
-                    else_part
+                    cond, if_part, else_part
                 );
                 let cond = cond.subst_ca(m);
                 let if_part = if_part.subst_ca(m);
                 let else_part = else_part.subst_ca(m);
-                log::debug!(
+                debug!(
                     "if cond:{:?} if_part:{:?} else_part:{:?}",
-                    cond,
-                    if_part,
-                    else_part
+                    cond, if_part, else_part
                 );
                 vec![DExpr(DollarExprs::If(cond, if_part, else_part))]
             }
@@ -768,6 +775,8 @@ impl DollarExprs {
                 if let Some(val) = m.expr_map.get(x.as_str()) {
                     let vs = intersperse_sp1(val);
                     vs
+                } else if let Some(val) = m.func_map.get(x.as_str()).cloned() {
+                    val.subst_pe(m, path_searcher)
                 } else if m.parse_context == Expression || x.contains('%') {
                     log::warn!("dollarexpr {} not found", x);
                     vec![self.clone().into()]
@@ -800,49 +809,77 @@ impl DollarExprs {
                 replacer(&vs)
             }
 
-            DollarExprs::Filter(ref filter, ref vs) => {
-                let vs = vs.subst_pe(m, path_searcher);
-                let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
-                let next = |x: &[PathExpr]| -> Vec<PathExpr> {
-                    let mut vs = x.to_vec();
-                    vs.retain(|x| {
-                        let s = x.cat_ref();
-                        if !s.is_empty() {
-                            for f in filter.iter() {
-                                if let PathExpr::Literal(ref f) = f {
-                                    if s.contains(f.as_str()) {
+            DollarExprs::Filter(ref filter, ref body) => {
+                let mut body = body.subst_pe(m, path_searcher);
+                body.cleanup();
+                let mut filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
+                filter.cleanup();
+                log::debug!("body:{:?} on which we filter:{:?}", body, filter);
+
+                body.retain(|target| {
+                    let target_tok = target.cat_ref();
+                    if target_tok.is_empty() {
+                        false
+                    } else {
+                        for f in filter.iter() {
+                            if let PathExpr::Literal(ref f) = f {
+                                let pat = f.as_str();
+                                if pat.contains("%") {
+                                    let pat_str: String = to_regex(pat);
+                                    log::debug!(
+                                        "checking if glob: {:?} matches target: {:?}",
+                                        pat_str,
+                                        target_tok
+                                    );
+                                    if regex::Regex::new(pat_str.as_str())
+                                        .unwrap()
+                                        .is_match(target_tok.as_ref())
+                                    {
+                                        log::debug!("found a match");
+                                        return true;
+                                    }
+                                } else {
+                                    if target_tok.contains(pat) {
+                                        log::debug!(
+                                            "found a match for pattern:{:?} in target:{:?}",
+                                            pat,
+                                            target_tok
+                                        );
                                         return true;
                                     }
                                 }
                             }
                         }
                         false
-                    });
-                    vs
-                };
-                next(&vs)
+                    }
+                });
+                body
             }
-            DollarExprs::FilterOut(ref filter, ref vs) => {
-                let vs = vs.subst_pe(m, path_searcher);
+            DollarExprs::FilterOut(ref filter, ref body) => {
+                let mut body = body.subst_pe(m, path_searcher);
                 let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
-                let next = |x: &[PathExpr]| -> Vec<PathExpr> {
-                    let mut vs = x.to_vec();
-                    vs.retain(|x| {
-                        let s = x.cat_ref();
-                        if !s.is_empty() {
-                            for f in filter.iter() {
-                                if let PathExpr::Literal(ref f) = f {
-                                    if s.contains(f.as_str()) {
+                body.retain(|taget_tok| {
+                    let target_tok = taget_tok.cat_ref();
+                    if !target_tok.is_empty() {
+                        for f in filter.iter() {
+                            if let PathExpr::Literal(ref f) = f {
+                                if f.contains("%") {
+                                    let pat = to_regex(f.as_str());
+                                    if regex::Regex::new(pat.as_str())
+                                        .unwrap()
+                                        .is_match(target_tok.as_ref())
+                                    {
                                         return false;
                                     }
+                                } else if target_tok.contains(f.as_str()) {
+                                    return false;
                                 }
                             }
                         }
-                        true
-                    });
-                    vs
-                };
-                next(&vs)
+                    }
+                    true
+                });
+                body
             }
             DollarExprs::ForEach(var, list, body) => {
                 let mut list = list.subst_pe(m, path_searcher);
@@ -852,7 +889,7 @@ impl DollarExprs {
                 }
                 //let body = body.subst_pe(m);
                 let body_str = body.cat() + "\n";
-                log::debug!("eval foreach body as statements:\n{:?}", body_str);
+                debug!("eval foreach body as statements:\n{:?}", body_str);
                 let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
                     .expect("failed to parse body of for-each");
                 let mut vs = Vec::new();
@@ -868,13 +905,13 @@ impl DollarExprs {
                         );
                         vs.push(PathExpr::from("\n".to_owned()));
                         vs.push(PathExpr::Sp1);
-                        log::debug!(
+                        debug!(
                             "substed list var {}={} in foreach body :\n{:?}",
                             var.as_str(),
                             s.as_str(),
                             vs
                         );
-                        log::debug!(
+                        debug!(
                             "$seen:{}",
                             m.expr_map.get("seen").unwrap_or(&vec![]).join(" ")
                         );
@@ -1193,30 +1230,28 @@ impl DollarExprs {
                     .unwrap_or_else(|| panic!("failed to find function: {}", func_name))
                     .clone();
                 debug!("wht args: {:?}", args);
-                debug!("body: {}", body);
+                debug!("body: {:?}", body);
 
                 let mut call_args_map = CallArgsMap::new();
-                let mut args_str = String::new();
-                for (i, arg) in args.iter().enumerate() {
+                let mut prefixed_args = Vec::new();
+                for (i, mut arg) in args.iter().cloned().enumerate() {
                     let arg_name = format!("{}", i + 1);
-                    args_str.push_str(format!("__arg{}__ = {}\n", i + 1, arg.cat()).as_str());
+                    arg.insert(0, PathExpr::from(format!("__arg{}__=", i + 1)));
+                    prefixed_args.extend(arg);
+                    prefixed_args.push(PathExpr::NL);
                     call_args_map.insert(arg_name, format!("$(__arg{}__)", i + 1))
                 }
 
-                let body = args_str + body.as_str() + "\n";
-                debug!("parsing lines in body:{}", body.as_str());
-                let (_, mut lines) = crate::parser::parse_lines(Span::new(body.as_bytes()))
-                    .unwrap_or_else(|x| panic!("failed to parse function body: {:?}", x));
+                let mut lines = body;
                 debug!("call lines: {:?}", lines);
-                let substed_lines: Vec<_> = lines
+                let substed_lines: Vec<_> = prefixed_args
                     .drain(..)
-                    .map(|(l, _)| l.subst_ca(&mut call_args_map))
-                    .map(|x| x.cat())
+                    .chain(lines.drain(..))
+                    .map(|l| l.subst_ca(&mut call_args_map))
+                    .flatten()
                     .collect();
 
-                let substed_lines_str = substed_lines.join("\n");
-                debug!("substed lines: {:?}", substed_lines_str);
-                vec![PathExpr::from(substed_lines_str)]
+                substed_lines
             }
 
             DollarExprs::If(cond, then_part, else_part) => {
@@ -1304,7 +1339,7 @@ impl DollarExprs {
         val: String,
         stmts_: Vec<LocatedStatement>,
     ) -> Vec<PathExpr> {
-        log::debug!("eval stmts before subst: {:?}", stmts_);
+        debug!("eval stmts before subst: {:?}", stmts_);
         let mut stmts = stmts_.subst(m, path_searcher).unwrap_or_else(|e| {
             panic!(
                 "failed to subst eval body statements statement: {:?} with error: {}",
@@ -1312,11 +1347,11 @@ impl DollarExprs {
                 e
             )
         });
-        log::debug!("eval stmts after subst: {:?}", stmts);
+        debug!("eval stmts after subst: {:?}", stmts);
         stmts.cleanup();
         let v: Vec<_> = stmts.iter().map(|x| x.cat()).collect();
         let str = v.join(" ");
-        log::debug!("eval returned {}", str.as_str());
+        debug!("eval returned {}", str.as_str());
         vec![PathExpr::from(str)]
     }
 }
@@ -1668,7 +1703,12 @@ impl LocatedStatement {
                     app,
                 );
             }
-            Statement::AsignRefExpr {
+            Statement::LazyAssignExpr { left, right } => {
+                parse_state
+                    .func_map
+                    .insert(left.name.clone(), right.clone());
+            }
+            Statement::AssignRefExpr {
                 left,
                 right,
                 is_append,
@@ -1682,7 +1722,7 @@ impl LocatedStatement {
                 .subst_pe(parse_state, path_searcher)
                 .cat();
                 let mut ps = parse_state.clone();
-                ps.parse_context = ParseContext::Expression;
+                ps.parse_context = Expression;
                 let subst_right: Vec<String> = right
                     .split(|x| x == &PathExpr::Sp1)
                     .map(|x| {
@@ -1733,7 +1773,7 @@ impl LocatedStatement {
                             );
                         } else {
                             debug!("trying alternative branches");
-                            ControlFlow::Continue(())
+                            Continue(())
                         }
                     });
                 match new_then_elif_statements {
@@ -1910,7 +1950,6 @@ impl LocatedStatement {
             }
             Statement::Define(name, val) => {
                 parse_state.func_map.insert(name.to_string(), val.clone());
-                //newstats.push(LocatedStatement::new(Statement::Define(name.clone(),val.clone()), loc.clone()))
             }
             Statement::EvalBlock(body) => {
                 debug!("evaluating block: {:?}", body);
@@ -1998,7 +2037,7 @@ impl LocatedStatement {
             ""
         };
         debug!("assign: {:?} {}= {:?}", left.name, op, right);
-        ps.parse_context = ParseContext::Expression;
+        ps.parse_context = Expression;
         let subst_right_pe: Vec<_> = right
             .iter()
             .flat_map(|x| x.subst(&mut ps, path_searcher))
@@ -2309,7 +2348,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(RootNotFound)?;
 
         let root = tup_ini.parent().ok_or(RootNotFound)?;
-        log::debug!("root folder: {:?}", root);
+        debug!("root folder: {:?}", root);
         let conf_vars = load_conf_vars_relative_to(tup_ini.as_path())?;
         Ok(TupParser::new_from(
             root,
@@ -2417,6 +2456,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         }
     }
 
+    //noinspection RsBorrowChecker
     /// wait for the next [StatementsToResolve] and process them
     pub fn receive_resolved_statements(
         &mut self,
@@ -2584,7 +2624,7 @@ pub mod testing {
     /// perform variable substition, resolve calls, evals, foreach etc
     pub fn subst_statements(
         filename: &Path,
-        statements: Vec<crate::statements::LocatedStatement>,
+        statements: Vec<LocatedStatement>,
     ) -> Result<(Vec<LocatedStatement>, HashMap<String, Vec<String>>), crate::errors::Error> {
         let mut parse_state = ParseState::new_at(filename);
         let mut stmts = statements;
@@ -2600,7 +2640,7 @@ pub mod testing {
     /// perform variable substition, resolve calls, evals, foreach etc
     pub fn subst_statements_with_conf(
         filename: &Path,
-        statements: Vec<crate::statements::LocatedStatement>,
+        statements: Vec<LocatedStatement>,
         conf_map: HashMap<String, Vec<String>>,
     ) -> Result<(Vec<LocatedStatement>, HashMap<String, Vec<String>>), crate::errors::Error> {
         log::debug!("statements:{:?} in file:{:?}", statements, filename);

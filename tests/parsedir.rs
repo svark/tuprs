@@ -66,6 +66,16 @@ mod tests {
         let statements = parse_pathexprs(0);
         let strings = convert_to_str(&statements);
         insta::assert_json_snapshot!(strings);
+
+        let (stmts, v2) = tupparser::transform::testing::subst_statements(
+            std::path::Path::new("Tupfile0"),
+            statements,
+        )
+        .unwrap();
+        assert_eq!(stmts.len(), 0);
+        insta::assert_snapshot!(v2.get("O").unwrap().join(" "));
+        insta::assert_snapshot!(v2.get("SOURCES").unwrap().join(" "));
+        insta::assert_snapshot!(v2.get("CXX_SOURCES").unwrap().join(" "));
     }
 
     #[test]
@@ -90,6 +100,7 @@ mod tests {
         .unwrap();
         assert_eq!(stmts.len(), 0);
         insta::assert_snapshot!(v2.get("CFLAGS").unwrap().join(" "));
+        insta::assert_json_snapshot!(v2.get("D").unwrap().join(" "));
     }
 
     #[test]

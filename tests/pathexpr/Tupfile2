@@ -1,4 +1,4 @@
-CFLAGS = -DEBUG -Zm  -DEBUG -Zm -Zi
+CFLAGS = -DEBUG -Zm    -DEBUG -Zm -Zi
 define uniq
   seen :=
   $(foreach word,$(1),$(if $(filter $(word),${seen}),,seen += $(word)))
@@ -6,3 +6,9 @@ define uniq
 endef
 
 CFLAGS = $(eval $(call uniq,$(CFLAGS)))
+
+one ~= $(two) z w
+two ~= $(three) x y
+three = a b c
+D = $(one)
+

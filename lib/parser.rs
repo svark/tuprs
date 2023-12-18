@@ -10,7 +10,6 @@ use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
 use nom::number::{complete, Endianness};
 use nom::sequence::{delimited, preceded};
-use nom::Err;
 use nom::IResult;
 use nom::{
     branch::alt,
@@ -18,6 +17,7 @@ use nom::{
     character::complete::{char, one_of},
 };
 use nom::{AsBytes, Offset, Slice};
+use nom::{Err, InputIter};
 use nom_locate::LocatedSpan;
 
 use crate::statements::*;
@@ -30,6 +30,23 @@ const END_KEYWORDS: [&str; 3] = ["else", "endif", "endef"];
 fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
 }
+
+impl PathExpr {
+    pub(crate) fn is_ws(&self) -> bool {
+        match self {
+            PathExpr::NL | PathExpr::Sp1 => true,
+            PathExpr::Literal(s) => {
+                s.as_str()
+                    .iter_elements()
+                    .filter(|x| !x.is_whitespace())
+                    .count()
+                    == 0
+            }
+            _ => false,
+        }
+    }
+}
+
 lazy_static! {
     static ref BRKTOKSINNER: &'static str = "\\\n$&";
     static ref BRKTOKS: &'static str = "\\\n$@&";
@@ -42,7 +59,7 @@ lazy_static! {
 
 /// convert byte str to PathExpr
 fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
-    from_utf8(res).map(|s| s.into())
+    from_utf8(res).map(PathExpr::from)
 }
 /// check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
@@ -273,31 +290,33 @@ fn parse_pathexpr_bin(i: Span) -> IResult<Span, PathExpr> {
     context("bin", map(parse_pathexpr_raw_bin, PathExpr::Bin))(i)
 }
 
-fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
+// there isnt much escaping in tupfiles,(similar to makefile),
+// only $ and newline are escaped
+// if you have problems use variables to escape special characters that
+// clash with break_toks and end_toks.
+fn parse_escaped<'a>(i: Span<'a>, end_tok: &'static str) -> IResult<Span<'a>, PathExpr> {
     let (_, r) = peek(take(2_usize))(i)?;
     match r.as_bytes() {
         b"\\\r" => {
             let (_, r) = peek(take(3_usize))(i)?;
             if r.as_bytes() == b"\\\r\n" {
                 let (s, _) = take(3_usize)(i)?; //consumes \n after \r as well
-                Ok((s, ("".to_string()).into()))
+                Ok((s, "".to_string().into()))
             } else {
                 Err(Err::Error(error_position!(i, ErrorKind::Eof))) //FIXME: what errorkind should we return?
             }
         }
         b"\\\n" => {
             let (s, _) = take(2_usize)(i)?;
-            Ok((s, ("".to_string()).into()))
+            Ok((s, "".to_string().into()))
         }
-
-        b"$$" | b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\}" | b"\\<" | b"\\>" | b"\\^" | b"\\|" => {
-            let (s, _) = take(1_usize)(i)?;
-            let (s, r) = take(1_usize)(s)?;
+        [b'\\', c] if !end_tok.contains(*c as char) => {
+            let (s, r) = take(2_usize)(i)?;
             let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
             Ok((s, pe))
         }
-        [b'\\', ..] => {
-            let (s, r) = take(2_usize)(i)?;
+        [b'\\', c] if end_tok.contains(*c as char) => {
+            let (s, r) = take(1_usize)(i)?;
             let pe = from_str(r).map_err(|_| Err::Error(error_position!(i, ErrorKind::Escaped)))?;
             Ok((s, pe))
         }
@@ -306,7 +325,7 @@ fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
 }
 fn test_pathexpr_ref(i: Span) -> bool {
     let res = || -> IResult<Span, bool> {
-        let (_, r) = (peek(take(1_usize))(i))?;
+        let (_, r) = peek(take(1_usize))(i)?;
         let ismatch = matches!(r.as_bytes(), b"$" | b"@" | b"&");
         Ok((i, ismatch))
     };
@@ -636,45 +655,44 @@ fn parse_delim(i: Span) -> IResult<Span, Span> {
 /// eats up \\n
 /// consume dollar's etc that where left out during previous parsing
 /// consume a literal that is not a pathexpr token
-fn parse_misc_bits<'a, 'b>(
+fn parse_misc_bits<'a>(
     input: Span<'a>,
-    end_tok: &'b str,
-    break_toks: &'static str,
+    end_toks: [&'static str; 2],
 ) -> IResult<Span<'a>, Span<'a>> {
-    let islit = |ref i| !end_tok.as_bytes().contains(i) && !break_toks.as_bytes().contains(i);
+    let islit = |ref i| !end_toks[0].as_bytes().contains(i) && !end_toks[1].as_bytes().contains(i);
     alt((complete(parse_delim), complete(take_while(islit))))(input)
 }
 /// parse either (dollar|at|) expression or a general rvalue delimited by delim
 /// break_toks are the tokens that pause and restart the parser to create a new pathexpr
-pub(crate) fn parse_pathexpr_ws<'a, 'b>(
+pub(crate) fn parse_pathexpr_ws<'a>(
     s: Span<'a>,
-    end_tok: &'b str,
+    end_tok: &'static str,
     break_toks: &'static str,
 ) -> IResult<Span<'a>, PathExpr> {
     alt((
-        complete(parse_escaped),
+        complete(|i| parse_escaped(i, end_tok)),
         complete(parse_quote),
         complete(parse_ws),
         complete(parse_pathexprbasic),
         complete(parse_pathexpr_taskref),
         complete(map_res(
-            |i| parse_misc_bits(i, end_tok, break_toks),
+            |i| parse_misc_bits(i, [end_tok, break_toks]),
             from_str,
         )),
     ))(s)
 }
 
 /// break_toks are the tokens that pause and restart the parser to create a new pathexpr
-fn parse_pathexpr_no_ws<'a, 'b>(
+fn parse_pathexpr_no_ws<'a>(
     s: Span<'a>,
-    end_tok: &'b str,
+    end_tok: &'static str,
     break_toks: &'static str,
 ) -> IResult<Span<'a>, PathExpr> {
     alt((
-        complete(parse_escaped),
+        complete(|i| parse_escaped(i, end_tok)),
         complete(parse_pathexprbasic),
         complete(map_res(
-            |i| parse_misc_bits(i, end_tok, break_toks),
+            |i| parse_misc_bits(i, [end_tok, break_toks]),
             from_str,
         )),
     ))(s)
@@ -682,9 +700,9 @@ fn parse_pathexpr_no_ws<'a, 'b>(
 
 // repeatedly invoke the rvalue parser until eof or end_tok is encountered
 // parser pauses to create new pathexpr when break_tok is encountered
-fn parse_pelist_till_delim_with_ws<'a, 'b>(
+fn parse_pelist_till_delim_with_ws<'a>(
     input: Span<'a>,
-    end_tok: &'b str,
+    end_tok: &'static str,
     break_toks: &'static str,
 ) -> IResult<Span<'a>, (Vec<PathExpr>, char)> {
     many_till(
@@ -694,9 +712,9 @@ fn parse_pelist_till_delim_with_ws<'a, 'b>(
 }
 // repeatedly invoke the rvalue parser until eof or delim is encountered
 // parser pauses to create new pathexpr when break_tok is encountered
-fn parse_pelist_till_delim_no_ws<'a, 'b>(
+fn parse_pelist_till_delim_no_ws<'a>(
     input: Span<'a>,
-    end_tok: &'b str,
+    end_tok: &'static str,
     break_tok: &'static str,
 ) -> IResult<Span<'a>, (Vec<PathExpr>, char)> {
     many_till(
@@ -719,10 +737,6 @@ fn parse_pathexpr_list_until_ws_plus(input: Span) -> IResult<Span, (Vec<PathExpr
         |i| parse_pathexpr_no_ws(i, " \t\r\n", &BRKTOKS),
         multispace1,
     )(input)
-}
-
-pub(crate) fn parse_lines(input: Span) -> IResult<Span, Vec<(Vec<PathExpr>, char)>> {
-    many0(complete(parse_pelist_till_line_end_with_ws))(input)
 }
 
 // parse a lvalue ref to a ident
@@ -930,8 +944,8 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
             Statement::AssignExpr {
                 left,
                 right,
-                is_append: (op.as_bytes() == b"+="),
-                is_empty_assign: (op.as_bytes() == b"?="),
+                is_append: op.as_bytes() == b"+=",
+                is_empty_assign: op.as_bytes() == b"?=",
             },
             i.slice(..offset),
         )
@@ -939,8 +953,30 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     ))
 }
 
+fn parse_lazy_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
+    let s = i;
+    // parse the left side of the assignment
+    let (s, left) = parse_lvalue(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, op) = tag("~=")(s)?;
+    log::debug!(
+        "parsing lazy assignment expression with lhs {:?}",
+        left.name
+    );
+    log::debug!("op:{:?}", std::str::from_utf8(op.fragment()).unwrap_or(""));
+    let (s, _) = opt(sp1)(s)?;
+    let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
+    log::debug!("and rhs: {:?}", r);
+    let right = r.0;
+    let offset = i.offset(&s);
+    Ok((
+        s,
+        (Statement::LazyAssignExpr { left, right }, i.slice(..offset)).into(),
+    ))
+}
+
 /// parse a define statement and its body until enddef occurs
-fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
+fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     let (s, _) = tag("define")(s)?;
     let (s, _) = sp1(s)?;
@@ -950,12 +986,23 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(s)?;
 
     // take until enddef occurs
-    let (s, body) = context(
+    let (s, (mut body, _)) = context(
         "define expression",
-        cut(map_res(take_until("endef"), from_utf8)),
+        cut(many_till(
+            map(parse_pelist_till_line_end_with_ws, |r| r.0),
+            preceded(space0, tag("endef")),
+        )),
     )(s)?;
-    let (s, _) = multispace0(s)?;
-    let (s, _) = tag("endef")(s)?;
+
+    body.iter_mut().for_each(|x| x.cleanup());
+    log::debug!("with body: {:?}", body);
+    let body: Vec<_> = body
+        .drain(..)
+        .filter(|x| !x.is_empty() && x.iter().filter(|x| !x.is_ws()).count() != 0)
+        .collect();
+    let mut body = body.join(&PathExpr::NL);
+    body.push(PathExpr::NL);
+    log::debug!("with body: {:?}", body);
     let offset = i.offset(&s);
     Ok((
         s,
@@ -1011,11 +1058,11 @@ fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     Ok((
         s,
         (
-            Statement::AsignRefExpr {
+            Statement::AssignRefExpr {
                 left: l,
                 right: r.0,
-                is_append: (op.as_bytes() == b"+="),
-                is_empty_assign: (op.as_bytes() == b"?="),
+                is_append: op.as_bytes() == b"+=",
+                is_empty_assign: op.as_bytes() == b"?=",
             },
             i.slice(..offset),
         )
@@ -1316,7 +1363,8 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_run),
         complete(parse_preload),
         complete(parse_import),
-        complete(parse_define_expr),
+        complete(parse_pathexpr_define),
+        complete(parse_lazy_assignment_expr),
         complete(parse_task_statement),
         complete(parse_searchpaths),
         complete(parse_eval_block),
