@@ -10,7 +10,6 @@ use nom::error::{context, ErrorKind};
 use nom::multi::{many0, many1, many_till};
 use nom::number::{complete, Endianness};
 use nom::sequence::{delimited, preceded};
-use nom::Err;
 use nom::IResult;
 use nom::{
     branch::alt,
@@ -18,6 +17,7 @@ use nom::{
     character::complete::{char, one_of},
 };
 use nom::{AsBytes, Offset, Slice};
+use nom::{Err, InputIter};
 use nom_locate::LocatedSpan;
 
 use crate::statements::*;
@@ -30,6 +30,23 @@ const END_KEYWORDS: [&str; 3] = ["else", "endif", "endef"];
 fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
 }
+
+impl PathExpr {
+    pub(crate) fn is_ws(&self) -> bool {
+        match self {
+            PathExpr::NL | PathExpr::Sp1 => true,
+            PathExpr::Literal(s) => {
+                s.as_str()
+                    .iter_elements()
+                    .filter(|x| !x.is_whitespace())
+                    .count()
+                    == 0
+            }
+            _ => false,
+        }
+    }
+}
+
 lazy_static! {
     static ref BRKTOKSINNER: &'static str = "\\\n$&";
     static ref BRKTOKS: &'static str = "\\\n$@&";
@@ -42,7 +59,7 @@ lazy_static! {
 
 /// convert byte str to PathExpr
 fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
-    from_utf8(res).map(|s| s.into())
+    from_utf8(res).map(PathExpr::from)
 }
 /// check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
@@ -280,14 +297,14 @@ fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
             let (_, r) = peek(take(3_usize))(i)?;
             if r.as_bytes() == b"\\\r\n" {
                 let (s, _) = take(3_usize)(i)?; //consumes \n after \r as well
-                Ok((s, ("".to_string()).into()))
+                Ok((s, "".to_string().into()))
             } else {
                 Err(Err::Error(error_position!(i, ErrorKind::Eof))) //FIXME: what errorkind should we return?
             }
         }
         b"\\\n" => {
             let (s, _) = take(2_usize)(i)?;
-            Ok((s, ("".to_string()).into()))
+            Ok((s, "".to_string().into()))
         }
 
         b"$$" | b"\\$" | b"\\@" | b"\\&" | b"\\{" | b"\\}" | b"\\<" | b"\\>" | b"\\^" | b"\\|" => {
@@ -306,7 +323,7 @@ fn parse_escaped(i: Span) -> IResult<Span, PathExpr> {
 }
 fn test_pathexpr_ref(i: Span) -> bool {
     let res = || -> IResult<Span, bool> {
-        let (_, r) = (peek(take(1_usize))(i))?;
+        let (_, r) = peek(take(1_usize))(i)?;
         let ismatch = matches!(r.as_bytes(), b"$" | b"@" | b"&");
         Ok((i, ismatch))
     };
@@ -721,10 +738,6 @@ fn parse_pathexpr_list_until_ws_plus(input: Span) -> IResult<Span, (Vec<PathExpr
     )(input)
 }
 
-pub(crate) fn parse_lines(input: Span) -> IResult<Span, Vec<(Vec<PathExpr>, char)>> {
-    many0(complete(parse_pelist_till_line_end_with_ws))(input)
-}
-
 // parse a lvalue ref to a ident
 fn parse_lvalue_ref(input: Span) -> IResult<Span, Ident> {
     let (s, _) = char('&')(input)?;
@@ -930,8 +943,8 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
             Statement::AssignExpr {
                 left,
                 right,
-                is_append: (op.as_bytes() == b"+="),
-                is_empty_assign: (op.as_bytes() == b"?="),
+                is_append: op.as_bytes() == b"+=",
+                is_empty_assign: op.as_bytes() == b"?=",
             },
             i.slice(..offset),
         )
@@ -939,8 +952,30 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     ))
 }
 
+fn parse_lazy_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
+    let s = i;
+    // parse the left side of the assignment
+    let (s, left) = parse_lvalue(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, op) = tag("~=")(s)?;
+    log::debug!(
+        "parsing lazy assignment expression with lhs {:?}",
+        left.name
+    );
+    log::debug!("op:{:?}", std::str::from_utf8(op.fragment()).unwrap_or(""));
+    let (s, _) = opt(sp1)(s)?;
+    let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
+    log::debug!("and rhs: {:?}", r);
+    let right = r.0;
+    let offset = i.offset(&s);
+    Ok((
+        s,
+        (Statement::LazyAssignExpr { left, right }, i.slice(..offset)).into(),
+    ))
+}
+
 /// parse a define statement and its body until enddef occurs
-fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
+fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     let (s, _) = tag("define")(s)?;
     let (s, _) = sp1(s)?;
@@ -950,12 +985,23 @@ fn parse_define_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(s)?;
 
     // take until enddef occurs
-    let (s, body) = context(
+    let (s, (mut body, _)) = context(
         "define expression",
-        cut(map_res(take_until("endef"), from_utf8)),
+        cut(many_till(
+            map(parse_pelist_till_line_end_with_ws, |r| r.0),
+            preceded(space0, tag("endef")),
+        )),
     )(s)?;
-    let (s, _) = multispace0(s)?;
-    let (s, _) = tag("endef")(s)?;
+
+    body.iter_mut().for_each(|x| x.cleanup());
+    log::debug!("with body: {:?}", body);
+    let body: Vec<_> = body
+        .drain(..)
+        .filter(|x| !x.is_empty() && x.iter().filter(|x| !x.is_ws()).count() != 0)
+        .collect();
+    let mut body = body.join(&PathExpr::NL);
+    body.push(PathExpr::NL);
+    log::debug!("with body: {:?}", body);
     let offset = i.offset(&s);
     Ok((
         s,
@@ -1011,11 +1057,11 @@ fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     Ok((
         s,
         (
-            Statement::AsignRefExpr {
+            Statement::AssignRefExpr {
                 left: l,
                 right: r.0,
-                is_append: (op.as_bytes() == b"+="),
-                is_empty_assign: (op.as_bytes() == b"?="),
+                is_append: op.as_bytes() == b"+=",
+                is_empty_assign: op.as_bytes() == b"?=",
             },
             i.slice(..offset),
         )
@@ -1316,7 +1362,8 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_run),
         complete(parse_preload),
         complete(parse_import),
-        complete(parse_define_expr),
+        complete(parse_pathexpr_define),
+        complete(parse_lazy_assignment_expr),
         complete(parse_task_statement),
         complete(parse_searchpaths),
         complete(parse_eval_block),

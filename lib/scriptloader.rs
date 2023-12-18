@@ -9,7 +9,7 @@ use std::sync::Arc;
 use log::Level::Debug;
 use log::{debug, log_enabled};
 use mlua::Error::SyntaxError;
-use mlua::{AnyUserData, HookTriggers, Lua, MultiValue, StdLib, ToLua, Value, Variadic};
+use mlua::{AnyUserData, HookTriggers, IntoLua, Lua, MultiValue, StdLib, Value, Variadic};
 use mlua::{UserData, UserDataMethods};
 use nom::{AsBytes, InputTake};
 use parking_lot::RwLock;
@@ -481,7 +481,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
                 table1
             }
         };
-        t.to_lua(lua)
+        t.into_lua(lua)
     }
 }
 trait ConvToString {
@@ -585,7 +585,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
             let numinps =
                 command_at_index.unwrap_or_else(|| std::cmp::min(inps1.iter().count(), 1));
             let outindex = command_at_index
-                .map(|i| (i + 1))
+                .map(|i| i + 1)
                 .unwrap_or_else(|| std::cmp::min(inps1.iter().skip(1).count(), 1));
             let inps: Vec<_> = inps1
                 .iter()
@@ -689,7 +689,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                 rulcmd.set_command(cmd);
                 rulcmd.set_display_str(desc);
                 let i: u32 = lua_ctx
-                    .named_registry_value(LINENO.as_bytes())
+                    .named_registry_value(*LINENO)
                     .expect("line number missing lua registry");
                 //  let globals = lua_ctx.globals();
                 let tup_shared: AnyUserData = globals.get("tup")?;
@@ -736,7 +736,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                 let numinps =
                     command_at_index.unwrap_or_else(|| std::cmp::min(inps1.iter().count(), 1));
                 let outindex = command_at_index
-                    .map(|i| (i + 1))
+                    .map(|i| i + 1)
                     .unwrap_or_else(|| std::cmp::min(inps1.iter().skip(1).count(), 1));
                 let inps: Vec<_> = inps1
                     .iter()
@@ -835,7 +835,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                     rulcmd.set_command(cmd);
                     rulcmd.set_display_str(desc);
                     let i: u32 = luactx
-                        .named_registry_value(LINENO.as_bytes())
+                        .named_registry_value(*LINENO)
                         .expect("line number missing lua registry");
                     //let globals = luactx.globals();
                     let tup_shared: AnyUserData = globals.get("tup")?;
@@ -906,12 +906,12 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                         } else {
                             ""
                         };
-                        let curdir: String = luactx.named_registry_value(CURDIR.as_bytes())?;
+                        let curdir: String = luactx.named_registry_value(*CURDIR)?;
                         let incpath = Path::new(&curdir).join(Path::new(path));
                         debug!("include:{}", incpath.to_string_lossy().to_string());
                         let mut file = File::open(&incpath)?;
                         luactx.set_named_registry_value(
-                            CURDIR.as_bytes(),
+                            *CURDIR,
                             incpath
                                 .parent()
                                 .expect("parent path")
@@ -921,7 +921,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                         let mut contents = Vec::new();
                         file.read_to_end(&mut contents)?;
                         luactx.load(contents.as_bytes()).exec()?;
-                        luactx.set_named_registry_value(CURDIR.as_bytes(), curdir)?;
+                        luactx.set_named_registry_value(*CURDIR, curdir)?;
                         Ok(())
                     })
                     .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
@@ -963,15 +963,12 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
             },
             |lua_context, debug| {
                 lua_context
-                    .set_named_registry_value(LINENO.as_bytes(), debug.curr_line())
+                    .set_named_registry_value(*LINENO, debug.curr_line())
                     .expect("could not set registry value");
                 Ok(())
             },
-        )?;
-        lua.set_named_registry_value(
-            CURDIR.as_bytes(),
-            root.join(cur_dir).to_string_lossy().to_string(),
-        )?;
+        );
+        lua.set_named_registry_value(*CURDIR, root.join(cur_dir).to_string_lossy().to_string())?;
         let tup_append_table = lua.create_function(|luactx, (a, b): (Value, Value)| {
             let mut t = luactx.create_table()?;
             if let Value::String(s) = a {

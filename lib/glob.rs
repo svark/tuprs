@@ -99,7 +99,7 @@ impl ErrorKind {
     }
 }
 
-impl fmt::Display for Error {
+impl Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.glob {
             None => self.kind.fmt(f),
@@ -110,7 +110,7 @@ impl fmt::Display for Error {
     }
 }
 
-impl fmt::Display for ErrorKind {
+impl Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             ErrorKind::UnclosedClass
@@ -186,7 +186,7 @@ impl hash::Hash for Glob {
     }
 }
 
-impl fmt::Display for Glob {
+impl Display for Glob {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.glob.fmt(f)
     }
@@ -254,7 +254,7 @@ impl<'a> Candidate<'a> {
 }
 
 impl Display for Candidate<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_cow_str().as_ref())
     }
 }
@@ -270,7 +270,7 @@ impl GlobMatcher {
         self.tokens
             .iter()
             .skip_while(|x| matches!(**x, Literal(_)))
-            .take_while(|x| **x == Token::RecursiveZeroOrMore || **x == Token::RecursivePrefix)
+            .take_while(|x| **x == RecursiveZeroOrMore || **x == RecursivePrefix)
             .count()
             > 0
     }
@@ -471,7 +471,7 @@ impl Tokens {
         re.push('^');
         // Special case. If the entire glob is just `**`, then it should match
         // everything.
-        if self.len() == 1 && self[0] == Token::RecursivePrefix {
+        if self.len() == 1 && self[0] == RecursivePrefix {
             if options.skip_recursive {
                 return re;
             }
@@ -497,7 +497,7 @@ impl Tokens {
         };
         for tok in tokens.iter().skip_while(sfn) {
             match *tok {
-                Token::Literal(c) => {
+                Literal(c) => {
                     re.push_str(&char_to_escaped_literal(c));
                 }
                 Token::Any => {
@@ -528,7 +528,7 @@ impl Tokens {
                         re.push(')');
                     }
                 }
-                Token::RecursivePrefix => {
+                RecursivePrefix => {
                     if options.capture_globs {
                         re.push_str(format!("(?P<{}M>/?|.*/", (c + index) as char).as_str());
                         index += 1;
@@ -544,7 +544,7 @@ impl Tokens {
                         re.push_str("/.*");
                     }
                 }
-                Token::RecursiveZeroOrMore => {
+                RecursiveZeroOrMore => {
                     if options.capture_globs {
                         re.push_str(format!("(?P<{}M>/|/.*/)", (c + index) as char).as_str());
                         index += 1;
@@ -649,7 +649,7 @@ impl<'a> Parser<'a> {
                 '}' => self.pop_alternate()?,
                 ',' => self.parse_comma()?,
                 '\\' => self.parse_backslash()?,
-                c => self.push_token(Token::Literal(c))?,
+                c => self.push_token(Literal(c))?,
             }
         }
         Ok(())
@@ -698,7 +698,7 @@ impl<'a> Parser<'a> {
         // treat commas specially. Otherwise, we need to start
         // a new alternate.
         if self.stack.len() <= 1 {
-            self.push_token(Token::Literal(','))
+            self.push_token(Literal(','))
         } else {
             self.stack.push(Tokens::default());
             Ok(())
@@ -709,13 +709,13 @@ impl<'a> Parser<'a> {
         if self.opts.backslash_escape {
             match self.bump() {
                 None => Err(self.error(ErrorKind::DanglingEscape)),
-                Some(c) => self.push_token(Token::Literal(c)),
+                Some(c) => self.push_token(Literal(c)),
             }
         } else if is_separator('\\') {
             // Normalize all patterns to use / as a separator.
-            self.push_token(Token::Literal('/'))
+            self.push_token(Literal('/'))
         } else {
-            self.push_token(Token::Literal('\\'))
+            self.push_token(Literal('\\'))
         }
     }
 
@@ -731,7 +731,7 @@ impl<'a> Parser<'a> {
                 self.push_token(Token::ZeroOrMore)?;
                 self.push_token(Token::ZeroOrMore)?;
             } else {
-                self.push_token(Token::RecursivePrefix)?;
+                self.push_token(RecursivePrefix)?;
                 assert!(self.bump().map_or(true, is_separator));
             }
             return Ok(());
@@ -761,8 +761,8 @@ impl<'a> Parser<'a> {
             }
         };
         match self.pop_token()? {
-            Token::RecursivePrefix => {
-                self.push_token(Token::RecursivePrefix)?;
+            RecursivePrefix => {
+                self.push_token(RecursivePrefix)?;
             }
             Token::RecursiveSuffix => {
                 self.push_token(Token::RecursiveSuffix)?;
@@ -771,7 +771,7 @@ impl<'a> Parser<'a> {
                 if is_suffix {
                     self.push_token(Token::RecursiveSuffix)?;
                 } else {
-                    self.push_token(Token::RecursiveZeroOrMore)?;
+                    self.push_token(RecursiveZeroOrMore)?;
                 }
             }
         }

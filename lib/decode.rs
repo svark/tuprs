@@ -961,16 +961,21 @@ fn paths_from_exprs(
     p: &[PathExpr],
     path_buffers: &mut impl PathBuffers,
 ) -> Vec<OutputType> {
-    p.split(|x| matches!(x, &PathExpr::Sp1) || matches!(x, &PathExpr::ExcludePattern(_)))
-        .filter(|x| !x.is_empty())
-        .map(|x| {
-            let path = PathBuf::new().join(x.to_vec().cat());
-            let (pid, _) = path_buffers.add_path_from(tup_cwd, path.as_path());
-            let _ = path_buffers.add_path_from(tup_cwd, &*get_parent(path.as_path()));
-            let pathbuf = path_buffers.get_path(&pid);
-            OutputType::new(pathbuf.clone(), pid)
-        })
-        .collect()
+    p.split(|x| {
+        matches!(
+            x,
+            &PathExpr::Sp1 | &PathExpr::NL | &PathExpr::ExcludePattern(_)
+        )
+    })
+    .filter(|x| !x.is_empty())
+    .map(|x| {
+        let path = PathBuf::new().join(x.to_vec().cat());
+        let (pid, _) = path_buffers.add_path_from(tup_cwd, path.as_path());
+        let _ = path_buffers.add_path_from(tup_cwd, &*get_parent(path.as_path()));
+        let pathbuf = path_buffers.get_path(&pid);
+        OutputType::new(pathbuf.clone(), pid)
+    })
+    .collect()
 }
 
 // replace % specifiers in a target of rule statement which has already been
@@ -1158,7 +1163,7 @@ impl ResolvedLink {
         let pb = pb_.clone();
         let replace_tup_desc = move |selstr: &str| {
             let r = Regex::new(r"TupPathDescriptor\((\d+)\)").unwrap();
-            r.replace_all(selstr, move |caps: &regex::Captures| {
+            r.replace_all(selstr, move |caps: &Captures| {
                 let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
                 let path = pb.get_tup_path(&TupPathDescriptor::new(num));
                 path.to_string_lossy().to_string()
@@ -1169,7 +1174,7 @@ impl ResolvedLink {
         // replace rule descriptor with rule formula
         let replace_rule_desc = move |selstr: String| {
             let r = Regex::new(r"RuleDescriptor\((\d+)\)").unwrap();
-            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+            r.replace_all(selstr.as_ref(), move |caps: &Captures| {
                 let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
                 let rule_usage = pb.get_rule(&RuleDescriptor::new(num));
                 rule_usage.get_rule_str()
@@ -1180,7 +1185,7 @@ impl ResolvedLink {
         // replace group descriptor with group path
         let replace_group_desc = move |selstr: String| {
             let r = Regex::new(r"GroupPathDescriptor\((\d+)\)").unwrap();
-            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+            r.replace_all(selstr.as_ref(), move |caps: &Captures| {
                 let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
                 let path = pb
                     .try_get_group_path(&GroupPathDescriptor::new(num))
@@ -1194,7 +1199,7 @@ impl ResolvedLink {
         // replace bin descriptor with bin name
         let replace_bin_desc = move |selstr: String| {
             let r = Regex::new(r"BinDescriptor\((\d+)\)").unwrap();
-            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+            r.replace_all(selstr.as_ref(), move |caps: &Captures| {
                 let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
                 let path = pb.get_bin_name(&BinDescriptor::new(num));
                 path.to_string()
@@ -1205,7 +1210,7 @@ impl ResolvedLink {
         // replace env descriptor with env vars
         let _replace_env_desc = move |selstr: String| {
             let r = Regex::new(r"EnvDescriptor\((\d+)\)").unwrap();
-            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+            r.replace_all(selstr.as_ref(), move |caps: &Captures| {
                 let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
                 let path = pb.try_get_env(&EnvDescriptor::new(num)).unwrap();
                 path.getenv()
@@ -1220,7 +1225,7 @@ impl ResolvedLink {
         // replace path descriptor with path
         let r = Regex::new(r"PathDescriptor\((\d+)\)").unwrap();
         let replace_path_desc = move |selstr: String| {
-            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+            r.replace_all(selstr.as_ref(), move |caps: &Captures| {
                 let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
                 let path = pb.get_path(&PathDescriptor::new(num));
                 path.as_path().to_string_lossy().to_string()
@@ -1231,7 +1236,7 @@ impl ResolvedLink {
         //  replace glob descriptor with path
         let r = Regex::new(r"GlobPathDescriptor\((\d+)\)").unwrap();
         let replace_glob_desc = move |selstr: String| {
-            r.replace_all(selstr.as_ref(), move |caps: &regex::Captures| {
+            r.replace_all(selstr.as_ref(), move |caps: &Captures| {
                 let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
                 let path = pb.get_path(&PathDescriptor::new(num));
                 path.as_path().to_string_lossy().to_string()
@@ -1415,7 +1420,7 @@ impl GatherOutputs for ResolvedLink {
         let mut children = Vec::new();
         for path_desc in self.get_targets() {
             let path = path_buffers.get_path(path_desc);
-            log::debug!(
+            debug!(
                 "adding parent for: {:?} to {:?}:{}",
                 path,
                 path_buffers.get_tup_path(rule_ref.get_tupfile_desc()),

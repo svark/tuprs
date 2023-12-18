@@ -1,7 +1,7 @@
-S = *.cxx *.c
-S += *.cpp
+S = a.cxx b.c
+S += c.cpp
 
-S ?= *.C
+S ?= d.C
 
 O = $(patsubst %.cxx,%.o,$(S))
 

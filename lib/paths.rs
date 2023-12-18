@@ -83,7 +83,7 @@ pub(crate) fn normalize_path(p: &Path) -> Candidate {
 
 impl ToString for NormalPath {
     /// Inner path in form that can be compared or stored as a bytes
-    fn to_string(&self) -> std::string::String {
+    fn to_string(&self) -> String {
         // following converts backslashes to forward slashes
         //normalize_path(self.as_path()).to_string()
         self.as_path().to_string_lossy().to_string()
@@ -257,7 +257,7 @@ where
     pub fn new<U: Into<usize>>(p: NormalPath, id: U) -> Self {
         IdedPath::<T> {
             p,
-            id: (id.into()).into(),
+            id: id.into().into(),
         }
     }
     pub fn as_path(&self) -> &Path {

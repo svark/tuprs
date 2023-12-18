@@ -9,6 +9,8 @@ use crate::PathDescriptor;
 /// PathExpr are tokens that hold some meaning in tupfiles
 #[derive(PartialEq, Debug, Clone, Hash, Eq)]
 pub(crate) enum PathExpr {
+    /// New line
+    NL,
     /// a normal string
     Literal(String),
     /// spaces between paths
@@ -421,7 +423,11 @@ pub(crate) enum Statement {
         is_append: bool,
         is_empty_assign: bool,
     },
-    AsignRefExpr {
+    LazyAssignExpr {
+        left: Ident,
+        right: Vec<PathExpr>,
+    },
+    AssignRefExpr {
         left: Ident,
         right: Vec<PathExpr>,
         is_append: bool,
@@ -450,7 +456,7 @@ pub(crate) enum Statement {
     /// Define a multi-line variable
     /// define name { body }
     /// body is a list of statements
-    Define(Ident, String),
+    Define(Ident, Vec<PathExpr>),
     Task(TaskDetail),
     EvalBlock(Vec<PathExpr>),
     SearchPaths(Vec<PathExpr>),
@@ -477,6 +483,7 @@ impl CleanupPaths for Vec<PathExpr> {
         let mut newpesall = Vec::new();
         let mut was_lit = false;
         let mut was_sp = false;
+        let mut was_nl = false;
         for pe in self.iter() {
             if let PathExpr::Quoted(vs) = pe {
                 let mut vs = vs.clone();
@@ -496,11 +503,18 @@ impl CleanupPaths for Vec<PathExpr> {
             if matches!(pe, PathExpr::Sp1) {
                 was_sp = true;
             } else if was_sp {
-                newpesall.push(PathExpr::Sp1);
+                newpesall.push(PathExpr::Sp1); // keep only one space
+                was_sp = false;
+            }
+            if matches!(pe, PathExpr::NL) {
+                was_nl = true;
+            } else if was_nl {
+                newpesall.push(PathExpr::NL); // keep only one newline
+                was_nl = false;
             }
             if !matches!(
                 pe,
-                PathExpr::Sp1 | PathExpr::Literal(_) | PathExpr::Quoted(_)
+                PathExpr::NL | PathExpr::Sp1 | PathExpr::Literal(_) | PathExpr::Quoted(_)
             ) {
                 newpesall.push(pe.clone());
             }
@@ -538,7 +552,12 @@ impl CleanupPaths for Statement {
             } => {
                 right.cleanup();
             }
-            Statement::AsignRefExpr {
+            Statement::LazyAssignExpr {
+                left: _left, right, ..
+            } => {
+                right.cleanup();
+            }
+            Statement::AssignRefExpr {
                 left: _left, right, ..
             } => {
                 right.cleanup();
