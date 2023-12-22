@@ -110,7 +110,7 @@ fn test_parse() {
     let mut m = ParseState::new_at(Path::new("."));
     stmts.subst(&mut m, &path_searcher).expect("subst failure");
     assert_eq!(
-        m.expr_map.get("CXX_FLAGS").unwrap().join(""),
+        m.expr_map.get("CXX_FLAGS").unwrap().join(" "),
         "-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505"
     );
 
@@ -148,7 +148,8 @@ fn parse_x() {
     let _ = env_logger::try_init();
     let root = "c:/ws/fegeomscratch";
     std::env::set_current_dir(root).unwrap();
-    //  let mut parser = TupParser::<crate::decode::DirSearcher>::try_new_from(root, crate::decode::DirSearcher::new()).unwrap();
-    //    let arts = parser.parse("TupDefines.tup").unwrap();
-    //   assert_eq!(arts.get_resolved_links().len(), 375);
+    /*     let mut parser = TupParser::<crate::decode::DirSearcher>::try_new_from(root, crate::decode::DirSearcher::new()).unwrap();
+            let arts = parser.parse("TupRulesNew.tup").unwrap();
+           assert_eq!(arts.get_resolved_links().len(), 375);
+    */
 }

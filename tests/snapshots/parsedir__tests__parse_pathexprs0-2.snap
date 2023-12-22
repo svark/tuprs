@@ -2,4 +2,4 @@
 source: tuprs/tests/parsedir.rs
 expression: "v2.get(\"O\").unwrap().join(\" \")"
 ---
-a.o b.c c.cpp a.o b.c c.o
+a.o b.c dir/c.cpp a.o b.c dir/c.o

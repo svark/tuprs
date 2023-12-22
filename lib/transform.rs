@@ -830,22 +830,24 @@ impl DollarExprs {
                     .flat_map(|x| x.subst(m, path_searcher))
                     .collect::<Vec<PathExpr>>();
                 let from = from.cat();
+                debug!("subst from:{:?} to:{:?} in:{:?}", from, to, vs);
                 let replacer = |x: &[PathExpr]| {
-                    x.iter()
-                        .filter_map(|x| {
-                            if let PathExpr::Literal(s) = x {
-                                if !s.is_empty() {
-                                    Some(PathExpr::from(s.replace(from.as_str(), to.as_str())))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                Some(x.clone())
-                            }
-                        })
-                        .collect::<Vec<PathExpr>>()
+                    // following will potentially also replace white spaces.
+                    intersperse_sp1(words_from_pelist(x).as_slice())
+                        .cat()
+                        .replace(from.as_str(), to.as_str())
                 };
-                replacer(&vs)
+                let mut result = Vec::new();
+                let replaced_vec = replacer(&vs);
+                debug!("after subst :{:?}", replaced_vec);
+                for x in replaced_vec.split_whitespace() {
+                    result.push(PathExpr::from(x.to_owned()));
+                    result.push(PathExpr::Sp1);
+                }
+                if !result.is_empty() {
+                    result.pop();
+                }
+                result
             }
 
             DollarExprs::Filter(ref filter, ref body) => {
@@ -1188,6 +1190,7 @@ impl DollarExprs {
                 let vs = vs.subst_pe(m, path_searcher);
                 let mut prefix = prefix.subst_pe(m, path_searcher);
                 prefix.cleanup();
+                debug!("addprefix:{:?} on {:?}", prefix, vs);
                 let next = |x: &[PathExpr]| -> Vec<PathExpr> {
                     let mut words: Vec<_> = words_from_pelist(x);
                     words

@@ -13,6 +13,10 @@ CXX_SOURCES := $(filter-out %.c, $(S))
 
 TX = a1.tx a2.tx
 GEN_FILES := $(addsuffix x, $(addprefix ../gen/,$(subst a,g,$(subst tx,cx,$(TX)))))
+sep:= :
+empty:=
+space:= $(empty) $(empty)
+FILES_JOINED := $(subst $(space),$(sep), $(FILES))
 
 
 
