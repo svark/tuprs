@@ -18,7 +18,7 @@ use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pathdiff::diff_paths;
 
 use crate::buffers::{
-    BufferObjects, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder, PathBuffers,
+    BufferObjects, GlobPathDescriptor, GroupPathDescriptor, OutputHolder, PathBuffers,
     PathDescriptor, RuleDescriptor, TaskDescriptor, TupPathDescriptor,
 };
 use crate::decode::{
@@ -38,6 +38,7 @@ use crate::statements::DollarExprs;
 use crate::statements::PathExpr::DollarExprs as DExpr;
 use crate::statements::*;
 use crate::transform::ParseContext::Expression;
+use crate::writer::words_from_pelist;
 
 fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     static START: Once = Once::new();
@@ -571,6 +572,15 @@ fn is_empty(rval: &PathExpr) -> bool {
     }
 }
 
+#[allow(dead_code)]
+fn is_ws(rval: &PathExpr) -> bool {
+    if let PathExpr::Literal(s) = rval {
+        s.trim().len() == 0
+    } else {
+        return matches!(rval, PathExpr::Sp1 | PathExpr::NL);
+    }
+}
+
 impl PathExpr {
     fn is_literal(&self) -> bool {
         if let PathExpr::Literal(_) = self {
@@ -643,14 +653,40 @@ fn to_regex(pat: &str) -> String {
     let mut regex_pattern = String::new();
     for c in pat.chars() {
         match c {
-            '%' => regex_pattern.push_str(".*"),
+            '%' => regex_pattern.push_str("(.*)"),
+            '?' => regex_pattern.push_str("(.)"),
             '.' => regex_pattern.push_str(r"\."),
+            '$' => regex_pattern.push_str(r"\$"),
+            '^' => regex_pattern.push_str(r"\^"),
+            '+' => regex_pattern.push_str(r"\+"),
+            '*' => regex_pattern.push_str(r"\*"),
+            '\\' => regex_pattern.push_str(r"\\"),
+            '{' => regex_pattern.push_str(r"\{"),
+            '}' => regex_pattern.push_str(r"\}"),
+            '(' => regex_pattern.push_str(r"\("),
+            ')' => regex_pattern.push_str(r"\)"),
             _ => regex_pattern.push(c),
         }
     }
     regex_pattern.push('$');
     regex_pattern
 }
+
+fn to_regex_replacement(pat: &str) -> String {
+    let mut regex_pattern = String::new();
+    let mut index = 1;
+    for c in pat.chars() {
+        match c {
+            '%' => {
+                regex_pattern.push_str(format!("${}", index).as_str());
+                index += 1;
+            }
+            _ => regex_pattern.push(c),
+        }
+    }
+    regex_pattern
+}
+
 impl DollarExprs {
     fn subst_ca(&self, m: &mut CallArgsMap) -> Vec<PathExpr> {
         match self {
@@ -797,11 +833,14 @@ impl DollarExprs {
                 let replacer = |x: &[PathExpr]| {
                     x.iter()
                         .filter_map(|x| {
-                            let s = x.cat_ref();
-                            if !s.is_empty() {
-                                Some(PathExpr::from(s.replace(from.as_str(), to.as_str())))
+                            if let PathExpr::Literal(s) = x {
+                                if !s.is_empty() {
+                                    Some(PathExpr::from(s.replace(from.as_str(), to.as_str())))
+                                } else {
+                                    None
+                                }
                             } else {
-                                None
+                                Some(x.clone())
                             }
                         })
                         .collect::<Vec<PathExpr>>()
@@ -1103,14 +1142,14 @@ impl DollarExprs {
             DollarExprs::FirstWord(ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
                 let next = |x: &[PathExpr]| -> Vec<PathExpr> {
-                    let s = x.to_vec().cat();
+                    let mut words: Vec<_> = words_from_pelist(x);
                     // find the index-th word in s
-                    let mut words = s.split_whitespace();
                     let word: Vec<PathExpr> = words
-                        .nth(0usize)
-                        .map(|x| vec![x.to_string().into()])
+                        .drain(..)
+                        .nth(0)
+                        .map(|x| vec![(x).into()])
                         .unwrap_or_else(|| {
-                            log::warn!("failed to get first word from path: {:?}", s);
+                            log::warn!("failed to get first word from input: {:?}", vs.cat());
                             vec![]
                         });
                     word
@@ -1123,13 +1162,19 @@ impl DollarExprs {
                     panic!("negative index in word");
                 }
                 let next = |x: &[PathExpr]| -> Vec<PathExpr> {
-                    let s = x.to_vec().cat();
-                    // find the index-th word in s
-                    let mut words = s.split_whitespace();
-                    let word = words.nth(*index as usize).unwrap_or_else(|| {
-                        log::warn!("failed to get {}-th word from path: {:?}", index, s);
-                        ""
-                    });
+                    let words: Vec<_> = words_from_pelist(x);
+                    let word = words
+                        .iter()
+                        .nth(*index as usize)
+                        .map(|x| x.to_owned())
+                        .unwrap_or_else(|| {
+                            log::warn!(
+                                "failed to get {}-th word from path: {:?}",
+                                index,
+                                words.join(" ")
+                            );
+                            "".to_string()
+                        });
                     if word.is_empty() {
                         vec![]
                     } else {
@@ -1141,77 +1186,73 @@ impl DollarExprs {
 
             DollarExprs::AddPrefix(ref prefix, ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
-                let prefix = prefix.subst_pe(m, path_searcher);
-                let prefix: String = prefix
-                    .cat()
-                    .chars()
-                    .take_while(|x| !x.is_whitespace())
-                    .collect();
+                let mut prefix = prefix.subst_pe(m, path_searcher);
+                prefix.cleanup();
                 let next = |x: &[PathExpr]| -> Vec<PathExpr> {
-                    let vs = x
-                        .iter()
-                        .filter_map(|v| {
-                            if let PathExpr::Literal(s) = v {
+                    let mut words: Vec<_> = words_from_pelist(x);
+                    words
+                        .drain(..)
+                        .filter_map(|s| {
+                            if !s.is_empty() {
                                 let mut prefixed = prefix.clone();
-                                prefixed.push_str(s);
-                                Some(PathExpr::from(prefixed))
+                                prefixed.push(s.into());
+                                Some(prefixed)
                             } else {
                                 None
                             }
                         })
-                        .collect();
-                    vs
+                        .collect::<Vec<_>>()
+                        .join(&PathExpr::Sp1)
                 };
                 next(&vs)
             }
             DollarExprs::AddSuffix(ref suffix, ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
-                let sfx = suffix.subst_pe(m, path_searcher);
-                let sfx: String = sfx
-                    .cat()
-                    .chars()
-                    .take_while(|x| !x.is_whitespace())
-                    .collect();
+                let mut sfx = suffix.subst_pe(m, path_searcher);
+                sfx.cleanup();
                 let next = |x: &[PathExpr]| -> Vec<PathExpr> {
-                    let vs = x
-                        .iter()
-                        .filter_map(|v| {
-                            if let PathExpr::Literal(s) = v {
-                                let mut s = s.clone();
-                                s.push_str(sfx.as_str());
-                                Some(PathExpr::from(s))
+                    let mut words: Vec<_> = words_from_pelist(x);
+                    words
+                        .drain(..)
+                        .filter_map(|s| {
+                            if !s.is_empty() {
+                                let suffixed: Vec<_> = std::iter::once(PathExpr::from(s))
+                                    .chain(sfx.iter().cloned())
+                                    .collect();
+                                Some(suffixed)
                             } else {
                                 None
                             }
                         })
-                        .collect();
-                    vs
+                        .collect::<Vec<_>>()
+                        .join(&PathExpr::Sp1)
                 };
-
                 next(&vs)
             }
             DollarExprs::PatSubst(pat, rep, target) => {
                 let pat_pe = pat.subst_pe(m, path_searcher);
                 let rep_pe = rep.subst_pe(m, path_searcher);
                 let target = target.subst_pe(m, path_searcher);
-                let mut words = target.split(|x| x == &PathExpr::Sp1).map(|x| x.cat());
-                let pat: String = pat_pe.cat().replace('%', "*");
-                let rep: String = rep_pe.cat().replace("%", "$1");
+                let words = words_from_pelist(target.as_slice());
+                let pat: String = to_regex(words_from_pelist(pat_pe.as_slice()).join(" ").as_str());
+                let pat_regex = regex::Regex::new(pat.as_str()).unwrap();
+                let rep: String =
+                    to_regex_replacement(words_from_pelist(rep_pe.as_slice()).join(" ").as_str());
                 debug!("pattern:{}, and its replacement:{}", pat, rep);
-                let glob = MyGlob::new(Candidate::new(pat.as_str())).unwrap();
                 let mut ts: Vec<String> = Vec::new();
-                while let Some(word) = words.next() {
-                    let replacement = glob.re().replace(word.as_bytes(), rep.as_bytes());
-                    if !replacement.is_empty() {
-                        ts.push(
-                            std::str::from_utf8(replacement.as_ref())
-                                .unwrap_or("")
-                                .to_owned(),
-                        );
+                for word in words {
+                    if pat_regex.is_match(word.as_str()) {
+                        let replacement = pat_regex.replace(word.as_str(), rep.as_str());
+                        if !replacement.is_empty() {
+                            ts.push(replacement.as_ref().to_owned());
+                        } else {
+                            ts.push(word);
+                        }
                     } else {
                         ts.push(word);
                     }
                 }
+                debug!("input with pattern replaced:{:?}", ts);
                 intersperse_sp1(ts.as_slice())
             }
             DollarExprs::Call(ref name, args) => {

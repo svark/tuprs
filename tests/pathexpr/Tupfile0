@@ -1,5 +1,5 @@
 S = a.cxx b.c
-S += c.cpp
+S += dir/c.cpp
 
 S ?= d.C
 
@@ -10,6 +10,11 @@ FILES := ./file.c file.o file.h readme.txt
 SOURCES := $(filter %.c, $(FILES))
 SOURCES := $(subst \,/,$(SOURCES))
 CXX_SOURCES := $(filter-out %.c, $(S))
+
+TX = a1.tx a2.tx
+GEN_FILES := $(addsuffix x, $(addprefix ../gen/,$(subst a,g,$(subst tx,cx,$(TX)))))
+
+
 
 
 

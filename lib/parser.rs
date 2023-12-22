@@ -63,11 +63,19 @@ fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
 }
 /// check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
-    nom::character::is_alphanumeric(c) || c == b'_' || c == b'-' || c == b'.'
+    nom::character::is_alphanumeric(c)
+        || c == b'_'
+        || c == b'-'
+        || c == b'.'
+        || c == b'%'
+        || c == b'+'
+        || c == b'/'
+        || c == b'\\'
+        || c == b'?'
 }
 
 fn is_ident_perc(c: u8) -> bool {
-    nom::character::is_alphanumeric(c) || c == b'_' || c == b'-' || c == b'.' || c == b'%'
+    is_ident(c)
 }
 
 fn manynewlineesc(input: Span) -> IResult<Span, Span> {
@@ -167,7 +175,7 @@ fn parse_pathexpr_taskref(i: Span) -> IResult<Span, PathExpr> {
     context(
         "task reference",
         map(
-            delimited(tag("&task{"), parse_lvalue, tag("}")),
+            delimited(tag("&task{"), parse_ident, tag("}")),
             PathExpr::TaskRef,
         ),
     )(i)
@@ -742,10 +750,10 @@ fn parse_pathexpr_list_until_ws_plus(input: Span) -> IResult<Span, (Vec<PathExpr
 // parse a lvalue ref to a ident
 fn parse_lvalue_ref(input: Span) -> IResult<Span, Ident> {
     let (s, _) = char('&')(input)?;
-    parse_lvalue(s)
+    parse_ident(s)
 }
 // parse a lvalue to a ident
-fn parse_lvalue(input: Span) -> IResult<Span, Ident> {
+fn parse_ident(input: Span) -> IResult<Span, Ident> {
     map(map_res(take_while(is_ident), from_utf8), Ident::new)(input)
 }
 
@@ -893,10 +901,7 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     let (s, _) = tag("definetask")(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, name) = context(
-        "task name",
-        cut(delimited(tag("{"), parse_lvalue, tag("}"))),
-    )(s)?;
+    let (s, name) = context("task name", cut(delimited(tag("{"), parse_ident, tag("}"))))(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, _) = tag(":")(s)?;
     let (s, _) = opt(sp1)(s)?;
@@ -928,7 +933,7 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
 fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     // parse the left side of the assignment
-    let (s, left) = parse_lvalue(s)?;
+    let (s, left) = parse_ident(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, op) = alt((tag("="), tag(":="), tag("?="), tag("+=")))(s)?;
     log::debug!("parsing assignment expression with lhs {:?}", left.name);
@@ -956,7 +961,7 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
 fn parse_lazy_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     // parse the left side of the assignment
-    let (s, left) = parse_lvalue(s)?;
+    let (s, left) = parse_ident(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, op) = tag("~=")(s)?;
     log::debug!(
@@ -981,7 +986,7 @@ fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = tag("define")(s)?;
     let (s, _) = sp1(s)?;
     log::debug!("parsing define expression");
-    let (s, ident) = context("define expression", cut(parse_lvalue))(s)?;
+    let (s, ident) = context("define expression", cut(parse_ident))(s)?;
     log::debug!("with name: {:?}", ident);
     let (s, _) = multispace0(s)?;
 
@@ -1450,7 +1455,7 @@ pub(crate) fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
     let c = if negate { "n" } else { "" };
     log::debug!("parsing if{}def", c);
     let (s, _) = opt(sp1)(s)?;
-    let (s, var) = cut(complete(parse_lvalue))(s)?;
+    let (s, var) = cut(complete(parse_ident))(s)?;
     let (s, _) = opt(sp1)(s)?;
     log::debug!("parsed if{}def var: {:?}", c, var);
     Ok((s, CheckedVar::new(var, negate)))

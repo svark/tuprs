@@ -60,6 +60,15 @@ pub(crate) fn write_pathexprs<T: Write>(writer: &mut BufWriter<T>, pathexprs: &[
     })
 }
 
+pub(crate) fn write_pathexprs_lit<T: Write>(writer: &mut BufWriter<T>, pathexprs: &[PathExpr]) {
+    pathexprs
+        .iter()
+        .filter(|x| matches!(x, &PathExpr::Literal(_)))
+        .for_each(|pathexpr| {
+            write_pathexpr(writer, pathexpr);
+        })
+}
+
 pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &PathExpr) {
     match pathexpr {
         PathExpr::Literal(s) => {
@@ -433,6 +442,20 @@ impl Cat for &[PathExpr] {
         write_pathexprs(&mut BufWriter::new(&mut s), self);
         std::str::from_utf8(&s).unwrap().to_string()
     }
+}
+
+// only write literals to string
+pub(crate) fn cat_literals(pelist: &[PathExpr]) -> String {
+    let mut s: Vec<u8> = Vec::new();
+    write_pathexprs_lit(&mut BufWriter::new(&mut s), pelist);
+    std::str::from_utf8(&s).unwrap().to_string()
+}
+
+pub(crate) fn words_from_pelist(pelist: &[PathExpr]) -> Vec<String> {
+    pelist
+        .split(|x| matches!(x, PathExpr::Sp1 | PathExpr::NL))
+        .map(|x| cat_literals(x))
+        .collect()
 }
 
 impl Cat for &Vec<PathExpr> {
