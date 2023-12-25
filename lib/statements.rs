@@ -459,7 +459,6 @@ pub(crate) enum Statement {
     Define(Ident, Vec<PathExpr>),
     Task(TaskDetail),
     EvalBlock(Vec<PathExpr>),
-    SearchPaths(Vec<PathExpr>),
 }
 
 // we could have used `Into' or 'ToString' trait
@@ -591,9 +590,6 @@ impl CleanupPaths for Statement {
                 v.cleanup();
             }
             Statement::Run(v) => {
-                v.cleanup();
-            }
-            Statement::SearchPaths(v) => {
                 v.cleanup();
             }
             Statement::EvalBlock(v) => {

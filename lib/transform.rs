@@ -1961,11 +1961,23 @@ impl LocatedStatement {
                     ));
                 }
             }
-            Statement::Preload(v) => {
-                newstats.push(LocatedStatement::new(
-                    Statement::Preload(v.subst_pe(parse_state, path_searcher)),
-                    *loc,
-                ));
+            Statement::Preload(paths) => {
+                debug!("adding search paths:{:?}", paths);
+                let mut paths = paths.subst_pe(&mut parse_state.clone(), path_searcher);
+                paths.cleanup();
+                let dir = paths.cat();
+                let dirs = dir.split(":").collect::<Vec<_>>();
+                let pattern = dirs.first().cloned();
+                for dir in dirs.into_iter().skip(1) {
+                    let p = Path::new(dir).join(pattern.unwrap());
+                    let (dirid, _) = parse_state
+                        .path_buffers
+                        .write()
+                        .add_path_from(parse_state.get_tup_dir().as_ref(), p);
+                    {
+                        parse_state.load_dirs.push(dirid);
+                    }
+                }
             }
             Statement::Export(var) => {
                 let env_desc = parse_state.get_env_desc();
@@ -2043,22 +2055,6 @@ impl LocatedStatement {
                 );
                 let mut bo = parse_state.path_buffers.write();
                 bo.add_task_path(ti);
-            }
-            Statement::SearchPaths(paths) => {
-                debug!("adding search paths:{:?}", paths);
-                let paths = paths.subst_pe(&mut parse_state.clone(), path_searcher);
-                let dir = paths.cat();
-                let dirs = dir.split(":").collect::<Vec<_>>();
-                for dir in dirs {
-                    let p = Path::new(dir);
-                    let (dirid, _) = parse_state
-                        .path_buffers
-                        .write()
-                        .add_path_from(parse_state.get_tup_dir().as_ref(), p);
-                    {
-                        parse_state.load_dirs.push(dirid);
-                    }
-                }
             }
         }
         Ok(newstats)

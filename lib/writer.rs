@@ -352,11 +352,6 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
             write_pathexprs(writer, e);
             write!(writer, ")\n").unwrap();
         }
-        Statement::SearchPaths(paths) => {
-            write!(writer, "preload ").unwrap();
-            write_pathexprs(writer, paths);
-            write!(writer, "\n").unwrap();
-        }
         Statement::Define(d, v) => {
             write!(writer, "define ").unwrap();
             write!(writer, "{}\n", d.name).unwrap();

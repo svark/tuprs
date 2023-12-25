@@ -106,20 +106,44 @@ fn parse_pathexpr_raw_angle(input: Span) -> IResult<Span, Span> {
 }
 
 // parse expession wrapped inside dollar or at
-fn parse_pathexpr_ref_raw(input: Span) -> IResult<Span, String> {
-    let (s, _) = alt((tag("$("), tag("@("), tag("&(")))(input)?;
-    let (s, r) = take_while(is_ident_perc)(s)?;
-    let (s, _) = tag(")")(s)?;
-    let raw = std::str::from_utf8(r.as_bytes()).unwrap();
-    Ok((s, raw.to_owned()))
+fn close_bracket(s: char) -> char {
+    match s {
+        '<' => '>',
+        '{' => '}',
+        '(' => ')',
+        '[' => ']',
+        _ => s,
+    }
 }
-fn parse_pathexpr_ref_raw_curl(input: Span) -> IResult<Span, String> {
-    let (s, _) = alt((tag("${"), tag("@{"), tag("&{")))(input)?;
-    let (s, r) = take_while(is_ident_perc)(s)?;
-    let (s, _) = tag("}")(s)?;
-    let raw = std::str::from_utf8(r.as_bytes()).unwrap();
+
+fn parse_pathexpr_ref_raw(schar: char, input: Span) -> IResult<Span, String> {
+    let (s, _) = alt((tag("$"), tag("@"), tag("&")))(input)?;
+    let (s, _) = char(schar)(s)?;
+    let (s, r) = context("dollar expression name", cut(take_while(is_ident_perc)))(s)?;
+    let (s, _) = char(close_bracket(schar))(s)?;
+    let raw = std::str::from_utf8(r.as_bytes()).expect("failed to decode name as utf8");
     log::debug!("parsed $({})", raw);
     Ok((s, raw.to_owned()))
+}
+
+/// parses dollar expressions that replace a string with another (pattern and its replacement appears after a colon)
+fn parse_pathexpr_patsubst_alt(
+    input: Span,
+) -> IResult<Span, (String, Vec<PathExpr>, Vec<PathExpr>)> {
+    let (s, _) = alt((tag("$("), tag("@("), tag("&(")))(input)?;
+    let (s, r) = take_while(is_ident_perc)(s)?;
+    let (s, _) = tag(":")(s)?;
+    let (s, (pattern, _)) = context(
+        "pattern ",
+        cut(|s| parse_pelist_till_delim_with_ws(s, "=", &BRKTOKS)),
+    )(s)?;
+    let (s, (replacement, _)) = context(
+        "replacement ",
+        cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)),
+    )(s)?;
+    let raw = std::str::from_utf8(r.as_bytes()).unwrap();
+    log::debug!("parsed $({}:{:?}={:?})", raw, pattern, replacement);
+    Ok((s, (raw.to_owned(), pattern, replacement)))
 }
 
 // read a ! followed by macro name
@@ -165,8 +189,8 @@ fn parse_pathexpr_at(i: Span) -> IResult<Span, PathExpr> {
     context(
         "config(@) expression",
         alt((
-            complete(map(parse_pathexpr_ref_raw, PathExpr::AtExpr)),
-            complete(map(parse_pathexpr_ref_raw_curl, PathExpr::AtExpr)),
+            complete(map(|i| parse_pathexpr_ref_raw('(', i), PathExpr::AtExpr)),
+            complete(map(|i| parse_pathexpr_ref_raw('{', i), PathExpr::AtExpr)),
         )),
     )(i)
 }
@@ -184,11 +208,22 @@ fn parse_pathexpr_taskref(i: Span) -> IResult<Span, PathExpr> {
 // parse rvalue dollar expression eg $(H)
 pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
     let (_, peekchars) = peek(take(3usize))(i)?;
-    let parse_pathexpr_fallback = |i| {
-        map(parse_pathexpr_ref_raw, |x| {
-            PathExpr::from(DollarExprs::DollarExpr(x))
-        })(i)
-    };
+    let parse_pathexpr_fallback = alt((
+        complete(map(
+            parse_pathexpr_patsubst_alt,
+            |(sym, pattern, replacement)| {
+                PathExpr::from(DollarExprs::PatSubst(
+                    pattern,
+                    replacement,
+                    vec![PathExpr::from(DollarExprs::DollarExpr(sym))],
+                ))
+            },
+        )),
+        complete(map(
+            |i| parse_pathexpr_ref_raw('(', i),
+            |x| PathExpr::from(DollarExprs::DollarExpr(x)),
+        )),
+    ));
     match peekchars.as_bytes() {
         b"$(a" | b"$(b" => context(
             "dollar expression (class 1)",
@@ -255,9 +290,10 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_dollar_curl(i: Span) -> IResult<Span, PathExpr> {
     context(
         "dollar expression with curlies",
-        alt((complete(map(parse_pathexpr_ref_raw_curl, |x| {
-            PathExpr::from(DollarExprs::DollarExpr(x))
-        })),)),
+        alt((complete(map(
+            |i| parse_pathexpr_ref_raw('{', i),
+            |x| PathExpr::from(DollarExprs::DollarExpr(x)),
+        )),)),
     )(i)
 }
 
@@ -265,7 +301,7 @@ fn parse_pathexpr_dollar_curl(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_amp(i: Span) -> IResult<Span, PathExpr> {
     context(
         "ampersand expression",
-        cut(map(parse_pathexpr_ref_raw, PathExpr::AmpExpr)),
+        cut(map(|i| parse_pathexpr_ref_raw('(', i), PathExpr::AmpExpr)),
     )(i)
 }
 
@@ -1259,18 +1295,6 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     ))
 }
 
-pub(crate) fn parse_searchpaths(i: Span) -> IResult<Span, LocatedStatement> {
-    let s = i;
-    let (s, _) = alt((complete(tag("searchpaths")), complete(tag("vpath"))))(s)?;
-    let (s, _) = sp1(s)?;
-    let (s, r) = context(
-        "searchpaths expression",
-        cut(parse_pelist_till_line_end_with_ws),
-    )(s)?;
-    let offset = i.offset(&s);
-    Ok((s, (Statement::SearchPaths(r.0), i.slice(..offset)).into()))
-}
-
 // parse a macro assignment which is more or less same as parsing a rule expression
 // !macro = [inputs] | [order-only inputs] |> command |> [outputs]
 pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> {
@@ -1371,7 +1395,6 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_pathexpr_define),
         complete(parse_lazy_assignment_expr),
         complete(parse_task_statement),
-        complete(parse_searchpaths),
         complete(parse_eval_block),
     ))(s)
 }

@@ -14,6 +14,7 @@ expression: strings
   "CXX_SOURCES = $(filter-out %.c,$(S))",
   "TX = a1.tx a2.tx",
   "GEN_FILES = $(addsuffix x,$(addprefix ../gen/,$(subst a,g,$(subst tx,cx,$(TX)))))",
+  "GEN_FILES = $(patsubst %.cxx,%.gen,$(GEN_FILES))",
   "sep = :",
   "empty = ",
   "space = $(empty) $(empty)",
