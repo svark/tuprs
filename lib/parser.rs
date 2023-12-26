@@ -338,7 +338,7 @@ fn parse_pathexpr_bin(i: Span) -> IResult<Span, PathExpr> {
 // only $ and newline are escaped
 // if you have problems use variables to escape special characters that
 // clash with break_toks and end_toks.
-fn parse_escaped<'a>(i: Span<'a>, end_tok: &'static str) -> IResult<Span<'a>, PathExpr> {
+fn parse_escaped<'a, 'b>(i: Span<'a>, end_tok: &'b str) -> IResult<Span<'a>, PathExpr> {
     let (_, r) = peek(take(2_usize))(i)?;
     match r.as_bytes() {
         b"\\\r" => {
@@ -699,11 +699,8 @@ fn parse_delim(i: Span) -> IResult<Span, Span> {
 /// eats up \\n
 /// consume dollar's etc that where left out during previous parsing
 /// consume a literal that is not a pathexpr token
-fn parse_misc_bits<'a>(
-    input: Span<'a>,
-    end_toks: [&'static str; 2],
-) -> IResult<Span<'a>, Span<'a>> {
-    let islit = |ref i| !end_toks[0].as_bytes().contains(i) && !end_toks[1].as_bytes().contains(i);
+fn parse_misc_bits<'a, 'b>(input: Span<'a>, end_toks: &'b str) -> IResult<Span<'a>, Span<'a>> {
+    let islit = |ref i| !end_toks.as_bytes().contains(i);
     alt((complete(parse_delim), complete(take_while(islit))))(input)
 }
 /// parse either (dollar|at|) expression or a general rvalue delimited by delim
@@ -713,17 +710,19 @@ pub(crate) fn parse_pathexpr_ws<'a>(
     end_tok: &'static str,
     break_toks: &'static str,
 ) -> IResult<Span<'a>, PathExpr> {
-    alt((
-        complete(|i| parse_escaped(i, end_tok)),
+    let all_end_toks = format!("{}{}", end_tok, break_toks);
+    let res = alt((
+        complete(|i| parse_escaped(i, all_end_toks.as_str())),
         complete(parse_quote),
         complete(parse_ws),
         complete(parse_pathexprbasic),
         complete(parse_pathexpr_taskref),
         complete(map_res(
-            |i| parse_misc_bits(i, [end_tok, break_toks]),
+            |i| parse_misc_bits(i, all_end_toks.as_str()),
             from_str,
         )),
-    ))(s)
+    ))(s);
+    res
 }
 
 /// break_toks are the tokens that pause and restart the parser to create a new pathexpr
@@ -732,14 +731,16 @@ fn parse_pathexpr_no_ws<'a>(
     end_tok: &'static str,
     break_toks: &'static str,
 ) -> IResult<Span<'a>, PathExpr> {
-    alt((
-        complete(|i| parse_escaped(i, end_tok)),
+    let all_end_toks = format!("{}{}", end_tok, break_toks);
+    let res = alt((
+        complete(|i| parse_escaped(i, all_end_toks.as_str())),
         complete(parse_pathexprbasic),
         complete(map_res(
-            |i| parse_misc_bits(i, [end_tok, break_toks]),
+            |i| parse_misc_bits(i, all_end_toks.as_str()),
             from_str,
         )),
-    ))(s)
+    ))(s);
+    res
 }
 
 // repeatedly invoke the rvalue parser until eof or end_tok is encountered
