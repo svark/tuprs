@@ -18,5 +18,7 @@ expression: strings
   "sep = :",
   "empty = ",
   "space = $(empty) $(empty)",
-  "FILES_JOINED = $(subst $(space),$(sep),$(FILES))"
+  "FILES_JOINED = $(subst $(space),$(sep),$(FILES))",
+  "FILES_JOINED_STRIPPED = $(FILES_JOINED) $(space)",
+  "FILES_JOINED_STRIPPED = $(strip $(FILES_JOINED_STRIPPED))"
 ]

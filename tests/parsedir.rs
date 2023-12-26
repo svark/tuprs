@@ -78,6 +78,7 @@ mod tests {
         insta::assert_snapshot!(v2.get("CXX_SOURCES").unwrap().join(" "));
         insta::assert_snapshot!(v2.get("GEN_FILES").unwrap().join(" "));
         insta::assert_snapshot!(v2.get("FILES_JOINED").unwrap().join(" "));
+        insta::assert_snapshot!(v2.get("FILES_JOINED_STRIPPED").unwrap().join(" "));
     }
 
     #[test]

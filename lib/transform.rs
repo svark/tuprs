@@ -1005,16 +1005,11 @@ impl DollarExprs {
             }
             DollarExprs::Strip(ref vs) => {
                 // strip trailing and leading spaces
-                let vs: Vec<_> = vs
-                    .subst_pe(m, path_searcher)
-                    .into_iter()
-                    .rev()
-                    .skip_while(|x| matches!(x, PathExpr::Sp1))
-                    .collect();
-                vs.into_iter()
-                    .rev()
-                    .skip_while(|x| matches!(x, PathExpr::Sp1))
-                    .collect()
+                log::debug!("stripping {:?} of leading and trailing ws", vs);
+                let vs = vs.subst_pe(m, path_searcher);
+                let vs_str = vs.cat();
+                log::debug!("stripped to {:?}", vs_str.trim());
+                vec![vs_str.trim().to_owned().into()]
             }
 
             DollarExprs::FindString(ref needle, ref text) => {
@@ -1429,7 +1424,6 @@ impl SubstPEs for Vec<PathExpr> {
         let mut newpe: Vec<_> = self
             .iter()
             .flat_map(|x| x.subst(m, path_searcher))
-            .filter(|x| !is_empty(x))
             .collect();
         newpe.cleanup();
         newpe

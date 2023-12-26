@@ -6,7 +6,7 @@ S ?= d.C
 O = $(patsubst %.cxx,%.o,$(S))
 O += $(patsubst %.cpp,%.o,$(O))
 
-FILES := ./file.c file.o file.h readme.txt
+FILES :=  ./file.c file.o file.h readme.txt
 SOURCES := $(filter %.c, $(FILES))
 SOURCES := $(subst \,/,$(SOURCES))
 CXX_SOURCES := $(filter-out %.c, $(S))
@@ -18,6 +18,8 @@ sep:= :
 empty:=
 space:= $(empty) $(empty)
 FILES_JOINED := $(subst $(space),$(sep), $(FILES))
+FILES_JOINED_STRIPPED := $(FILES_JOINED) $(space)
+FILES_JOINED_STRIPPED := $(strip $(FILES_JOINED_STRIPPED))
 
 
 
