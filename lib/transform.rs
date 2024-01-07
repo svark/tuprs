@@ -1,6 +1,5 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::ops::ControlFlow::Continue;
 use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
@@ -11,15 +10,15 @@ use std::sync::Once;
 use std::vec::Drain;
 
 use crossbeam::channel::{Receiver, Sender};
+use hashbrown::HashMap;
 use log::debug;
 use nom::AsBytes;
-use parking_lot::MappedRwLockReadGuard;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pathdiff::diff_paths;
 
 use crate::buffers::{
-    BufferObjects, GlobPathDescriptor, GroupPathDescriptor, OutputHolder, PathBuffers,
-    PathDescriptor, RuleDescriptor, TaskDescriptor, TupPathDescriptor,
+    BufferObjects, EnvDescriptor, GlobPathDescriptor, GroupBufferObject, GroupPathDescriptor,
+    OutputHolder, PathBuffers, PathDescriptor, RuleDescriptor, TaskDescriptor, TupPathDescriptor,
 };
 use crate::decode::{
     PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance,
@@ -27,10 +26,9 @@ use crate::decode::{
 };
 use crate::errors::Error::RootNotFound;
 use crate::errors::{Error as Err, Error};
-use crate::glob::Candidate;
 use crate::parser::locate_tuprules;
 use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
-use crate::paths::{normalize_path, NormalPath};
+use crate::paths::NormalPath;
 use crate::paths::{GlobPath, InputResolvedType};
 use crate::platform::*;
 use crate::scriptloader::parse_script;
@@ -122,7 +120,7 @@ pub(crate) struct ParseState {
     /// Cache of statements from previously read Tupfiles
     pub(crate) statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
     /// Buffers to store files, groups, bins, env with its id.
-    pub(crate) path_buffers: Arc<RwLock<BufferObjects>>,
+    pub(crate) path_buffers: Arc<BufferObjects>,
     /// tracks the context of parsing for substitutions
     pub(crate) parse_context: ParseContext,
 }
@@ -203,20 +201,24 @@ impl ParseState {
     /// Initialize ParseState for var-subst-ing `cur_file'
     pub fn new(
         conf_map: &HashMap<String, Vec<String>>,
-        cur_file: &Path,
         cur_file_desc: TupPathDescriptor,
         cur_env_desc: EnvDescriptor,
         statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
-        bo: Arc<RwLock<BufferObjects>>,
+        bo: Arc<BufferObjects>,
     ) -> Self {
         let mut def_vars = HashMap::new();
-        let dir = get_parent_with_fsep(cur_file).to_string();
+        let cur_file = bo.get_path(&cur_file_desc);
+        let dir = cur_file_desc
+            .get_parent_descriptor()
+            .as_ref()
+            .get_path()
+            .to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
 
         ParseState {
             conf_map: conf_map.clone(),
             expr_map: def_vars,
-            cur_file: cur_file.to_path_buf(),
+            cur_file: cur_file.clone().to_path_buf(),
             tup_base_path: cur_file.to_path_buf(),
             cur_file_desc,
             cur_env_desc,
@@ -240,14 +242,13 @@ impl ParseState {
         v
     }
 
-    pub fn with_mut_path_buffers_do<F, R>(&mut self, f: F) -> R
+    pub fn with_path_buffers_do<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&mut BufferObjects) -> R,
+        F: FnOnce(&BufferObjects) -> R,
     {
-        let mut pb = self.path_buffers.write();
-        f(pb.deref_mut())
+        f(self.path_buffers.deref())
     }
-    pub fn get_path_buffers(&self) -> Arc<RwLock<BufferObjects>> {
+    pub fn get_path_buffers(&self) -> Arc<BufferObjects> {
         self.path_buffers.clone()
     }
 
@@ -267,11 +268,17 @@ impl ParseState {
     /// This is useful for testing.
     pub fn new_at<P: AsRef<Path>>(cur_file: P) -> Self {
         let mut def_vars = HashMap::new();
-        let pbuffers = Arc::new(RwLock::new(BufferObjects::new(get_parent(
-            cur_file.as_ref(),
-        ))));
-        let cur_file_desc = pbuffers.write().add_tup(cur_file.as_ref()).0;
-        let cur_file = pbuffers.read().get_tup_path(&cur_file_desc).to_path_buf();
+        let pbuffers = Arc::new(BufferObjects::new(get_parent(cur_file.as_ref())));
+        let tupfile_rel_path = diff_paths(cur_file.as_ref(), pbuffers.get_root_dir())
+            .unwrap_or_else(|| {
+                panic!(
+                    "Failed to diff path{:?} with base:{:?}",
+                    cur_file.as_ref(),
+                    pbuffers.get_root_dir()
+                )
+            });
+        let cur_file_desc = pbuffers.add_tup(&*tupfile_rel_path);
+        let cur_file = cur_file_desc.get_path().to_path_buf();
         let dir = get_parent_with_fsep(cur_file.as_path()).to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
 
@@ -286,12 +293,8 @@ impl ParseState {
     }
     /// set the current TUP_CWD in expression map in ParseState as we switch to reading an included file
     pub fn set_cwd(&mut self, tupfile: &Path) -> Result<(), Error> {
-        (self.cur_file_desc, _) = self.path_buffers.write().add_tup(tupfile);
-        self.cur_file = self
-            .path_buffers
-            .read()
-            .get_tup_path(&self.cur_file_desc)
-            .to_path_buf();
+        self.cur_file_desc = self.path_buffers.add_tup(tupfile);
+        self.cur_file = self.cur_file_desc.get_path().to_path_buf();
         let tupdir = get_parent(self.tup_base_path.as_path());
         debug!(
             "diffing:{:?} with base: {:?}",
@@ -308,15 +311,8 @@ impl ParseState {
                 )))
             })?;
         debug!("switching to diff:{:?}", diff);
-        let parent = diff
-            .parent()
-            .unwrap_or_else(|| panic!("unexpected diff:{:?}", diff));
-        if parent.eq(Path::new("")) {
-            self.replace_tup_cwd(".");
-        } else {
-            let p = get_path_with_fsep(parent);
-            self.replace_tup_cwd(p.to_cow_str().as_ref());
-        }
+        let p = get_parent_with_fsep(diff.as_path());
+        self.replace_tup_cwd(p.as_path().to_string_lossy().as_ref());
         Ok(())
     }
 
@@ -332,6 +328,10 @@ impl ParseState {
     /// return the folder containing Tupfile being parsed
     pub(crate) fn get_tup_dir(&self) -> Cow<Path> {
         get_parent(self.cur_file.as_path())
+    }
+
+    pub(crate) fn get_tup_dir_desc(&self) -> PathDescriptor {
+        self.get_cur_file_desc().get_parent_descriptor()
     }
 
     /// Get folder that hosts tup file as a descriptor
@@ -353,7 +353,7 @@ impl ParseState {
         self.statement_cache
             .deref()
             .write()
-            .entry(*tup_desc)
+            .entry(tup_desc.clone())
             .or_insert(vs);
     }
 }
@@ -385,13 +385,13 @@ impl ExpandRun for Statement {
         let rule_ref = TupLoc::new(&parse_state.cur_file_desc, loc);
 
         let path_buffers = parse_state.get_path_buffers();
-        let mut path_buffers = path_buffers.write();
-        let path_buffers = path_buffers.deref_mut();
+        let path_buffers = path_buffers.deref();
         match self {
             Statement::Preload(v) => {
                 let dir = v.cat();
                 let p = Path::new(dir.as_str());
-                let (dirid, _) = path_buffers.add_path_from(parse_state.get_tup_dir().as_ref(), p);
+                let tup_parent_desc = parse_state.get_cur_file_desc().get_parent_descriptor();
+                let dirid = path_buffers.add_path_from(&tup_parent_desc, p);
                 {
                     parse_state.load_dirs.push(dirid);
                 }
@@ -415,16 +415,14 @@ impl ExpandRun for Statement {
                         if arg.contains('*') {
                             let arg_path = Path::new(arg);
                             {
-                                let glob_path = GlobPath::new(
-                                    parse_state.get_tup_dir().as_ref(),
+                                let glob_path = GlobPath::build_from_relative(
+                                    &parse_state.get_tup_dir_desc(),
                                     arg_path,
-                                    path_buffers,
                                 )?;
                                 let mut glob_paths = vec![glob_path];
                                 for dir_desc in parse_state.load_dirs.iter() {
-                                    let dir = path_buffers.get_path(dir_desc).clone();
                                     let glob_path =
-                                        GlobPath::new(dir.as_path(), arg_path, path_buffers)?;
+                                        GlobPath::build_from_relative(dir_desc, arg_path)?;
                                     glob_paths.push(glob_path);
                                 }
                                 let matches = path_searcher
@@ -436,14 +434,16 @@ impl ExpandRun for Statement {
                                 debug!("expand_run num files from glob:{:?}", matches.len());
                                 for ofile in matches {
                                     let p = diff_paths(
-                                        path_buffers.get_path(ofile.path_descriptor()).as_path(),
+                                        path_buffers
+                                            .get_path(ofile.path_descriptor_ref())
+                                            .as_path(),
                                         parse_state.get_tup_dir(),
                                     )
                                     .unwrap_or_else(|| {
                                         panic!(
                                             "Failed to diff path{:?} with base:{:?}",
                                             path_buffers
-                                                .get_path(ofile.path_descriptor())
+                                                .get_path(ofile.path_descriptor_ref())
                                                 .as_path(),
                                             parse_state.get_tup_dir()
                                         )
@@ -457,11 +457,7 @@ impl ExpandRun for Statement {
                             cmd.arg(arg);
                         }
                     }
-                    let env = path_buffers
-                        .try_get_env(&parse_state.cur_env_desc)
-                        .unwrap_or_else(|| {
-                            panic!("unknown env var descriptor:{}", parse_state.cur_env_desc)
-                        });
+                    let env = path_buffers.get_env(&parse_state.cur_env_desc);
                     let dir = path_buffers.get_root_dir().join(parse_state.get_tup_dir());
                     if cmd.get_args().len() != 0 {
                         cmd.envs(env.getenv()).current_dir(dir.as_path());
@@ -572,7 +568,6 @@ fn is_empty(rval: &PathExpr) -> bool {
     }
 }
 
-#[allow(dead_code)]
 fn is_ws(rval: &PathExpr) -> bool {
     if let PathExpr::Literal(s) = rval {
         s.trim().len() == 0
@@ -649,7 +644,7 @@ impl PathExpr {
     }
 }
 
-fn to_regex(pat: &str) -> String {
+pub(crate) fn to_regex(pat: &str) -> String {
     let mut regex_pattern = String::new();
     for c in pat.chars() {
         match c {
@@ -803,6 +798,18 @@ impl DollarExprs {
                 let vs = e.subst_ca(m);
                 vec![DExpr(DollarExprs::Eval(vs))]
             }
+            DollarExprs::GrepFiles(ref pattern, ref glob, ref dirs) => {
+                let pattern = pattern.subst_ca(m);
+                let glob = glob.subst_ca(m);
+                let dirs = dirs.subst_ca(m);
+                log::debug!(
+                    "grepfiles pattern:{:?} glob:{:?} text:{:?}",
+                    pattern,
+                    glob,
+                    dirs
+                );
+                vec![DExpr(DollarExprs::GrepFiles(pattern, glob, dirs))]
+            }
         }
     }
     fn subst(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Vec<PathExpr> {
@@ -855,7 +862,7 @@ impl DollarExprs {
                 body.cleanup();
                 let mut filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
                 filter.cleanup();
-                log::debug!("body:{:?} on which we filter:{:?}", body, filter);
+                debug!("body:{:?} on which we filter:{:?}", body, filter);
 
                 body.retain(|target| {
                     let target_tok = target.cat_ref();
@@ -867,24 +874,22 @@ impl DollarExprs {
                                 let pat = f.as_str();
                                 if pat.contains("%") {
                                     let pat_str: String = to_regex(pat);
-                                    log::debug!(
+                                    debug!(
                                         "checking if glob: {:?} matches target: {:?}",
-                                        pat_str,
-                                        target_tok
+                                        pat_str, target_tok
                                     );
                                     if regex::Regex::new(pat_str.as_str())
                                         .unwrap()
                                         .is_match(target_tok.as_ref())
                                     {
-                                        log::debug!("found a match");
+                                        debug!("found a match");
                                         return true;
                                     }
                                 } else {
                                     if target_tok.contains(pat) {
-                                        log::debug!(
+                                        debug!(
                                             "found a match for pattern:{:?} in target:{:?}",
-                                            pat,
-                                            target_tok
+                                            pat, target_tok
                                         );
                                         return true;
                                     }
@@ -977,21 +982,16 @@ impl DollarExprs {
                 // wild cards are not expanded in the substitution phase
 
                 let gstr = glob.subst_pe(m, path_searcher).cat();
-                let dir = m.get_tup_dir().to_path_buf();
+                let dir = m.get_tup_dir_desc();
                 let ldirs = m.load_dirs.clone();
-                m.with_mut_path_buffers_do(|path_buffers_mut| {
+                m.with_path_buffers_do(|path_buffers_mut| {
                     let glob_path =
-                        GlobPath::new(dir.as_path(), Path::new(gstr.as_str()), path_buffers_mut)
-                            .unwrap();
+                        GlobPath::build_from_relative(&dir, Path::new(gstr.as_str())).unwrap();
                     let mut glob_paths = vec![glob_path];
                     for dir_desc in ldirs.iter() {
-                        let dir = path_buffers_mut.get_path(dir_desc).clone();
-                        let glob_path = GlobPath::new(
-                            dir.as_path(),
-                            Path::new(gstr.as_str()),
-                            path_buffers_mut,
-                        )
-                        .unwrap();
+                        let glob_path =
+                            GlobPath::build_from_relative(dir_desc, Path::new(gstr.as_str()))
+                                .unwrap();
                         glob_paths.push(glob_path); // other directories in which to look for paths
                     }
                     let paths = path_searcher
@@ -1005,10 +1005,10 @@ impl DollarExprs {
             }
             DollarExprs::Strip(ref vs) => {
                 // strip trailing and leading spaces
-                log::debug!("stripping {:?} of leading and trailing ws", vs);
+                debug!("stripping {:?} of leading and trailing ws", vs);
                 let vs = vs.subst_pe(m, path_searcher);
                 let vs_str = vs.cat();
-                log::debug!("stripped to {:?}", vs_str.trim());
+                debug!("stripped to {:?}", vs_str.trim());
                 vec![vs_str.trim().to_owned().into()]
             }
 
@@ -1144,7 +1144,7 @@ impl DollarExprs {
                     let word: Vec<PathExpr> = words
                         .drain(..)
                         .nth(0)
-                        .map(|x| vec![(x).into()])
+                        .map(|x| vec![x.into()])
                         .unwrap_or_else(|| {
                             log::warn!("failed to get first word from input: {:?}", vs.cat());
                             vec![]
@@ -1369,6 +1369,42 @@ impl DollarExprs {
 
                 vec![PathExpr::from(outstr)]
             }
+            DollarExprs::GrepFiles(pattern, glob_pattern, dirs) => {
+                // grep for pattern in files matching glob_pattern in dirs
+                let pattern = pattern.subst_pe(m, path_searcher);
+                let glob_pattern = glob_pattern.subst_pe(m, path_searcher);
+                let dirs = dirs.subst_pe(m, path_searcher);
+                let pattern = pattern.cat();
+                let glob_pattern = glob_pattern.cat();
+                let mut glob_paths = Vec::new();
+                let tup_cwd = m.get_tup_dir_desc();
+                let paths = m.with_path_buffers_do(|path_buffers_mut| {
+                    for dir in dirs.split(is_ws) {
+                        let dirid = path_buffers_mut.add_path_from(&tup_cwd, dir.cat().as_str());
+                        //let dir = dir.cat();
+                        let glob_path =
+                            GlobPath::build_from_relative(&dirid, Path::new(glob_pattern.as_str()))
+                                .unwrap();
+                        //m.load_dirs.push(dirid);
+                        glob_paths.push(glob_path); // other directories in which to look for paths
+                    }
+                    let paths = path_searcher
+                        .discover_paths_with_pattern(
+                            path_buffers_mut,
+                            glob_paths.as_slice(),
+                            pattern.as_str(),
+                        )
+                        .unwrap_or_else(|e| {
+                            log::warn!("Error while globbing {:?}: {}", glob_paths, e);
+                            vec![]
+                        });
+                    paths
+                });
+                paths
+                    .into_iter()
+                    .map(|x| PathExpr::DeGlob(x))
+                    .collect::<Vec<_>>()
+            }
         }
     }
 
@@ -1485,11 +1521,11 @@ impl AddAssign for Target {
 
 /// substitute only first pathexpr using ParseState
 fn takefirst(
-    o: &Option<PathExpr>,
+    o: Option<&PathExpr>,
     m: &mut ParseState,
     path_searcher: &impl PathSearcher,
 ) -> Result<Option<PathExpr>, Err> {
-    if let &Some(ref pe) = o {
+    if let Some(pe) = o {
         Ok(pe.subst(m, path_searcher).first().cloned())
     } else {
         Ok(None)
@@ -1508,8 +1544,8 @@ impl SubstPEs for Target {
         Target {
             primary,
             secondary,
-            group: takefirst(&self.group, m, path_searcher).unwrap_or_default(),
-            bin: takefirst(&self.bin, m, path_searcher).unwrap_or_default(),
+            group: takefirst(self.group.as_ref(), m, path_searcher).unwrap_or_default(),
+            bin: takefirst(self.bin.as_ref(), m, path_searcher).unwrap_or_default(),
         }
     }
 }
@@ -1593,12 +1629,8 @@ pub(crate) fn get_parent(cur_file: &Path) -> Cow<Path> {
 }
 
 /// parent folder path as a string slice
-pub fn get_parent_with_fsep(cur_file: &Path) -> Candidate {
-    normalize_path(cur_file.parent().unwrap())
-}
-
-pub(crate) fn get_path_with_fsep(cur_file: &Path) -> Candidate {
-    normalize_path(cur_file)
+pub fn get_parent_with_fsep(cur_file: &Path) -> NormalPath {
+    NormalPath::new_from_cow_path(cur_file.parent().unwrap().into())
 }
 
 /// strings in pathexpr that are space separated
@@ -1893,7 +1925,7 @@ impl LocatedStatement {
                 let longp = get_parent(parse_state.cur_file.as_path());
                 let pscat = Path::new(scat.as_str());
                 debug!("longp:{:?}, pscat:{:?}", longp, pscat);
-                let fullp = NormalPath::absolute_from(pscat, longp.as_ref());
+                let fullp = NormalPath::join(longp.as_ref(), pscat);
 
                 let p = if pscat.is_relative() {
                     path_searcher.get_root().join(fullp.as_path())
@@ -1962,12 +1994,10 @@ impl LocatedStatement {
                 let dir = paths.cat();
                 let dirs = dir.split(":").collect::<Vec<_>>();
                 let pattern = dirs.first().cloned();
+                let tup_cwd = parse_state.get_tup_dir_desc();
                 for dir in dirs.into_iter().skip(1) {
                     let p = Path::new(dir).join(pattern.unwrap());
-                    let (dirid, _) = parse_state
-                        .path_buffers
-                        .write()
-                        .add_path_from(parse_state.get_tup_dir().as_ref(), p);
+                    let dirid = parse_state.path_buffers.add_path_from(&tup_cwd, p);
                     {
                         parse_state.load_dirs.push(dirid);
                     }
@@ -1975,8 +2005,8 @@ impl LocatedStatement {
             }
             Statement::Export(var) => {
                 let env_desc = parse_state.get_env_desc();
-                let id = parse_state
-                    .with_mut_path_buffers_do(|bo| bo.add_env_var(var.clone(), &env_desc));
+                let id =
+                    parse_state.with_path_buffers_do(|bo| bo.add_env_var(var.clone(), &env_desc));
                 parse_state.set_env(id);
             }
             Statement::Import(var, envval) => {
@@ -2029,7 +2059,7 @@ impl LocatedStatement {
                 let search_dirs = t.get_search_dirs();
                 debug!("adding task:{} with deps:{:?}", name.as_str(), &deps);
                 let tup_loc = TupLoc::new(&parse_state.cur_file_desc, loc);
-                let tup_dir = parse_state.get_tup_dir().to_path_buf();
+                let tup_dir = parse_state.get_tup_dir_desc();
                 let deps = deps.subst_pe(parse_state, path_searcher);
                 // each line of the recipe has the same parse state as the task
                 let recipe: Vec<_> = recipe
@@ -2039,7 +2069,7 @@ impl LocatedStatement {
                 let env_desc = parse_state.cur_env_desc.clone();
 
                 let ti = TaskInstance::new(
-                    tup_dir,
+                    &tup_dir,
                     name.as_str(),
                     deps.clone(),
                     recipe.clone(),
@@ -2047,8 +2077,7 @@ impl LocatedStatement {
                     search_dirs.clone(),
                     env_desc,
                 );
-                let mut bo = parse_state.path_buffers.write();
-                bo.add_task_path(ti);
+                parse_state.path_buffers.add_task_path(ti);
             }
         }
         Ok(newstats)
@@ -2138,7 +2167,7 @@ fn get_or_insert_parsed_statement(
     root: &Path,
     parse_state: &mut ParseState,
 ) -> Result<Vec<LocatedStatement>, Error> {
-    let tup_desc = *parse_state.get_cur_file_desc();
+    let tup_desc = parse_state.get_cur_file_desc().clone();
     if let Some(vs) = parse_state.get_statements_from_cache(&tup_desc) {
         debug!(
             "Reusing cached statements for {:?}",
@@ -2159,7 +2188,7 @@ fn get_or_insert_parsed_statement(
 /// The parser returns  resolved rules,  outputs of rules packaged in OutputTagInfo and updated buffer objects.
 #[derive(Debug, Clone)]
 pub struct TupParser<Q: PathSearcher + Sized + Send + 'static> {
-    path_buffers: Arc<RwLock<BufferObjects>>,
+    path_buffers: Arc<BufferObjects>,
     path_searcher: Arc<RwLock<Q>>,
     config_vars: HashMap<String, Vec<String>>,
     statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>, //< cache of parsed statements for each included file
@@ -2272,102 +2301,96 @@ impl Artifacts {
 /// such as (rules, paths, groups, bins) stored during parsing.
 /// It is also available for writing some data in the parser's buffers
 pub struct ReadWriteBufferObjects {
-    bo: Arc<RwLock<BufferObjects>>,
+    bo: Arc<BufferObjects>,
 }
 
 impl ReadWriteBufferObjects {
     /// Constructor
-    pub fn new(bo: Arc<RwLock<BufferObjects>>) -> ReadWriteBufferObjects {
+    pub fn new(bo: Arc<BufferObjects>) -> ReadWriteBufferObjects {
         ReadWriteBufferObjects { bo }
     }
     /// get a read only reference to buffer objects
-    pub fn get(&self) -> RwLockReadGuard<'_, BufferObjects> {
-        self.bo.deref().read()
+    pub fn get(&self) -> &BufferObjects {
+        self.bo.deref()
     }
 
     /// get a mutable reference to buffer objects
-    pub fn get_mut(&self) -> RwLockWriteGuard<'_, BufferObjects> {
-        self.bo.deref().write()
+    pub fn get_mut(&self) -> &BufferObjects {
+        self.bo.deref()
     }
     /// add a  path to parser's buffer and return its unique id.
     /// If it already exists in its buffers boolean returned will be false
-    pub fn add_abs(&mut self, p: &Path) -> (PathDescriptor, bool) {
+    pub fn add_abs(&mut self, p: &Path) -> PathDescriptor {
         self.get_mut().add_abs(p)
     }
     /// iterate over all the (grouppath, groupid) pairs stored in buffers during parsing
     pub fn for_each_group<F>(&self, f: F)
     where
-        F: FnMut((&NormalPath, &GroupPathDescriptor)),
+        F: FnMut(&GroupPathDescriptor),
     {
         let r = self.get_mut();
-        r.group_iter().for_each(f);
+        r.group_iter(f)
     }
     /// Iterate over group ids
-    pub fn map_group_desc<F>(&self, f: F) -> Vec<(GroupPathDescriptor, i64)>
+    pub fn map_group_desc<F>(&self, f: F)
     where
-        F: FnMut(&GroupPathDescriptor) -> (GroupPathDescriptor, i64),
+        F: FnMut(GroupPathDescriptor) -> (),
     {
-        self.bo.deref().read().get_group_descs().map(f).collect()
+        GroupBufferObject::group_iter(f)
     }
 
     /// returns the rule corresponding to `RuleDescriptor`
-    pub fn get_rule(&self, rd: &RuleDescriptor) -> MappedRwLockReadGuard<'_, RuleFormulaInstance> {
+    pub fn get_rule<'a>(&'a self, rd: &'a RuleDescriptor) -> &RuleFormulaInstance {
         let r = self.get();
-        RwLockReadGuard::map(r, |x| x.get_rule(rd))
+        r.get_rule(rd)
     }
     /// returns task from its descriptor
-    pub fn get_task(&self, rd: &TaskDescriptor) -> MappedRwLockReadGuard<'_, TaskInstance> {
+    pub fn get_task<'a>(&'a self, rd: &'a TaskDescriptor) -> &TaskInstance {
         let r = self.get();
-        RwLockReadGuard::map(r, |x| x.try_get_task(rd).unwrap())
+        r.get_task(rd)
     }
     /// Return resolved input type in the string form.
     pub fn get_input_path_str(&self, i: &InputResolvedType) -> String {
-        self.get().get_path_str(i.get_resolved_path_desc().unwrap())
+        i.get_resolved_path_desc()
+            .map(|pd| self.get().get_path_str(pd))
+            .unwrap_or_default()
     }
     /// Return the file path corresponding to its id
-    pub fn get_path(&self, p0: &PathDescriptor) -> MappedRwLockReadGuard<'_, NormalPath> {
+    pub fn get_path(&self, p0: &PathDescriptor) -> NormalPath {
         let r = self.get();
-        RwLockReadGuard::map(r, |x| x.get_path(p0))
+        r.get_path(p0).clone()
     }
     /// Return the file path corresponding to its id
-    pub fn get_parent_id(&self, pd: &PathDescriptor) -> Option<PathDescriptor> {
+    pub fn get_parent_id(&self, pd: &PathDescriptor) -> PathDescriptor {
         let r = self.get();
         r.get_parent_id(pd)
     }
 
     /// return the path corresponding id of the glob path
-    pub fn get_glob_path(&self, gd: &GlobPathDescriptor) -> PathBuf {
+    pub fn get_glob_path(&self, gd: &GlobPathDescriptor) -> NormalPath {
         let r = self.get();
-        let i: usize = (*gd).into();
-        let pd = PathDescriptor::new(i);
-        let np = r.get_path(&pd);
-        np.clone().to_path_buf()
+        let np = r.get_path(&gd);
+        np.clone()
     }
 
     /// Returns the tup file path corresponding to its id
-    pub fn get_tup_path(&self, p0: &TupPathDescriptor) -> MappedRwLockReadGuard<'_, Path> {
-        let r = self.get();
-        RwLockReadGuard::map(r, |x| x.get_tup_path(p0))
+    pub fn get_tup_path(&self, p0: &TupPathDescriptor) -> NormalPath {
+        self.get().get_tup_path(p0)
     }
     /// Return tup id from its path
-    pub fn get_tup_id(&self, p: &Path) -> MappedRwLockReadGuard<'_, TupPathDescriptor> {
-        let r = self.get();
-        RwLockReadGuard::map(r, |x| x.get_tup_id(p))
+    pub fn add_tup_file(&self, p: &Path) -> TupPathDescriptor {
+        self.get().get_tup_id(p).clone()
     }
 
     /// Return set of environment variables
-    pub fn get_envs(&self, e: &EnvDescriptor) -> MappedRwLockReadGuard<'_, Env> {
+    pub fn get_envs<'a>(&'a self, e: &'a EnvDescriptor) -> &Env {
         let r = self.get();
-        RwLockReadGuard::map(r, |x| {
-            x.try_get_env(e)
-                .unwrap_or_else(|| panic!("env not found:{:?}", e))
-        })
+        r.get_env(e)
     }
 
     /// get a reportable version of error for display
     pub fn display_str(&self, e: &Error) -> String {
-        let r = self.get();
-        e.human_readable(r.deref())
+        e.to_string()
     }
 }
 
@@ -2413,7 +2436,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         path_searcher: Arc<RwLock<Q>>,
     ) -> TupParser<Q> {
         TupParser {
-            path_buffers: Arc::new(RwLock::from(BufferObjects::new(root_dir))),
+            path_buffers: Arc::new(BufferObjects::new(root_dir)),
             path_searcher,
             config_vars,
             statement_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -2425,20 +2448,16 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         ReadWriteBufferObjects::new(self.path_buffers.clone())
     }
 
-    pub(crate) fn borrow_ref(&self) -> RwLockReadGuard<'_, BufferObjects> {
-        return self.path_buffers.deref().read();
-    }
-
-    pub(crate) fn borrow_mut_ref(&self) -> RwLockWriteGuard<'_, BufferObjects> {
-        return self.path_buffers.deref().write();
+    pub(crate) fn borrow_ref(&self) -> &BufferObjects {
+        return self.path_buffers.deref();
     }
 
     pub(crate) fn with_path_buffers_do<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&mut BufferObjects) -> R,
+        F: FnOnce(&BufferObjects) -> R,
     {
-        let mut bo = self.borrow_mut_ref();
-        f(&mut bo)
+        let bo = self.borrow_ref();
+        f(&bo)
     }
 
     pub(crate) fn with_path_searcher_do<F, R>(&self, f: F) -> R
@@ -2460,16 +2479,15 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     ) -> Result<(), Error> {
         // add tupfile path and tup environment to the buffer
         let (tup_desc, env_desc) = self.with_path_buffers_do(|boref| {
-            let (tup_desc, _) = boref.add_tup(tup_file_path.as_ref());
+            let tup_desc = boref.add_tup(tup_file_path.as_ref());
             let env = init_env();
-            let (env_desc, _) = boref.add_env(Cow::Borrowed(&env));
+            let env_desc = boref.add_env(Cow::Borrowed(&env));
             (tup_desc, env_desc)
         });
 
         // create a parser state
         let parse_state = ParseState::new(
             &self.config_vars,
-            self.borrow_ref().get_tup_path(&tup_desc),
             tup_desc,
             env_desc,
             self.statement_cache.clone(),
@@ -2516,16 +2534,15 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     pub fn parse<P: AsRef<Path>>(&mut self, tup_file_path: P) -> Result<Artifacts, Error> {
         // add tupfile path and tup environment to the buffer
         let (tup_desc, env_desc) = self.with_path_buffers_do(|path_buffers| {
-            let (tup_desc, _) = path_buffers.add_tup(tup_file_path.as_ref());
+            let tup_desc = path_buffers.add_tup(tup_file_path.as_ref());
             let env = init_env();
-            let (env_desc, _) = path_buffers.add_env(Cow::Borrowed(&env));
+            let env_desc = path_buffers.add_env(Cow::Borrowed(&env));
             (tup_desc, env_desc)
         });
 
         // create a parser state
         let parse_state = ParseState::new(
             &self.config_vars,
-            self.borrow_ref().get_tup_path(&tup_desc),
             tup_desc,
             env_desc,
             self.statement_cache.clone(),
@@ -2552,7 +2569,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     ) -> Result<Artifacts, Error> {
         let mut parse_state = statements_to_resolve.parse_state;
         let mut stmts = statements_to_resolve.statements;
-        let tup_desc = *parse_state.get_cur_file_desc();
+        let tup_desc = parse_state.get_cur_file_desc().clone();
         let res = {
             let mut res = Vec::new();
             // create a transform function that will substitute variables in the statements
@@ -2584,25 +2601,22 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             parse_state.get_cur_file()
         );
         stmts.resolve_paths(
-            parse_state.get_cur_file(),
-            self.get_mut_searcher().deref_mut(),
-            self.borrow_mut_ref().deref_mut(),
             &tup_desc,
+            self.get_mut_searcher().deref_mut(),
+            self.borrow_ref(),
         )
     }
 
     /// Re-resolve for resolved groups that were left unresolved in the first round of parsing
     /// This step is usually run as a second pass to resolve group references across Tupfiles
     pub fn reresolve(&mut self, arts: Artifacts) -> Result<Artifacts, Error> {
-        let pbuf = PathBuf::new();
         type R = Result<Artifacts, Error>;
         self.with_path_buffers_do(|path_buffers| -> R {
             self.with_path_searcher_do(|path_searcher| -> R {
                 arts.get_resolved_links().resolve_paths(
-                    pbuf.as_path(),
+                    &TupPathDescriptor::default(),
                     path_searcher,
                     path_buffers,
-                    &TupPathDescriptor::new(0),
                 )
             })
         })
@@ -2648,8 +2662,9 @@ pub fn locate_file<P: AsRef<Path>>(
 
 /// functions for testing transformations
 pub mod testing {
-    use std::collections::HashMap;
     use std::path::Path;
+
+    use hashbrown::HashMap;
 
     use crate::decode::DirSearcher;
     use crate::statements::{CleanupPaths, LocatedStatement};

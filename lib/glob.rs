@@ -229,6 +229,10 @@ impl<'a> Candidate<'a> {
         let path = normalize_path(Vec::from_path_lossy(path.as_ref()));
         Candidate { path }
     }
+    pub fn new_raw<P: AsRef<Path> + ?Sized>(path: &'a P) -> Candidate<'a> {
+        let path = Vec::from_path_lossy(path.as_ref());
+        Candidate { path }
+    }
 
     pub fn path(&self) -> &Cow<'a, [u8]> {
         &self.path

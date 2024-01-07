@@ -20,5 +20,8 @@ expression: strings
   "space = $(empty) $(empty)",
   "FILES_JOINED = $(subst $(space),$(sep),$(FILES))",
   "FILES_JOINED_STRIPPED = $(FILES_JOINED) $(space)",
-  "FILES_JOINED_STRIPPED = $(strip $(FILES_JOINED_STRIPPED))"
+  "FILES_JOINED_STRIPPED = $(strip $(FILES_JOINED_STRIPPED))",
+  "SUBDIR = dir subdir subdir2",
+  "MORE_SUBDIR = $(foreach dir,$(SUBDIR),$(dir) $(dir)/private)",
+  "LOCATE_FILES = $(grep-files \"main\" %.h $(MORE_SUBDIR))"
 ]

@@ -5,6 +5,7 @@ extern crate bstr;
 extern crate crossbeam;
 #[cfg(test)]
 extern crate env_logger;
+extern crate hashbrown;
 #[macro_use]
 extern crate lazy_static;
 extern crate log;
@@ -16,13 +17,14 @@ extern crate parking_lot;
 extern crate path_dedot;
 extern crate pathdiff;
 extern crate regex;
+extern crate tap;
 extern crate thiserror;
 extern crate walkdir;
 
 pub use buffers::BinDescriptor;
 pub use buffers::GeneratedFiles;
 pub use buffers::GroupPathDescriptor;
-pub use buffers::PathDescriptor;
+pub use buffers::PathSym;
 pub use buffers::RuleDescriptor;
 pub use buffers::TupPathDescriptor;
 pub use decode::ResolvedLink;
@@ -46,6 +48,7 @@ pub mod statements;
 pub mod transform;
 pub mod writer;
 
+pub mod intern;
 #[test]
 fn test_parse() {
     use crate::buffers::PathBuffers;
@@ -60,7 +63,7 @@ fn test_parse() {
     use std::path::Path;
     let mut bo = BufferObjects::new(Path::new("."));
     let mut dir_searcher = DirSearcher::new();
-    let tup_desc = bo.add_tup(Path::new("./Tupfile")).0;
+    let tup_desc = bo.add_tup(Path::new("./Tupfile"));
     let rule1 = parser::parse_rule(Span::new(b": file.txt |> type %f|>"))
         .unwrap()
         .1
@@ -72,7 +75,7 @@ fn test_parse() {
     file.write_all("-".as_bytes()).expect("file write error");
     let mut dir = DirSearcher::new();
     let (decodedrule1, _outs) = LocatedStatement::new(rule1, Loc::new(0, 0, 0))
-        .resolve_paths(Path::new("file.txt"), &mut dir, &mut bo, &tup_desc)
+        .resolve_paths(&tup_desc, &mut dir, &mut bo)
         .unwrap();
     if let Some(deglobbed_link) = decodedrule1.get_resolved_links().first() {
         let rf = bo.get_rule(&deglobbed_link.get_rule_desc());
@@ -130,15 +133,9 @@ fn test_parse() {
     ];
     //use crate::transform::Subst;
     stmts.subst(&mut m, &path_searcher).expect("subst failure");
-    let mut write_guard = m.path_buffers.write();
-    use std::ops::DerefMut;
+    let write_guard = m.path_buffers;
     stmts
-        .resolve_paths(
-            Path::new("./Tupfile"),
-            &mut dir_searcher,
-            write_guard.deref_mut(),
-            &tup_desc,
-        )
+        .resolve_paths(&tup_desc, &mut dir_searcher, write_guard.as_ref())
         .expect("resolve failure");
 }
 

@@ -20,6 +20,7 @@ use nom::{AsBytes, Offset, Slice};
 use nom::{Err, InputIter};
 use nom_locate::LocatedSpan;
 
+use crate::buffers::EnvDescriptor;
 use crate::statements::*;
 use crate::transform;
 
@@ -246,7 +247,7 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
                 complete(parse_pathexpr_fallback),
             )),
         )(i),
-        b"$(f" => context(
+        b"$(f" | b"$(g" => context(
             "dollar expression (class 3)",
             // select among parsers that process dollar exprs with first char 'f'
             alt((
@@ -255,6 +256,7 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
                 complete(parse_pathexpr_findstring),
                 complete(parse_pathexpr_foreach),
                 complete(parse_pathexpr_firstword),
+                complete(parse_pathexpr_grep_files),
                 complete(parse_pathexpr_fallback),
             )),
         )(i),
@@ -618,6 +620,30 @@ fn parse_pathexpr_abspath(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed abspath: {:?}", pattern);
     Ok((s, PathExpr::from(DollarExprs::AbsPath(pattern))))
+}
+
+// parse $(grep-files pattern, glob, paths)
+/// $(grep-files pattern, glob, paths) is a function that returns the files in paths that match the given pattern.
+fn parse_pathexpr_grep_files(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(grep-files")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, pattern) = parse_quote(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (glob, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    //let (s, bytes) = take_until(")")(s)?;
+    let (s, (paths, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    log::debug!(
+        "parsed grep-files: pattern: {:?} glob: {:?} paths: {:?}",
+        pattern,
+        glob,
+        paths
+    );
+    Ok((
+        s,
+        PathExpr::from(DollarExprs::GrepFiles(vec![pattern], glob, paths)),
+    ))
 }
 
 /// parse $(if condition, then-part\[,else-part\])

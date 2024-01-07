@@ -14,7 +14,7 @@ use mlua::{UserData, UserDataMethods};
 use nom::{AsBytes, InputTake};
 use parking_lot::RwLock;
 
-use crate::buffers::PathBuffers;
+use crate::buffers::{PathBuffers, PathDescriptor};
 use crate::decode::{OutputHandler, PathSearcher};
 use crate::errors::Error as Err;
 use crate::parser::locate_tuprules;
@@ -116,7 +116,7 @@ Returns the extension in the filename filename (excluding the .) or the empty st
 #[derive(Clone, Debug, Default)]
 pub struct TupScriptContext<P: PathBuffers + Sized, Q: PathSearcher + Sized> {
     parse_state: ParseState,
-    path_buffers: Arc<RwLock<P>>,
+    path_buffers: Arc<P>,
     path_searcher: Arc<RwLock<Q>>,
     arts: Artifacts,
 }
@@ -317,7 +317,7 @@ impl ScriptRuleCommand {
 impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
     pub(crate) fn new(
         parse_state: ParseState,
-        path_buffers: Arc<RwLock<P>>,
+        path_buffers: Arc<P>,
         path_searcher: Arc<RwLock<Q>>,
     ) -> TupScriptContext<P, Q> {
         TupScriptContext {
@@ -328,11 +328,11 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         }
     }
 
-    pub(crate) fn bo_as_mut(&self) -> parking_lot::RwLockWriteGuard<'_, P> {
-        self.path_buffers.deref().write()
+    pub(crate) fn bo_as_mut(&self) -> &P {
+        self.path_buffers.deref()
     }
-    pub(crate) fn bo_as_ref(&self) -> parking_lot::RwLockReadGuard<'_, P> {
-        self.path_buffers.deref().read()
+    pub(crate) fn bo_as_ref(&self) -> &P {
+        self.path_buffers.deref()
     }
     pub(crate) fn get_mut_path_searcher(&self) -> parking_lot::RwLockWriteGuard<'_, Q> {
         self.path_searcher.deref().write()
@@ -369,10 +369,9 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         };
         let (arts, outs) = statement
             .resolve_paths(
-                self.parse_state.get_cur_file(),
-                self.get_mut_path_searcher().deref_mut(),
-                self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
+                self.get_mut_path_searcher().deref_mut(),
+                self.bo_as_mut(),
             )
             .expect("unable to resolve paths");
         //self.resolved_links = rlinks.drain(..).map(|l| (l, env.clone())).collect();
@@ -415,10 +414,9 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         };
         let (arts, outs) = statement
             .resolve_paths(
-                self.parse_state.get_cur_file(),
-                self.get_mut_path_searcher().deref_mut(),
-                self.bo_as_mut().deref_mut(),
                 self.parse_state.get_cur_file_desc(),
+                self.get_mut_path_searcher().deref_mut(),
+                self.bo_as_mut(),
             )
             .expect("unable to resolve paths");
         let mut paths = Vec::new();
@@ -444,6 +442,9 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             .unwrap_or_else(|| Path::new(""))
             .to_string_lossy()
             .to_string()
+    }
+    pub fn get_cwd_desc(&self) -> PathDescriptor {
+        self.parse_state.get_tup_dir_desc()
     }
     pub fn get_root(&self) -> std::path::PathBuf {
         self.bo_as_ref().get_root_dir().to_path_buf()
@@ -866,17 +867,11 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
             //let outputs = OutputAssocs::new_no_resolve_groups();
             let matching_paths = {
                 let path_searcher = scriptctx.get_path_searcher();
-                let glob_path = &GlobPath::new(
-                    Path::new(scriptctx.get_cwd().as_str()),
-                    Path::new(path),
-                    scriptctx.bo_as_mut().deref_mut(),
-                )
-                .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
+                let glob_path =
+                    &GlobPath::build_from_relative(&scriptctx.get_cwd_desc(), Path::new(path))
+                        .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
                 path_searcher
-                    .discover_paths(
-                        scriptctx.bo_as_mut().deref_mut(),
-                        std::slice::from_ref(glob_path),
-                    )
+                    .discover_paths(scriptctx.bo_as_mut(), std::slice::from_ref(glob_path))
                     .expect("Glob expansion failed")
             };
             let glob_out = luactx.create_table()?;
@@ -886,7 +881,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                     cnt as mlua::Integer,
                     scriptctx
                         .bo_as_mut()
-                        .get_path(m.path_descriptor())
+                        .get_path(m.path_descriptor_ref())
                         .as_path()
                         //m.as_path(scriptctx.bo_as_mut().deref())
                         .to_string_lossy()
@@ -934,7 +929,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
 /// main entry point for parsing Tupfile.lua
 pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static>(
     parse_state: ParseState,
-    path_buffers: Arc<RwLock<P>>,
+    path_buffers: Arc<P>,
     path_searcher: Arc<RwLock<Q>>,
 ) -> Result<Artifacts, Err> {
     let lua = unsafe { Lua::unsafe_new() };

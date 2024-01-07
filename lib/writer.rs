@@ -7,7 +7,6 @@ use crate::statements::{
     Cat, CatRef, DollarExprs, Level, Link, LocatedStatement, PathExpr, RuleFormula, Source,
     Statement, Target,
 };
-use crate::transform;
 
 impl Source {
     fn write_fmt<W: Write>(&self, f: &mut BufWriter<W>) {
@@ -226,6 +225,15 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
                 write_pathexprs(writer, script);
                 write!(writer, ")").unwrap();
             }
+            DollarExprs::GrepFiles(content, glob, paths) => {
+                write!(writer, "$(grep-files ").unwrap();
+                write_pathexprs(writer, content);
+                write!(writer, ",").unwrap();
+                write_pathexprs(writer, glob);
+                write!(writer, ",").unwrap();
+                write_pathexprs(writer, paths);
+                write!(writer, ")").unwrap();
+            }
         },
         PathExpr::ExcludePattern(pattern) => {
             write!(writer, "^{}", pattern).unwrap();
@@ -249,8 +257,14 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
             write!(writer, "!{}", macroref).unwrap();
         }
         PathExpr::DeGlob(mp) => {
-            let mp = transform::get_path_with_fsep(mp.get_path());
-            write!(writer, "{}", mp.to_cow_str()).unwrap();
+            let mp_par = mp.path_descriptor().get_parent_descriptor().get_path();
+            write!(
+                writer,
+                "{}/{}",
+                mp_par.to_string(),
+                mp.path_descriptor().get().get_name()
+            )
+            .unwrap();
         }
         PathExpr::TaskRef(tref) => {
             write!(writer, "&task:/{}", tref.as_str()).unwrap();

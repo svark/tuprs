@@ -1,10 +1,12 @@
 //! This module has datastructures that capture parsed tupfile expressions
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 
+use hashbrown::HashMap;
+
+use crate::buffers::{EnvDescriptor, PathDescriptor};
 use crate::paths::MatchingPath;
-use crate::PathDescriptor;
 
 /// PathExpr are tokens that hold some meaning in tupfiles
 #[derive(PartialEq, Debug, Clone, Hash, Eq)]
@@ -47,6 +49,14 @@ pub enum Level {
     Error,
 }
 
+impl PathExpr {
+    pub(crate) fn get_group(&self) -> Option<(&Vec<PathExpr>, &Vec<PathExpr>)> {
+        match self {
+            PathExpr::Group(g, g1) => Some((g, g1)),
+            _ => None,
+        }
+    }
+}
 impl Default for Level {
     fn default() -> Self {
         Level::Info
@@ -139,6 +149,8 @@ pub(crate) enum DollarExprs {
     Call(Vec<PathExpr>, Vec<Vec<PathExpr>>),
     // $(shell ..)
     Shell(Vec<PathExpr>),
+    // $(grep-files content-pattern, glob-pattern, paths, ...)
+    GrepFiles(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
 }
 
 /// represents the equality condition in if(n)eq (LHS,RHS)
@@ -275,6 +287,17 @@ pub struct Env {
     set: BTreeSet<String>,
 }
 
+impl Display for Env {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut s = String::new();
+        for var in self.set.iter() {
+            s.push_str(var);
+            s.push_str(":");
+        }
+        s.pop();
+        write!(f, "{}", s)
+    }
+}
 impl Env {
     /// create list of env vars from a map
     pub fn new(map: HashMap<String, String>) -> Self {
@@ -301,8 +324,8 @@ impl Env {
         hmap
     }
     /// return a set of env vars
-    pub fn get_keys(&self) -> &BTreeSet<String> {
-        &self.set
+    pub fn get_keys(&self) -> impl Iterator<Item = &String> {
+        self.set.iter()
     }
     /// returns value of env var if present
     pub fn get_env_var(&self, k: &str) -> Option<String> {
@@ -311,40 +334,6 @@ impl Env {
         } else {
             None
         }
-    }
-}
-/// ```EnvDescriptor``` is a unique id to current environment for a rule
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub struct EnvDescriptor(usize);
-impl From<usize> for EnvDescriptor {
-    fn from(i: usize) -> Self {
-        Self(i)
-    }
-}
-impl From<EnvDescriptor> for usize {
-    fn from(e: EnvDescriptor) -> Self {
-        e.0
-    }
-}
-impl Default for EnvDescriptor {
-    fn default() -> Self {
-        Self(usize::MAX)
-    }
-}
-
-impl EnvDescriptor {
-    /// create EnvDescriptor from usize
-    pub fn new(i: usize) -> Self {
-        Self(i)
-    }
-    /// copy id from other
-    pub fn setid(&mut self, o: &EnvDescriptor) {
-        self.0 = o.0;
-    }
-}
-impl Display for EnvDescriptor {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{0}({1})", stringify!($t), self.0)
     }
 }
 
