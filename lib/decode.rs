@@ -37,6 +37,9 @@ pub trait PathSearcher {
         glob_path: &[GlobPath],
     ) -> Result<Vec<MatchingPath>, Error>;
 
+    /// Discover Tuprules.lua or Tuprules.tup in all parent directories of tup_cwd
+    fn locate_tuprules(&self, tup_cwd: &PathDescriptor) -> Vec<PathDescriptor>;
+
     /// Discover paths that match glob pattern and have pattern in its contents
     fn discover_paths_with_pattern(
         &self,
@@ -199,7 +202,7 @@ impl TaskInstance {
         search_dirs: Vec<PathDescriptor>,
         env: EnvDescriptor,
     ) -> TaskInstance {
-        let name = format!("{}/{}", tup_cwd.as_ref().get_path().to_string(), name);
+        let name = format!("{}/{}", tup_cwd.get_path().to_string(), name);
         TaskInstance {
             name,
             deps,
@@ -475,6 +478,10 @@ impl PathSearcher for DirSearcher {
     ) -> Result<Vec<MatchingPath>, Error> {
         let paths = self.discover_paths(path_buffers, glob)?;
         <DirSearcher as PathSearcher>::paths_with_pattern(&pattern, paths)
+    }
+
+    fn locate_tuprules(&self, tup_cwd: &PathDescriptor) -> Vec<PathDescriptor> {
+        crate::parser::locate_tuprules_from(tup_cwd.clone())
     }
 
     fn get_outs(&self) -> &OutputHolder {
@@ -1135,8 +1142,8 @@ fn get_deglobbed_rule(
 
     let df = |x: &OutputType| {
         diff_paths(
-            x.as_dir_entry().get_path().as_path(),
-            tup_cwd.as_ref().get_path().as_path(),
+            x.get_id().get_path().as_path(),
+            tup_cwd.get_path().as_path(),
         )
         .unwrap()
     };

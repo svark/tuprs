@@ -17,7 +17,6 @@ use parking_lot::RwLock;
 use crate::buffers::{PathBuffers, PathDescriptor};
 use crate::decode::{OutputHandler, PathSearcher};
 use crate::errors::Error as Err;
-use crate::parser::locate_tuprules;
 use crate::paths::GlobPath;
 use crate::statements::Statement::Rule;
 use crate::statements::*;
@@ -935,7 +934,16 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
     let lua = unsafe { Lua::unsafe_new() };
     let r = lua.scope(|scope| {
         let script_path = parse_state.get_cur_file().to_path_buf();
+        let script_dir_desc = parse_state.get_tup_dir_desc();
+
         let tup_script_ctx = TupScriptContext::new(parse_state, path_buffers, path_searcher);
+        let mut rules = Vec::new();
+        for tup_rules in tup_script_ctx
+            .get_path_searcher()
+            .locate_tuprules(&script_dir_desc)
+        {
+            rules.push(tup_rules.get_path());
+        }
         let root = tup_script_ctx.get_root();
         let tup_shared = scope.create_userdata(tup_script_ctx)?;
         lua.load_from_std_lib(
@@ -1008,8 +1016,8 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
         "#;
         lua.load(prelude).exec()?;
         let mut contents = Vec::new();
-        for tup_rules in locate_tuprules(script_path.as_path()) {
-            let mut tup_rules_file = File::open(root.join(tup_rules))?;
+        for tup_rules in rules {
+            let mut tup_rules_file = File::open(root.join(tup_rules.as_path()))?;
             tup_rules_file.read_to_end(&mut contents)?;
             lua.load(contents.as_bytes()).exec()?;
             contents.clear();

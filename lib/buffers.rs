@@ -1,5 +1,6 @@
 //! Module to hold buffers of tupfile paths, bins, groups which can be referenced by their descriptors
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
@@ -122,10 +123,38 @@ pub fn fetch_dir_entry(path_sym: &PathSym) -> Intern<DirEntry> {
 }
 
 /// Directory entry (file or folder) in tup heirarchy. Stores an id of parent folder and name of the file or folder
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone)]
 pub struct DirEntry {
     path_sym: PathSym,
-    name: OsString,
+    name: Arc<OsStr>,
+    cached_path: RefCell<Option<NormalPath>>,
+}
+
+impl Hash for DirEntry {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.path_sym.hash(state);
+        self.name.as_ref().hash(state);
+    }
+}
+
+impl PartialOrd for DirEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (self.path_sym, self.name.as_ref()).partial_cmp(&(other.path_sym, other.name.as_ref()))
+    }
+}
+
+impl PartialEq for DirEntry {
+    fn eq(&self, other: &Self) -> bool {
+        (self.path_sym, self.name.as_ref()).eq(&(other.path_sym, other.name.as_ref()))
+    }
+}
+
+impl Eq for DirEntry {}
+
+impl Ord for DirEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.path_sym, self.name.as_ref()).cmp(&(other.path_sym, other.name.as_ref()))
+    }
 }
 
 impl std::fmt::Debug for DirEntry {
@@ -146,16 +175,13 @@ impl Default for DirEntry {
     fn default() -> Self {
         Self {
             path_sym: 0,
-            name: (OsStr::new(".")).into(),
+            name: Arc::from(OsStr::new(".")),
+            cached_path: RefCell::new(Some(NormalPath::new_from_raw(".".into()))),
         }
     }
 }
 
 impl PathDescriptor {
-    /// get path from descriptor
-    pub fn get_path(&self) -> NormalPath {
-        self.as_ref().get_path()
-    }
     /// build a new path descriptor by adding path components to the current path
     pub fn join<P: AsRef<Path>>(&self, name: P) -> Self {
         debug!("join:{:?} to {:?}", name.as_ref(), self);
@@ -180,6 +206,60 @@ impl PathDescriptor {
         let dir_entry = fetch_dir_entry(&self.to_u64());
         dir_entry.get_parent_descriptor()
     }
+    /// get path from descriptor
+    pub fn get_path(&self) -> NormalPath {
+        if let Some(cached_path) = self.as_ref().cached_path.borrow().clone() {
+            return cached_path;
+        }
+        let cap: usize = self.ancestors().count();
+        let mut parts = Vec::with_capacity(cap);
+        for ancestor in self.components() {
+            parts.push(ancestor.as_ref().get_rc_name());
+        }
+        parts.pop();
+        let parent_path =
+            OsString::with_capacity(parts.iter().fold(cap, |acc, x| acc + x.len() + 1));
+        let mut parent_path = parts.iter().fold(parent_path, |mut acc, x| {
+            acc.push(x.as_ref());
+            acc.push("/");
+            acc
+        });
+        parent_path.push(self.as_ref().get_rc_name().as_ref());
+        //let path = parts.join("/");
+        let path = NormalPath::new_from_raw(parent_path);
+        *self.as_ref().cached_path.borrow_mut() = Some(path.clone());
+        path
+    }
+
+    /// get parent directory path
+    pub fn get_parent_path(&self) -> NormalPath {
+        self.get_parent_descriptor().get_path()
+    }
+    /// ancestors  including self
+    pub fn ancestors(&self) -> impl Iterator<Item = PathDescriptor> {
+        let mut cur_path = self.clone();
+        std::iter::from_fn(move || {
+            if cur_path.is_root() {
+                None
+            } else {
+                let last_cur_path = cur_path.clone();
+                cur_path = cur_path.get_parent_descriptor();
+                Some(last_cur_path)
+            }
+        })
+    }
+    /// check if this path is root
+    pub fn is_root(&self) -> bool {
+        self.as_ref().path_sym == 0
+    }
+    /// components of this path including self
+    pub fn components(&self) -> impl Iterator<Item = PathDescriptor> {
+        let mut all_components = Vec::new();
+        for ancestor in self.ancestors() {
+            all_components.push(ancestor);
+        }
+        std::iter::from_fn(move || all_components.pop())
+    }
 }
 
 impl DirEntry {
@@ -187,37 +267,9 @@ impl DirEntry {
     pub fn new(path_sym: PathSym, name: &OsStr) -> Self {
         Self {
             path_sym,
-            name: (name).into(),
+            name: Arc::from(name),
+            cached_path: RefCell::new(None),
         }
-    }
-
-    /// get path from descriptor
-    pub fn get_path(&self) -> NormalPath {
-        let cap: usize = self.ancestors().count();
-        let mut parts = Vec::with_capacity(cap);
-        self.ancestors().for_each(|x| {
-            if x.as_ref().path_sym == 0 {
-                return;
-            }
-            parts.push(x.as_ref().get_rc_name());
-        });
-        //parts.push(self.get_name());
-        parts.reverse();
-        let parent_path =
-            OsString::with_capacity(parts.iter().fold(cap, |acc, x| acc + x.len() + 1));
-        let mut parent_path = parts.iter().fold(parent_path, |mut acc, x| {
-            acc.push(x.as_os_str());
-            acc.push("/");
-            acc
-        });
-        parent_path.push(self.get_name().as_ref());
-        //let path = parts.join("/");
-        NormalPath::new_from_raw(parent_path)
-    }
-
-    /// get parent directory path
-    pub fn get_parent_path(&self) -> NormalPath {
-        self.get_parent_descriptor().as_ref().get_path()
     }
 
     /// get parent directory descriptor
@@ -230,32 +282,8 @@ impl DirEntry {
     }
 
     /// internal string representation of the name
-    pub fn get_rc_name(&self) -> OsString {
+    pub fn get_rc_name(&self) -> Arc<OsStr> {
         self.name.clone()
-    }
-
-    /// ancestor directories not including self
-    pub fn ancestors(&self) -> impl Iterator<Item = PathDescriptor> {
-        let mut path_sym = self.path_sym;
-        std::iter::from_fn(move || {
-            if path_sym == 0 {
-                None
-            } else {
-                let dir_entry = fetch_dir_entry(&path_sym);
-                path_sym = dir_entry.path_sym;
-                debug!("psym:{:?}", path_sym);
-                Some(PathDescriptor::from(dir_entry))
-            }
-        })
-    }
-    /// components of this path including self
-    pub fn components(&self) -> impl Iterator<Item = DirEntry> {
-        let mut all_components = Vec::new();
-        all_components.push(self.clone());
-        for ancestor in self.ancestors() {
-            all_components.push(ancestor.as_ref().clone());
-        }
-        std::iter::from_fn(move || all_components.pop())
     }
 }
 
@@ -501,12 +529,8 @@ impl PathBufferObject {
         dir_entry.map(PathDescriptor::from_interned)
     }
     /// get Path with the given id in this buffer
-    pub fn get(pd: &PathDescriptor) -> &DirEntry {
-        pd.as_ref()
-    }
     pub fn get_path(pd: &PathDescriptor) -> NormalPath {
-        let dir_entry = Self::get(pd);
-        dir_entry.get_path()
+        pd.get_path()
     }
 }
 
@@ -1047,16 +1071,13 @@ pub struct OutputType {
 
 impl Display for OutputType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("OutputType({:?})", self.as_dir_entry()))
+        f.write_fmt(format_args!("OutputType({:?})", self.get_id()))
     }
 }
 
 impl OutputType {
     pub(crate) fn new(pid: PathDescriptor) -> Self {
         Self { pid }
-    }
-    pub(crate) fn as_dir_entry(&self) -> &DirEntry {
-        self.pid.as_ref()
     }
     pub(crate) fn get_id(&self) -> PathDescriptor {
         self.pid.clone()

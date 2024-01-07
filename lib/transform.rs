@@ -26,7 +26,6 @@ use crate::decode::{
 };
 use crate::errors::Error::RootNotFound;
 use crate::errors::{Error as Err, Error};
-use crate::parser::locate_tuprules;
 use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
 use crate::paths::NormalPath;
 use crate::paths::{GlobPath, InputResolvedType};
@@ -208,11 +207,7 @@ impl ParseState {
     ) -> Self {
         let mut def_vars = HashMap::new();
         let cur_file = bo.get_path(&cur_file_desc);
-        let dir = cur_file_desc
-            .get_parent_descriptor()
-            .as_ref()
-            .get_path()
-            .to_string();
+        let dir = cur_file_desc.get_parent_descriptor().get_path().to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
 
         ParseState {
@@ -1890,14 +1885,14 @@ impl LocatedStatement {
             }
 
             Statement::IncludeRules => {
-                let parent = get_parent(parse_state.cur_file.as_path());
+                let parent = parse_state.get_cur_file_desc().get_parent_descriptor();
                 debug!("attempting to read tuprules");
                 let mut found = false;
                 // locate tupfiles up the heirarchy from the current Tupfile folder
-                for f in locate_tuprules(parent) {
+                for f in path_searcher.locate_tuprules(&parent) {
                     debug!("reading tuprules {:?}", f);
                     parse_state.switch_tupfile_and_process(
-                        f.as_path(),
+                        f.get_path().as_path(),
                         |parse_state| -> Result<(), Error> {
                             //let cf = switch_to_reading(tup_desc, tup_path, m, bo);
                             let include_stmts = get_or_insert_parsed_statement(
@@ -1922,39 +1917,33 @@ impl LocatedStatement {
                 let s = s.subst_pe(parse_state, path_searcher);
                 let scat = &s.cat();
                 debug!("found in current file:{:?}", parse_state.cur_file.as_path());
-                let longp = get_parent(parse_state.cur_file.as_path());
+                let longp = parse_state.cur_file_desc.get_parent_descriptor();
                 let pscat = Path::new(scat.as_str());
                 debug!("longp:{:?}, pscat:{:?}", longp, pscat);
-                let fullp = NormalPath::join(longp.as_ref(), pscat);
+                let fullp = longp.join(pscat);
 
-                let p = if pscat.is_relative() {
-                    path_searcher.get_root().join(fullp.as_path())
-                } else {
-                    path_searcher.get_root().join(pscat)
-                };
                 debug!(
-                    "cur path to include:{:?} at {:?}",
-                    p,
+                    "include path:{:?} found in {:?}",
+                    fullp.get_path().as_path(),
                     parse_state.get_cur_file()
                 );
-                if p.is_file() {
-                    parse_state.switch_tupfile_and_process(
-                        &p,
-                        |parse_state| -> Result<(), Error> {
-                            let include_stmts = get_or_insert_parsed_statement(
-                                path_searcher.get_root(),
-                                parse_state,
-                            )?;
-                            newstats.append(&mut include_stmts.subst(parse_state, path_searcher)?);
-                            Ok(())
-                        },
-                    )?;
-                } else {
-                    return Err(Error::PathNotFound(
-                        p.to_string_lossy().to_string(),
-                        TupLoc::new(parse_state.get_cur_file_desc(), self.get_loc()),
-                    ));
-                }
+                let ps = path_searcher.discover_paths(
+                    parse_state.path_buffers.deref(),
+                    &[GlobPath::build_from(&fullp)?],
+                )?;
+                let p = ps.into_iter().next().ok_or(Error::PathNotFound(
+                    pscat.to_string_lossy().to_string(),
+                    TupLoc::new(parse_state.get_cur_file_desc(), self.get_loc()),
+                ))?;
+                parse_state.switch_tupfile_and_process(
+                    p.get_path().as_path(),
+                    |parse_state| -> Result<(), Error> {
+                        let include_stmts =
+                            get_or_insert_parsed_statement(path_searcher.get_root(), parse_state)?;
+                        newstats.append(&mut include_stmts.subst(parse_state, path_searcher)?);
+                        Ok(())
+                    },
+                )?;
             }
             Statement::Rule(link, _, _) => {
                 let mut l = link.clone();

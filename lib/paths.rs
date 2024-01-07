@@ -12,8 +12,8 @@ use regex::Regex;
 use tap::Pipe;
 
 use crate::buffers::{
-    BufferObjects, DirEntry, GlobPathDescriptor, MyGlob, PathBufferObject, PathBuffers,
-    PathDescriptor, TaskDescriptor,
+    BufferObjects, GlobPathDescriptor, MyGlob, PathBufferObject, PathBuffers, PathDescriptor,
+    TaskDescriptor,
 };
 use crate::decode::{GroupInputs, TupLoc};
 use crate::errors::Error;
@@ -33,10 +33,10 @@ const GLOB_PATTERN_CHARACTERS: &str = "*?[";
 
 /// return the parent directory
 fn get_non_pattern_prefix(glob_path: &PathDescriptor) -> (PathDescriptor, bool) {
-    let mut prefix = DirEntry::default();
+    let mut prefix = PathDescriptor::default();
     let mut has_glob = false;
-    for component in glob_path.as_ref().components() {
-        let component_str = component.get_name();
+    for component in glob_path.components() {
+        let component_str = component.as_ref().get_name();
 
         if GLOB_PATTERN_CHARACTERS
             .chars()
@@ -48,7 +48,7 @@ fn get_non_pattern_prefix(glob_path: &PathDescriptor) -> (PathDescriptor, bool) 
         prefix = component;
     }
     if has_glob {
-        (PathDescriptor::from(prefix), true)
+        (prefix, true)
     } else {
         (glob_path.get_parent_descriptor(), false)
     }
@@ -226,7 +226,7 @@ impl MatchingPath {
 
     /// Get Path represented by this entry
     pub fn get_path(&self) -> NormalPath {
-        self.path_descriptor.as_ref().get_path()
+        self.path_descriptor.get_path()
     }
 
     /// Get id of the glob pattern that matched this path
@@ -277,7 +277,7 @@ impl GlobPath {
     }
     /// Glob path as [Path]
     pub fn get_abs_path(&self) -> NormalPath {
-        self.glob_path_desc.as_ref().get_path()
+        self.glob_path_desc.get_path()
     }
 
     /// Id of the parent folder corresponding to glob path
@@ -292,19 +292,14 @@ impl GlobPath {
 
     /// Check if the pattern for matching has glob pattern chars such as "*[]"
     pub fn has_glob_pattern(&self) -> bool {
-        // TODO: replace this with a method on DirEntry
-        let glob_path = self.get_abs_path();
-        for component in glob_path.as_path().iter() {
-            let component_str = component.to_str().unwrap();
-
-            if GLOB_PATTERN_CHARACTERS
-                .chars()
-                .any(|special_char| component_str.contains(special_char))
-            {
-                return true;
-            }
-        }
-        false
+        let gb = self.glob_path_desc.clone();
+        debug!("has_glob_pattern: {:?}", gb);
+        std::iter::once(gb)
+            .chain(self.glob_path_desc.ancestors())
+            .any(|x| {
+                let name = x.as_ref().get_name();
+                GLOB_PATTERN_CHARACTERS.chars().any(|c| name.contains(c))
+            })
     }
 
     /// Check if the glob path has a recursive prefix
@@ -465,7 +460,7 @@ impl InputsAsPaths {
         }
         let relpath = |x: NormalPath| {
             let p = x.as_path();
-            let p = diff_paths(p, tup_cwd.as_ref().get_path()).unwrap_or_else(|| p.to_path_buf());
+            let p = diff_paths(p, tup_cwd.get_path()).unwrap_or_else(|| p.to_path_buf());
             NormalPath::new(p)
         };
         let try_grp = |x: &InputResolvedType| {
@@ -504,7 +499,7 @@ impl InputsAsPaths {
             groups_by_name: namedgroupitems,
             raw_inputs_glob_match,
             rule_ref,
-            tup_dir: tup_cwd.as_ref().get_path().to_path_buf(),
+            tup_dir: tup_cwd.get_path().to_path_buf(),
         }
     }
 }

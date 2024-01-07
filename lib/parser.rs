@@ -1,6 +1,6 @@
 /// This module handles tokenizing and parsing of statements in a tupfile using nom
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use nom::bytes::complete::{is_a, is_not};
 use nom::character::complete::{line_ending, multispace0, space0, space1};
@@ -20,9 +20,8 @@ use nom::{AsBytes, Offset, Slice};
 use nom::{Err, InputIter};
 use nom_locate::LocatedSpan;
 
-use crate::buffers::EnvDescriptor;
+use crate::buffers::{EnvDescriptor, PathDescriptor};
 use crate::statements::*;
-use crate::transform;
 
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
@@ -1656,21 +1655,30 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
 }
 
 /// locate TupRules.tup\[.lua\] walking up the directory tree
-pub(crate) fn locate_tuprules<P: AsRef<Path>>(cur_tupfile: P) -> VecDeque<PathBuf> {
+pub(crate) fn locate_tuprules_from(cur_tupfile: PathDescriptor) -> Vec<PathDescriptor> {
     let mut v = VecDeque::new();
 
     log::debug!("locating tuprules for {:?}", cur_tupfile.as_ref());
-    let mut tupr = cur_tupfile.as_ref();
-    while let Some(p) = transform::locate_file(tupr, "Tuprules.tup", "lua") {
-        v.push_front(p);
-        tupr = v.front().and_then(|p| p.parent()).unwrap();
-        if tupr.as_os_str().is_empty() || tupr.as_os_str().eq(".") {
-            break;
-        }
-        tupr = tupr.parent().unwrap();
-        log::debug!("try:{:?}", tupr);
+    let mut numskip = 0;
+    let is_file = cur_tupfile.get_path().as_path().is_file();
+    if is_file {
+        numskip = 1;
     }
-    v
+    for anc in cur_tupfile.ancestors().skip(numskip) {
+        log::debug!("try:{:?}", anc);
+        let rulestup = anc.get_path().as_path().join("TupRules.tup");
+        if rulestup.is_file() {
+            let tupr = anc.join("Tuprules.tup");
+            v.push_front(tupr);
+        } else {
+            rulestup.with_extension("lua");
+            if rulestup.is_file() {
+                let tupr = anc.join("Tuprules.lua");
+                v.push_front(tupr);
+            }
+        }
+    }
+    v.drain(..).collect()
 }
 
 /// module only for testing purposes
