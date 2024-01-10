@@ -1,6 +1,6 @@
 //! Module to hold buffers of tupfile paths, bins, groups which can be referenced by their descriptors
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
@@ -12,7 +12,6 @@ use std::sync::Arc;
 use hashbrown::{hash_map::Entry, HashMap, HashSet};
 use log::{debug, log_enabled};
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
-use pathdiff::diff_paths;
 use tinyset::Fits64;
 
 use crate::intern::Intern;
@@ -21,7 +20,6 @@ use crate::{
     errors::Error,
     glob,
     glob::{GlobBuilder, GlobMatcher},
-    paths,
     paths::{GlobPath, InputResolvedType, MatchingPath, NormalPath},
     statements::Env,
 };
@@ -62,17 +60,20 @@ pub trait PathBuffers {
     /// get id stored against input path
     fn get_id(&self, np: &NormalPath) -> Option<PathDescriptor>;
 
-    /// return path from its descriptor. Panics when the path is not found
-    fn get_path(&self, pd: &PathDescriptor) -> NormalPath;
+    /// return path from its descriptor.
+    fn get_path<'a, 'b>(&'a self, pd: &'b PathDescriptor) -> Ref<'b, NormalPath>;
+    /// return path (raw std::path) from its descriptor
+    fn get_path_ref<'a, 'b>(&'a self, pd: &'b PathDescriptor) -> Ref<'b, Path>;
 
-    /// return path from its descriptor
+    /// return relative path from current and base.
     fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> NormalPath;
     /// Return Rule from its descriptor
     fn get_rule<'a>(&'a self, rd: &'a RuleDescriptor) -> &RuleFormulaInstance;
     /// return Env from its descriptor
     fn get_env<'a>(&'a self, ed: &'a EnvDescriptor) -> &Env;
+
     /// Return tup file path from its descriptor
-    fn get_tup_path(&self, p: &TupPathDescriptor) -> NormalPath;
+    fn get_tup_path<'a, 'b>(&'a self, p: &'b TupPathDescriptor) -> Ref<'b, NormalPath>;
 
     /// Return task reference name from its descriptor
     fn get_task<'a>(&'a self, id: &'a TaskDescriptor) -> &TaskInstance;
@@ -85,7 +86,7 @@ pub trait PathBuffers {
 
     /// Get group ids as an iter
     /// Get tup id corresponding to its path
-    fn get_tup_id(&self, p: &Path) -> TupPathDescriptor;
+    fn add_tup_file(&self, p: &Path) -> TupPathDescriptor;
 
     /// Return root folder where tup was initialized
     fn get_root_dir(&self) -> &Path;
@@ -94,7 +95,7 @@ pub trait PathBuffers {
     fn get_group_name(&self, gd: &GroupPathDescriptor) -> String;
 
     /// Extract path from input
-    fn get_path_from(&self, input_glob: &InputResolvedType) -> NormalPath;
+    fn get_path_from(&self, input_glob: &InputResolvedType) -> PathDescriptor;
 
     /// Get Path as string
     fn get_path_str(&self, p: &PathDescriptor) -> String;
@@ -128,7 +129,16 @@ pub struct RelativeDirEntry {
     basedir: PathDescriptor,
     target: PathDescriptor,
     common_root: PathSym,
-    cached_path: RefCell<Option<NormalPath>>,
+}
+
+impl Default for RelativeDirEntry {
+    fn default() -> Self {
+        Self {
+            basedir: PathDescriptor::default(),
+            target: PathDescriptor::default(),
+            common_root: 0,
+        }
+    }
 }
 
 impl RelativeDirEntry {
@@ -143,7 +153,6 @@ impl RelativeDirEntry {
             basedir,
             target,
             common_root: common_root.to_u64(),
-            cached_path: RefCell::new(None),
         }
     }
     fn is_ancestor(basedir: &PathDescriptor, target: &PathDescriptor) -> bool {
@@ -151,16 +160,12 @@ impl RelativeDirEntry {
     }
     /// Normalized path relative to basedir
     pub fn get_path(&self) -> NormalPath {
-        if let Some(cached_path) = self.cached_path.borrow().clone() {
-            return cached_path;
-        }
         let path_components: Vec<_> = self
             .components()
             .map(|comp| comp.as_ref().get_rc_name())
             .collect();
         let path_os_string = OsString::from(path_components.join(OsStr::new("/")));
         let path = NormalPath::new_from_raw(path_os_string);
-        *self.cached_path.borrow_mut() = Some(path.clone());
         path
     }
 
@@ -277,11 +282,30 @@ impl PathDescriptor {
         let dir_entry = fetch_dir_entry(&self.to_u64());
         dir_entry.get_parent_descriptor()
     }
-    /// get path from descriptor
-    pub fn get_path(&self) -> NormalPath {
-        if let Some(cached_path) = self.as_ref().cached_path.borrow().clone() {
-            return cached_path;
+
+    fn is_cached(&self) -> bool {
+        self.as_ref().cached_path.borrow().is_some()
+    }
+    /// get reference to path stored in this descriptor
+    pub fn get_path_ref(&self) -> Ref<'_, Path> {
+        if !self.is_cached() {
+            self.store_path();
         }
+        let refcellpath = self.as_ref().cached_path.borrow();
+        Ref::map(refcellpath, |x| {
+            x.as_ref().expect("path not found").as_path()
+        })
+    }
+    /// get path from descriptor
+    pub fn get_path(&self) -> Ref<'_, NormalPath> {
+        if !self.is_cached() {
+            self.store_path();
+        }
+        let refcellpath = self.as_ref().cached_path.borrow();
+        Ref::map(refcellpath, |x| x.as_ref().expect("path not found"))
+    }
+
+    fn store_path(&self) {
         let cap: usize = self.ancestors().count();
         let mut parts = Vec::with_capacity(cap);
         for ancestor in self.components() {
@@ -300,13 +324,12 @@ impl PathDescriptor {
             });
         parent_path.push(self.as_ref().get_rc_name().as_ref());
         let path = NormalPath::new_from_raw(parent_path);
-        *self.as_ref().cached_path.borrow_mut() = Some(path.clone());
-        path
+        *self.as_ref().cached_path.borrow_mut() = Some(path);
     }
 
     /// get parent directory path
     pub fn get_parent_path(&self) -> NormalPath {
-        self.get_parent_descriptor().get_path()
+        self.get_parent_descriptor().get_path().clone()
     }
     /// ancestors  including self
     pub fn ancestors(&self) -> impl Iterator<Item = PathDescriptor> {
@@ -364,7 +387,7 @@ impl DirEntry {
 impl Display for DirEntry {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.path_sym == 0 {
-            write!(f, "{}", self.name.to_string_lossy())
+            self.get_name().as_ref().fmt(f)
         } else {
             write!(
                 f,
@@ -608,7 +631,7 @@ impl PathBufferObject {
         dir_entry.map(PathDescriptor::from_interned)
     }
     /// get Path with the given id in this buffer
-    pub fn get_path(pd: &PathDescriptor) -> NormalPath {
+    pub fn get_path(pd: &PathDescriptor) -> Ref<'_, NormalPath> {
         pd.get_path()
     }
 }
@@ -741,7 +764,7 @@ impl GeneratedFiles {
         debug!(
             "in dir id {:?}, {:?}",
             base_path_desc,
-            path_buffers.get_path(&base_path_desc)
+            base_path_desc.get_path_ref().deref()
         );
         if let Some(children) = self.children.get(base_path_desc) {
             for pd in children.iter() {
@@ -936,7 +959,7 @@ impl GeneratedFiles {
             debug!(
                 "Setting parent for  path: {:?} to rule:{:?}:{:?}",
                 path_buffers.get_path(new_path_desc),
-                path_buffers.get_tup_path(new_parent.get_tupfile_desc()),
+                new_parent.get_tupfile_desc().get_path_ref().deref(),
                 new_parent.get_line()
             );
             match self.parent_rule.entry(new_path_desc.clone()) {
@@ -1042,7 +1065,7 @@ impl OutputHandler for OutputHolder {
     where
         F: FnMut(&HashMap<PathDescriptor, TupLoc>) -> R,
     {
-        let rules = RwLockReadGuard::map(self.get(), |x| (x.get_parent_rules()));
+        let rules = RwLockReadGuard::map(self.get(), |x| x.get_parent_rules());
         f(rules.deref())
     }
 
@@ -1196,7 +1219,7 @@ impl PathBuffers for BufferObjects {
     /// Add a path to buffer and return its unique id in the buffer
     /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
     fn add_abs<P: AsRef<Path>>(&self, p: P) -> PathDescriptor {
-        let p = paths::without_curdir_prefix(p.as_ref());
+        //let p = paths::without_curdir_prefix(p.as_ref());
         self.path_bo.add(p)
     }
 
@@ -1213,12 +1236,12 @@ impl PathBuffers for BufferObjects {
     ///  add a tup file path to the buffer and return its descriptor
     fn add_tup(&self, p: &Path) -> TupPathDescriptor {
         if p.is_absolute() {
-            let p = diff_paths(p, self.path_bo.get_root_dir()).unwrap();
-            let p = paths::without_curdir_prefix(p.as_path());
-            return self.path_bo.add(p);
+            let num_base_comps = self.path_bo.get_root_dir().components().count();
+            let p: PathBuf = p.components().skip(num_base_comps).collect();
+            self.path_bo.add(p)
+        } else {
+            self.path_bo.add(p)
         }
-        let p1 = NormalPath::cleanup(p, Path::new("."));
-        self.path_bo.add(p1.as_path())
     }
 
     /// add environment variable to the list of variables active in current tupfile until now
@@ -1267,8 +1290,12 @@ impl PathBuffers for BufferObjects {
     }
 
     /// Returns path corresponding to an path descriptor. This panics if there is no match
-    fn get_path(&self, pd: &PathDescriptor) -> NormalPath {
-        PathBufferObject::get_path(pd)
+    fn get_path<'a, 'b>(&'a self, pd: &'b PathDescriptor) -> Ref<'b, NormalPath> {
+        pd.get_path()
+    }
+
+    fn get_path_ref<'a, 'b>(&'a self, pd: &'b PathDescriptor) -> Ref<'b, Path> {
+        pd.get_path_ref()
     }
     fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> NormalPath {
         let rel = RelativeDirEntry::new(base.clone(), pd.clone());
@@ -1285,8 +1312,8 @@ impl PathBuffers for BufferObjects {
     }
 
     /// Returns path corresponding to the given tupfile descriptor
-    fn get_tup_path(&self, t: &TupPathDescriptor) -> NormalPath {
-        PathBufferObject::get_path(t)
+    fn get_tup_path<'a, 'b>(&'a self, p: &'b TupPathDescriptor) -> Ref<'b, NormalPath> {
+        PathBufferObject::get_path(p)
     }
 
     fn get_task<'a>(&'a self, id: &'a TaskDescriptor) -> &TaskInstance {
@@ -1313,8 +1340,8 @@ impl PathBuffers for BufferObjects {
     /// Get group ids as an iter
 
     /// Get tup id corresponding to its path
-    fn get_tup_id(&self, p: &Path) -> TupPathDescriptor {
-        let p = paths::without_curdir_prefix(p);
+    fn add_tup_file(&self, p: &Path) -> TupPathDescriptor {
+        //let p = paths::without_curdir_prefix(p);
         self.path_bo.add(p)
     }
 
@@ -1329,8 +1356,11 @@ impl PathBuffers for BufferObjects {
     }
 
     /// Get path of a maybe resolved input
-    fn get_path_from(&self, input_glob: &InputResolvedType) -> NormalPath {
-        input_glob.get_resolved_path(&self.path_bo)
+    fn get_path_from(&self, input_glob: &InputResolvedType) -> PathDescriptor {
+        input_glob
+            .get_resolved_path_desc()
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Get Path stored against its id

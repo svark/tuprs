@@ -14,8 +14,6 @@ extern crate mlua;
 extern crate nom;
 extern crate nom_locate;
 extern crate parking_lot;
-extern crate path_dedot;
-extern crate pathdiff;
 extern crate regex;
 extern crate tap;
 extern crate thiserror;

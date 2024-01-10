@@ -943,7 +943,7 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
             .get_path_searcher()
             .locate_tuprules(&script_dir_desc, pbuffers.deref())
         {
-            rules.push(tup_rules.get_path());
+            rules.push(tup_rules.get_path().clone());
         }
         let root = tup_script_ctx.get_root();
         let tup_shared = scope.create_userdata(tup_script_ctx)?;

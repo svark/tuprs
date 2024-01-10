@@ -257,7 +257,7 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
             write!(writer, "!{}", macroref).unwrap();
         }
         PathExpr::DeGlob(mp) => {
-            let mp_par = mp.path_descriptor().get_parent_descriptor().get_path();
+            let mp_par = mp.path_descriptor().get_parent_descriptor();
             write!(
                 writer,
                 "{}/{}",

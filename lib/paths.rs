@@ -1,24 +1,23 @@
 //! Module for handling paths and glob patterns in tupfile.
 use std::borrow::Cow;
+use std::cell::Ref;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use log::debug;
-use path_dedot::ParseDot;
-use pathdiff::diff_paths;
 use regex::Regex;
 use tap::Pipe;
 
 use crate::buffers::{
-    BufferObjects, GlobPathDescriptor, MyGlob, PathBufferObject, PathBuffers, PathDescriptor,
-    RelativeDirEntry, TaskDescriptor,
+    BufferObjects, GlobPathDescriptor, MyGlob, PathBuffers, PathDescriptor, RelativeDirEntry,
+    TaskDescriptor,
 };
 use crate::decode::{GroupInputs, TupLoc};
 use crate::errors::Error;
 use crate::glob::Candidate;
-use crate::statements::{CatRef, PathExpr};
+use crate::statements::PathExpr;
 use crate::{BinDescriptor, GroupPathDescriptor};
 
 /// Normal path holds paths wrt root directory of build
@@ -54,32 +53,11 @@ fn get_non_pattern_prefix(glob_path: &PathDescriptor) -> (PathDescriptor, bool) 
     }
 }
 
-pub(crate) fn without_curdir_prefix(p: &Path) -> Cow<'_, Path> {
-    let p = if p
-        .components()
-        .take_while(|x| Component::CurDir.eq(x))
-        .count()
-        > 0
-    {
-        let p: PathBuf = p
-            .components()
-            .skip_while(|x| Component::CurDir.eq(x))
-            .collect();
-        debug_assert!(!p
-            .components()
-            .any(|ref c| Component::ParentDir.eq(c) || Component::CurDir.eq(c)));
-        Cow::Owned(p)
-    } else {
-        Cow::Borrowed(p)
-    };
-    p
-}
-
 impl Display for NormalPath {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         // following converts backslashes to forward slashes
         //normalize_path(self.as_path()).to_string()
-        write!(f, "{}", self.as_path().to_string_lossy().to_string())
+        write!(f, "{}", self.as_path().display())
     }
 }
 
@@ -104,39 +82,6 @@ impl NormalPath {
     }
     fn new_from_cow_str(p: Cow<str>) -> NormalPath {
         NormalPath::new(PathBuf::from(p.as_ref()))
-    }
-
-    /// Construct a `NormalPath' by joining tup_cwd with path
-    pub fn join(tup_cwd: &Path, path: &Path) -> Self {
-        let p1 = Self::cleanup(path, tup_cwd);
-        let np = NormalPath::new_from_cow_path(Cow::from(p1));
-        debug!("abs:{:?}", np);
-        np
-    }
-
-    pub(crate) fn cleanup<P: AsRef<Path>>(path: &Path, tup_cwd: P) -> PathBuf {
-        let p1 = without_curdir_prefix(path);
-        let p2: PathBuf = if tup_cwd
-            .as_ref()
-            .components()
-            .all(|ref x| Component::CurDir.eq(x))
-        {
-            p1.parse_dot_from(".").unwrap_or_default().into()
-        } else {
-            tup_cwd
-                .as_ref()
-                .join(p1.as_ref())
-                .parse_dot_from(".")
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "could not join paths: {:?} with {:?}",
-                        tup_cwd.as_ref(),
-                        path
-                    )
-                })
-                .into()
-        };
-        p2
     }
 
     /// Inner path reference
@@ -223,9 +168,14 @@ impl MatchingPath {
         &self.path_descriptor
     }
 
-    /// Get Path represented by this entry
-    pub fn get_path(&self) -> NormalPath {
+    /// Get Normalized path represented by this entry
+    pub fn get_path(&self) -> Ref<'_, NormalPath> {
         self.path_descriptor.get_path()
+    }
+
+    /// Get reference to Normalized path as std::path::Path
+    pub fn get_path_ref(&self) -> Ref<'_, Path> {
+        self.path_descriptor.get_path_ref()
     }
 
     /// Get id of the glob pattern that matched this path
@@ -283,7 +233,7 @@ impl GlobPath {
         &self.glob_path_desc
     }
     /// Glob path as [Path]
-    pub fn get_abs_path(&self) -> NormalPath {
+    pub fn get_abs_path(&self) -> Ref<'_, NormalPath> {
         self.glob_path_desc.get_path()
     }
 
@@ -293,7 +243,7 @@ impl GlobPath {
     }
 
     /// parent folder corresponding to glob path
-    pub fn get_base_abs_path(&self) -> NormalPath {
+    pub fn get_base_abs_path(&self) -> Ref<'_, NormalPath> {
         self.base_desc.get_path()
     }
 
@@ -331,28 +281,33 @@ impl GlobPath {
 }
 
 pub(crate) struct OutputsAsPaths {
-    outputs: Vec<PathBuf>,
+    outputs: Vec<PathDescriptor>,
     rule_ref: TupLoc,
 }
 
 impl OutputsAsPaths {
     /// Create a new instance of OutputsAsPaths from a list of paths and a rule reference
-    pub(crate) fn new(outputs: Vec<PathBuf>, rule_ref: TupLoc) -> Self {
+    pub(crate) fn new(outputs: Vec<PathDescriptor>, rule_ref: TupLoc) -> Self {
         Self { outputs, rule_ref }
+    }
+    fn get_base(&self) -> PathDescriptor {
+        self.rule_ref.get_tupfile_desc().get_parent_descriptor()
     }
     /// returns all the outputs as vector of strings
     pub fn get_paths(&self) -> Vec<String> {
         self.outputs
             .iter()
-            .map(|x| NormalPath::new_from_cow_path(x.into()).to_string())
+            .map(|x| RelativeDirEntry::new(self.get_base(), x.clone()))
+            .map(|rd| rd.get_path().to_string())
             .collect()
     }
     ///  returns the stem portion of each output file. See [Path::file_stem]
     pub fn get_file_stem(&self) -> Option<String> {
-        self.outputs
-            .first()
-            .and_then(|x| x.as_path().file_stem())
-            .map(|x| x.to_string_lossy().to_string())
+        self.outputs.first().and_then(|x| {
+            x.get_path_ref()
+                .file_stem()
+                .map(|x| x.to_string_lossy().to_string())
+        })
     }
     /// Checks if there are no outputs
     pub fn is_empty(&self) -> bool {
@@ -367,23 +322,28 @@ impl OutputsAsPaths {
 /// `InputsAsPaths' represents resolved inputs to pass to a rule.
 /// Bins are converted to raw paths, groups paths are expanded into a space separated path list
 pub struct InputsAsPaths {
-    raw_inputs: Vec<NormalPath>,
-    groups_by_name: HashMap<String, String>,
+    raw_inputs: Vec<PathDescriptor>,
+    groups_by_name: HashMap<String, Vec<PathDescriptor>>,
+    // space separated paths against group name
     raw_inputs_glob_match: Option<InputResolvedType>,
     rule_ref: TupLoc,
-    tup_dir: PathBuf,
+    tup_dir: PathDescriptor,
 }
 
 impl GroupInputs for InputsAsPaths {
     /// Returns all paths  (space separated) associated with a given group name
     /// This is used for group name substitutions in rule formulas that appear as %<group_name>
     fn get_group_paths(&self, group_name: &str, _rule_id: i64, _rule_dir: i64) -> Option<String> {
+        let paths = |group_name| {
+            self.groups_by_name.get(group_name).cloned().map(|x| {
+                let paths: Vec<_> = x.iter().map(|p| p.to_string()).collect();
+                paths.join(" ")
+            })
+        };
         if group_name.starts_with('<') {
-            self.groups_by_name.get(group_name).cloned()
+            paths(group_name)
         } else {
-            self.groups_by_name
-                .get(&*format!("<{}>", group_name))
-                .cloned()
+            paths(&*format!("<{}>", group_name))
         }
     }
 }
@@ -393,24 +353,29 @@ impl InputsAsPaths {
     pub(crate) fn get_file_names(&self) -> Vec<String> {
         self.raw_inputs
             .iter()
-            .map(|x| x.as_path())
-            .filter_map(|f| f.file_name())
-            .map(|x| x.to_string_lossy().to_string())
+            .filter_map(|x| {
+                x.get_path_ref()
+                    .file_name()
+                    .and_then(|x| x.to_str())
+                    .map(|x| x.to_string())
+            })
             .collect()
     }
 
     /// Returns the first parent folder name
-    pub(crate) fn parent_folder_name(&self) -> &Path {
-        self.tup_dir.as_path()
+    pub(crate) fn parent_folder_name(&self) -> Ref<'_, NormalPath> {
+        self.tup_dir.get_path()
     }
-
     /// returns all the inputs
     pub(crate) fn get_paths(&self) -> Vec<String> {
         self.raw_inputs
             .iter()
-            .map(|x| x.as_path())
-            .chain(self.groups_by_name.values().map(Path::new))
-            .map(|x| NormalPath::new_from_cow_path(Cow::from(x)).to_string())
+            .chain(self.groups_by_name.values().flatten())
+            .map(|x| {
+                RelativeDirEntry::new(self.tup_dir.clone(), x.clone())
+                    .get_path()
+                    .to_string()
+            })
             .collect()
     }
 
@@ -421,19 +386,24 @@ impl InputsAsPaths {
     pub(crate) fn get_extension(&self) -> Option<String> {
         self.raw_inputs
             .iter()
-            .map(|x| x.as_path())
-            .chain(self.groups_by_name.values().map(Path::new))
-            .filter_map(|x| x.extension())
-            .map(|x| x.to_string_lossy().to_string())
+            .chain(self.groups_by_name.values().flatten())
+            .filter_map(|x| {
+                x.get_path_ref()
+                    .extension()
+                    .and_then(|x| x.to_str().map(|x| x.to_string()))
+            })
             .next()
     }
     pub(crate) fn get_file_stem(&self) -> Vec<String> {
         self.raw_inputs
             .iter()
-            .map(|x| x.as_path())
-            .chain(self.groups_by_name.values().map(Path::new))
-            .filter_map(|x| x.file_stem())
-            .map(|x| x.to_string_lossy().to_string())
+            .chain(self.groups_by_name.values().flatten())
+            .filter_map(|x| {
+                x.get_path()
+                    .as_path()
+                    .file_stem()
+                    .and_then(|x| x.to_str().map(|x| x.to_string()))
+            })
             .collect()
     }
 
@@ -465,20 +435,15 @@ impl InputsAsPaths {
                 tup_cwd, inp[0]
             );
         }
-        let relpath = |x: NormalPath| {
-            let p = x.as_path();
-            let p = diff_paths(p, tup_cwd.get_path()).unwrap_or_else(|| p.to_path_buf());
-            NormalPath::new(p)
-        };
         let try_grp = |x: &InputResolvedType| {
             if let &InputResolvedType::GroupEntry(ref grp_desc, _) = x {
                 Some((
                     path_buffers.get_group_name(grp_desc),
-                    relpath(path_buffers.get_path_from(x)),
+                    (path_buffers.get_path_from(x)),
                 ))
             } else if let &InputResolvedType::UnResolvedGroupEntry(ref grp_desc) = x {
                 let grp_name = path_buffers.get_group_name(grp_desc);
-                Some((grp_name.clone(), NormalPath::new(PathBuf::from(grp_name))))
+                Some((grp_name.clone(), PathDescriptor::default()))
             } else {
                 None
             }
@@ -486,19 +451,15 @@ impl InputsAsPaths {
         let allnongroups: Vec<_> = inp
             .iter()
             .filter(|&x| isnotgrp(x))
-            .map(|x| relpath(path_buffers.get_path_from(x)))
+            .map(|x| path_buffers.get_path_from(x))
             .collect();
-        let mut namedgroupitems: HashMap<_, Vec<String>> = HashMap::new();
+        let mut namedgroupitems: HashMap<_, Vec<PathDescriptor>> = HashMap::new();
         for x in inp.iter().filter_map(|x| try_grp(x)) {
             namedgroupitems
                 .entry(x.0)
                 .or_insert_with(Default::default)
-                .push(x.1.to_string())
+                .push(x.1)
         }
-        let namedgroupitems = namedgroupitems
-            .drain()
-            .map(|(s, v)| (s, v.join(" ")))
-            .collect();
         let raw_inputs_glob_match = inp.first().cloned();
         debug!("input glob match :{:?}", raw_inputs_glob_match);
         InputsAsPaths {
@@ -506,16 +467,9 @@ impl InputsAsPaths {
             groups_by_name: namedgroupitems,
             raw_inputs_glob_match,
             rule_ref,
-            tup_dir: tup_cwd.get_path().to_path_buf(),
+            tup_dir: tup_cwd.clone(),
         }
     }
-}
-
-pub(crate) fn normalized_path(x: &PathExpr) -> PathBuf {
-    //  backslashes with forward slashes
-    let pbuf = PathBuf::new().join(x.cat_ref().replace('\\', "/").as_str());
-    pbuf
-    //NormalPath::absolute_from(pbuf.as_path(), tup_cwd).to_path_buf()
 }
 
 /// Types of decoded input to rules which includes
@@ -567,19 +521,6 @@ impl InputResolvedType {
             InputResolvedType::UnResolvedFile(_) => true,
             InputResolvedType::UnResolvedGroupEntry(_) => true,
             _ => false,
-        }
-    }
-
-    /// Extracts the actual file system path corresponding to a de-globbed input or bin or group entry
-    pub(crate) fn get_resolved_path(&self, _pbo: &PathBufferObject) -> NormalPath {
-        match self {
-            InputResolvedType::Deglob(e) => e.path_descriptor().get_path(),
-            InputResolvedType::GroupEntry(_, p) => p.get_path(),
-            InputResolvedType::BinEntry(_, p) => p.get_path(),
-            InputResolvedType::UnResolvedGroupEntry(_) => NormalPath::new_from_raw("".into()),
-            //InputResolvedType::RawUnchecked(p) => pbo.get(p).as_path()
-            InputResolvedType::UnResolvedFile(p) => p.get_path(),
-            InputResolvedType::TaskRef(_) => NormalPath::new_from_raw("".into()),
         }
     }
 

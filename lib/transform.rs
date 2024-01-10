@@ -1,5 +1,6 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
 use std::borrow::Cow;
+use std::cell::Ref;
 use std::ffi::{OsStr, OsString};
 use std::ops::ControlFlow::Continue;
 use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
@@ -14,7 +15,6 @@ use hashbrown::HashMap;
 use log::debug;
 use nom::AsBytes;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use pathdiff::diff_paths;
 
 use crate::buffers::{
     BufferObjects, EnvDescriptor, GenBufferObject, GlobPathDescriptor, GroupBufferObject,
@@ -207,7 +207,7 @@ impl ParseState {
         bo: Arc<BufferObjects>,
     ) -> Self {
         let mut def_vars = HashMap::new();
-        let cur_file = bo.get_path(&cur_file_desc);
+        let cur_file = bo.get_path(&cur_file_desc).clone();
         let dir = cur_file_desc.get_parent_descriptor().get_path().to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
 
@@ -231,7 +231,7 @@ impl ParseState {
         x.get(tup_desc).cloned()
     }
 
-    pub(crate) fn replace_tup_cwd(&mut self, dir: &str) -> Option<Vec<String>> {
+    pub(crate) fn replace_tup_cwd<S: ToString>(&mut self, dir: S) -> Option<Vec<String>> {
         let v = self.expr_map.remove("TUP_CWD");
         self.expr_map
             .insert("TUP_CWD".to_string(), vec![dir.to_string()]);
@@ -265,23 +265,15 @@ impl ParseState {
     pub fn new_at<P: AsRef<Path>>(cur_file: P) -> Self {
         let mut def_vars = HashMap::new();
         let pbuffers = Arc::new(BufferObjects::new(get_parent(cur_file.as_ref())));
-        let tupfile_rel_path = diff_paths(cur_file.as_ref(), pbuffers.get_root_dir())
-            .unwrap_or_else(|| {
-                panic!(
-                    "Failed to diff path{:?} with base:{:?}",
-                    cur_file.as_ref(),
-                    pbuffers.get_root_dir()
-                )
-            });
-        let cur_file_desc = pbuffers.add_tup(&*tupfile_rel_path);
-        let cur_file = cur_file_desc.get_path().to_path_buf();
+        let cur_file_desc = pbuffers.add_tup(cur_file.as_ref());
+        let cur_file = cur_file_desc.get_path().clone().to_path_buf();
         let dir = get_parent_with_fsep(cur_file.as_path()).to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
 
         ParseState {
             expr_map: def_vars,
             cur_file: cur_file.clone(),
-            tup_base_path: cur_file.clone(),
+            tup_base_path: cur_file,
             cur_file_desc,
             path_buffers: pbuffers,
             ..ParseState::default()
@@ -290,25 +282,18 @@ impl ParseState {
     /// set the current TUP_CWD in expression map in ParseState as we switch to reading an included file
     pub fn set_cwd(&mut self, tupfile: &Path) -> Result<(), Error> {
         self.cur_file_desc = self.path_buffers.add_tup(tupfile);
-        self.cur_file = self.cur_file_desc.get_path().to_path_buf();
-        let tupdir = get_parent(self.tup_base_path.as_path());
+        //self.cur_file = self.cur_file_desc.get_path().to_path_buf();
         debug!(
             "diffing:{:?} with base: {:?}",
-            self.cur_file.as_path(),
-            tupdir
+            self.cur_file_desc,
+            get_parent(self.tup_base_path.as_path())
         );
-        let diff = diff_paths(self.cur_file.as_path(), tupdir.as_ref())
-            .map(|x| Ok(x))
-            .unwrap_or_else(|| {
-                Err(Error::new_path_search_error(format!(
-                    "failed diffing:{:?} with base: {:?}",
-                    self.cur_file.as_path(),
-                    tupdir.as_ref()
-                )))
-            })?;
+        let diff = RelativeDirEntry::new(
+            self.get_tup_dir_desc(),
+            self.cur_file_desc.get_parent_descriptor(),
+        );
         debug!("switching to diff:{:?}", diff);
-        let p = get_parent_with_fsep(diff.as_path());
-        self.replace_tup_cwd(p.as_path().to_string_lossy().as_ref());
+        self.replace_tup_cwd(diff.get_path());
         Ok(())
     }
 
@@ -317,13 +302,8 @@ impl ParseState {
     }
 
     /// return the tupfile being parsed
-    pub(crate) fn get_cur_file(&self) -> &Path {
-        &self.cur_file
-    }
-
-    /// return the folder containing Tupfile being parsed
-    pub(crate) fn get_tup_dir(&self) -> Cow<Path> {
-        get_parent(self.cur_file.as_path())
+    pub(crate) fn get_cur_file(&self) -> Ref<'_, Path> {
+        self.cur_file_desc.get_path_ref()
     }
 
     pub(crate) fn get_tup_dir_desc(&self) -> PathDescriptor {
@@ -434,24 +414,11 @@ impl ExpandRun for Statement {
 
                                 debug!("expand_run num files from glob:{:?}", matches.len());
                                 for ofile in matches {
-                                    let p = diff_paths(
-                                        path_buffers
-                                            .get_path(ofile.path_descriptor_ref())
-                                            .as_path(),
-                                        parse_state.get_tup_dir(),
-                                    )
-                                    .unwrap_or_else(|| {
-                                        panic!(
-                                            "Failed to diff path{:?} with base:{:?}",
-                                            path_buffers
-                                                .get_path(ofile.path_descriptor_ref())
-                                                .as_path(),
-                                            parse_state.get_tup_dir()
-                                        )
-                                    });
-                                    cmd.arg(
-                                        p.to_string_lossy().to_string().as_str().replace('\\', "/"),
+                                    let p = RelativeDirEntry::new(
+                                        parse_state.get_tup_dir_desc(),
+                                        ofile.path_descriptor(),
                                     );
+                                    cmd.arg(p.get_path().as_path());
                                 }
                             }
                         } else if !arg.is_empty() {
@@ -459,7 +426,10 @@ impl ExpandRun for Statement {
                         }
                     }
                     let env = path_buffers.get_env(&parse_state.cur_env_desc);
-                    let dir = path_buffers.get_root_dir().join(parse_state.get_tup_dir());
+                    let tupdir = parse_state.get_tup_dir_desc();
+                    let dir = path_buffers
+                        .get_root_dir()
+                        .join(tupdir.get_path_ref().as_os_str());
                     if cmd.get_args().len() != 0 {
                         cmd.envs(env.getenv()).current_dir(dir.as_path());
 
@@ -1056,18 +1026,15 @@ impl DollarExprs {
             }
             DollarExprs::RealPath(ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
-                let tup_dir = m.get_tup_dir().to_path_buf();
+                let tup_dir = m.get_tup_dir_desc();
                 vs.iter()
                     .filter_map(|v| {
                         let s = v.cat_ref();
                         if !s.is_empty() {
                             let p = Path::new(s.as_ref());
-                            let real_path =
-                                path_dedot::ParseDot::parse_dot_from(p, tup_dir.as_path())
-                                    .unwrap_or_else(|x| {
-                                        panic!("failed to parse dot in path: {:?} {:?}", p, x)
-                                    });
-                            Some(real_path.to_string_lossy().to_string().into())
+                            let real_path = tup_dir.join(p);
+                            let x = Some(real_path.get_path().to_string().into());
+                            x
                         } else {
                             None
                         }
@@ -1081,7 +1048,7 @@ impl DollarExprs {
                         let s = v.cat_ref();
                         if !s.is_empty() {
                             let p = Path::new(s.as_ref());
-                            let base_name = p.file_name().unwrap_or_else(|| {
+                            let base_name = p.file_stem().unwrap_or_else(|| {
                                 panic!("failed to get base name from path: {:?}", p)
                             });
                             Some(base_name.to_string_lossy().to_string().into())
@@ -1101,18 +1068,10 @@ impl DollarExprs {
                         let s = v.cat_ref();
                         if !s.is_empty() {
                             let p = Path::new(s.as_ref());
-                            let p = path_dedot::ParseDot::parse_dot_from(p, m.get_tup_dir())
-                                .unwrap_or_else(|x| {
-                                    panic!("failed to parse dot in path: {:?} {:?}", p, x)
-                                });
-                            if p.is_dir() {
-                                Some("".to_string().into())
-                            } else {
-                                let base_name = p.file_name().unwrap_or_else(|| {
-                                    panic!("failed to get base name from path: {:?}", p)
-                                });
-                                Some(base_name.to_string_lossy().to_string().into())
-                            }
+                            let file_name = p.file_name().unwrap_or_else(|| {
+                                panic!("failed to get base name from path: {:?}", p)
+                            });
+                            Some(file_name.to_string_lossy().to_string().into())
                         } else {
                             None
                         }
@@ -1121,26 +1080,24 @@ impl DollarExprs {
             }
             DollarExprs::Dir(ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
-                let tup_dir = m.get_tup_dir().to_path_buf();
-
+                fn has_trailing_slash(path: &Path) -> bool {
+                    path.as_os_str()
+                        .to_str()
+                        .map_or(false, |s| s.ends_with('/'))
+                }
                 let vs = vs
                     .iter()
                     .filter_map(|v| {
                         let s = v.cat_ref();
                         if !s.is_empty() {
                             let p = Path::new(s.as_ref());
-                            let p = path_dedot::ParseDot::parse_dot_from(p, tup_dir.as_path())
-                                .unwrap_or_else(|x| {
-                                    panic!("failed to parse dot in path: {:?} {:?}", p, x)
-                                });
-                            if p.is_dir() {
-                                Some("".to_string().into())
+                            Some(if has_trailing_slash(p) {
+                                let mut dirpart = p.to_string_lossy().to_string();
+                                dirpart.push('_');
+                                PathExpr::from(get_parent_with_fsep(dirpart.as_str()).to_string())
                             } else {
-                                let base_name = p.file_name().unwrap_or_else(|| {
-                                    panic!("failed to get base name from path: {:?}", p)
-                                });
-                                Some(base_name.to_string_lossy().to_string().into())
-                            }
+                                PathExpr::from(get_parent_with_fsep(p).to_string())
+                            })
                         } else {
                             None
                         }
@@ -1642,8 +1599,8 @@ pub(crate) fn get_parent(cur_file: &Path) -> Cow<Path> {
 }
 
 /// parent folder path as a string slice
-pub fn get_parent_with_fsep(cur_file: &Path) -> NormalPath {
-    NormalPath::new_from_cow_path(cur_file.parent().unwrap().into())
+pub fn get_parent_with_fsep<P: AsRef<Path>>(cur_file: P) -> NormalPath {
+    NormalPath::new_from_cow_path(cur_file.as_ref().parent().unwrap().into())
 }
 
 /// strings in pathexpr that are space separated
@@ -1912,7 +1869,7 @@ impl LocatedStatement {
                 {
                     debug!("reading tuprules {:?}", f);
                     parse_state.switch_tupfile_and_process(
-                        f.get_path().as_path(),
+                        f.get_path_ref().deref(),
                         |parse_state| -> Result<(), Error> {
                             //let cf = switch_to_reading(tup_desc, tup_path, m, bo);
                             let include_stmts = get_or_insert_parsed_statement(
@@ -1944,7 +1901,7 @@ impl LocatedStatement {
 
                 debug!(
                     "include path:{:?} found in {:?}",
-                    fullp.get_path().as_path(),
+                    fullp.get_path_ref(),
                     parse_state.get_cur_file()
                 );
                 let ps = path_searcher.discover_paths(
@@ -1956,7 +1913,7 @@ impl LocatedStatement {
                     TupLoc::new(parse_state.get_cur_file_desc(), self.get_loc()),
                 ))?;
                 parse_state.switch_tupfile_and_process(
-                    p.get_path().as_path(),
+                    p.get_path_ref().deref(),
                     |parse_state| -> Result<(), Error> {
                         let include_stmts =
                             get_or_insert_parsed_statement(path_searcher.get_root(), parse_state)?;
@@ -2185,7 +2142,7 @@ fn get_or_insert_parsed_statement(
         Ok(vs)
     } else {
         debug!("Parsing {:?}", parse_state.get_cur_file());
-        let res = parse_tupfile(&root.join(parse_state.get_cur_file()))?;
+        let res = parse_tupfile(&root.join(parse_state.get_cur_file().as_os_str()))?;
         debug!("Got: {:?} statements", res.len());
         parse_state.add_statements_to_cache(&tup_desc, res.clone());
         Ok(res)
@@ -2336,9 +2293,9 @@ impl ReadWriteBufferObjects {
 
     /// Iterate over group ids
     /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
-    pub fn for_each_group<F>(&self, f: F) -> Result<(), crate::errors::Error>
+    pub fn for_each_group<F>(&self, f: F) -> Result<(), Error>
     where
-        F: FnMut(&GroupPathDescriptor) -> Result<(), crate::errors::Error>,
+        F: FnMut(&GroupPathDescriptor) -> Result<(), Error>,
     {
         GroupBufferObject::for_each(f)
     }
@@ -2378,12 +2335,12 @@ impl ReadWriteBufferObjects {
     }
 
     /// Returns the tup file path corresponding to its id
-    pub fn get_tup_path(&self, p0: &TupPathDescriptor) -> NormalPath {
-        self.get().get_tup_path(p0)
+    pub fn get_tup_path<'a, 'b>(&'a self, tup_pd: &'b TupPathDescriptor) -> Ref<'b, NormalPath> {
+        tup_pd.get_path()
     }
     /// Return tup id from its path
     pub fn add_tup_file(&self, p: &Path) -> TupPathDescriptor {
-        self.get().get_tup_id(p).clone()
+        self.get().add_tup_file(p)
     }
 
     /// Return set of environment variables

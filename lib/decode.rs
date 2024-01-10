@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use hashbrown::{HashMap, HashSet};
 use log::{debug, log_enabled};
 use parking_lot::MappedRwLockReadGuard;
-use pathdiff::diff_paths;
 use regex::{Captures, Regex};
 use walkdir::{DirEntry, WalkDir};
 
@@ -27,7 +26,7 @@ use crate::paths::{
 };
 use crate::statements::*;
 use crate::transform::{to_regex, Artifacts, TupParser};
-use crate::{paths, ReadWriteBufferObjects};
+use crate::ReadWriteBufferObjects;
 
 /// Trait to discover paths from an external source (such as a database)
 pub trait PathSearcher {
@@ -160,7 +159,7 @@ impl TaskInstance {
         search_dirs: Vec<PathDescriptor>,
         env: EnvDescriptor,
     ) -> TaskInstance {
-        let name = format!("{}/{}", tup_cwd.get_path().to_string(), name);
+        let name = format!("{}/{}", tup_cwd.to_string(), name);
         TaskInstance {
             name,
             deps,
@@ -473,8 +472,8 @@ impl DecodeInputPaths for PathExpr {
 
         match self {
             PathExpr::Literal(_) => {
-                let pbuf = paths::normalized_path(self);
-                let glob_path = GlobPath::build_from_relative(tup_cwd, pbuf.as_path())?;
+                let glob_path =
+                    GlobPath::build_from_relative(tup_cwd, Path::new(self.cat_ref().as_ref()))?;
                 let glob_path_desc = glob_path.get_glob_path_desc();
                 let mut glob_paths = vec![glob_path];
                 let rel_path_desc = RelativeDirEntry::new(tup_cwd.clone(), glob_path_desc.clone());
@@ -768,7 +767,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                 d
             };
             let d = if d.contains("%d") {
-                let parent_name = inp.parent_folder_name().to_string_lossy().to_string();
+                let parent_name = inp.parent_folder_name().to_string();
                 d.replace("%d", parent_name.as_str())
             } else {
                 d
@@ -1089,13 +1088,7 @@ fn get_deglobbed_rule(
     let excluded_targets = excluded_patterns(tup_cwd, &decoded_target.primary, path_buffers);
     let pp = paths_from_exprs(tup_cwd, &decoded_target.primary, path_buffers);
 
-    let df = |x: &OutputType| {
-        diff_paths(
-            x.get_id().get_path().as_path(),
-            tup_cwd.get_path().as_path(),
-        )
-        .unwrap()
-    };
+    let df = |x: &OutputType| x.get_id().clone();
     let output_as_paths = OutputsAsPaths::new(pp.iter().map(df).collect(), rule_ref.clone());
     decoded_target.secondary = decoded_target
         .secondary
