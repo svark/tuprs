@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::ops::Deref;
+use std::ops::{AddAssign, Deref};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -66,7 +66,7 @@ pub trait PathBuffers {
     fn get_path(&self, pd: &PathDescriptor) -> NormalPath;
 
     /// return path from its descriptor
-    fn get_rel_path<P: AsRef<Path>>(&self, pd: &PathDescriptor, vd: P) -> NormalPath;
+    fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> NormalPath;
     /// Return Rule from its descriptor
     fn get_rule<'a>(&'a self, rd: &'a RuleDescriptor) -> &RuleFormulaInstance;
     /// return Env from its descriptor
@@ -99,14 +99,6 @@ pub trait PathBuffers {
     /// Get Path as string
     fn get_path_str(&self, p: &PathDescriptor) -> String;
 
-    /// Finds if env var is present
-
-    /// Return an iterator over all the id-group path pairs.
-    /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
-    fn group_iter<F>(&self, f: F)
-    where
-        F: FnMut(&GroupPathDescriptor);
-
     /// Bin Name
     fn get_bin_name<'a>(&'a self, b: &'a BinDescriptor) -> Cow<'_, str>;
 }
@@ -128,6 +120,85 @@ pub struct DirEntry {
     path_sym: PathSym,
     name: Arc<OsStr>,
     cached_path: RefCell<Option<NormalPath>>,
+}
+
+/// ```RelativeDirEntry``` contains a path relative to a base directory
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelativeDirEntry {
+    basedir: PathDescriptor,
+    target: PathDescriptor,
+    common_root: PathSym,
+    cached_path: RefCell<Option<NormalPath>>,
+}
+
+impl RelativeDirEntry {
+    /// Construct a new relative dir entry
+    pub fn new(basedir: PathDescriptor, target: PathDescriptor) -> Self {
+        let common_root = // get common root for self.basedir and self.target
+            if RelativeDirEntry::is_ancestor(&basedir, &target) { basedir.clone() } else {
+                basedir.components().zip(target.components())
+                    .take_while(|(a, b)| a == b).last().expect("common root not found").0
+            };
+        Self {
+            basedir,
+            target,
+            common_root: common_root.to_u64(),
+            cached_path: RefCell::new(None),
+        }
+    }
+    fn is_ancestor(basedir: &PathDescriptor, target: &PathDescriptor) -> bool {
+        target.ancestors().find(|x| x.eq(basedir)).is_some()
+    }
+    /// Normalized path relative to basedir
+    pub fn get_path(&self) -> NormalPath {
+        if let Some(cached_path) = self.cached_path.borrow().clone() {
+            return cached_path;
+        }
+        let path_components: Vec<_> = self
+            .components()
+            .map(|comp| comp.as_ref().get_rc_name())
+            .collect();
+        let path_os_string = OsString::from(path_components.join(OsStr::new("/")));
+        let path = NormalPath::new_from_raw(path_os_string);
+        *self.cached_path.borrow_mut() = Some(path.clone());
+        path
+    }
+
+    /// ancestors including self
+    pub fn ancestors(&self) -> impl Iterator<Item = PathDescriptor> + '_ {
+        let mut cur_path = self.target.clone();
+        std::iter::from_fn(move || {
+            if cur_path.is_root() || cur_path.to_u64() == self.common_root {
+                None
+            } else {
+                let last_cur_path = cur_path.clone();
+                cur_path = cur_path.get_parent_descriptor();
+                Some(last_cur_path)
+            }
+        })
+    }
+    /// directory components of this path including self
+    pub fn components(&self) -> impl Iterator<Item = PathDescriptor> {
+        let mut all_components = Vec::new();
+        for ancestor in self.ancestors() {
+            all_components.push(ancestor);
+        }
+        std::iter::from_fn(move || all_components.pop())
+    }
+}
+
+impl AddAssign<&RelativeDirEntry> for PathDescriptor {
+    fn add_assign(&mut self, rhs: &RelativeDirEntry) {
+        let mut pathsym = self.to_u64();
+        for components in rhs.components() {
+            let nxt = Intern::new(DirEntry::new(
+                pathsym,
+                components.as_ref().get_rc_name().as_ref(),
+            ));
+            pathsym = nxt.to_u64();
+        }
+        *self = PathDescriptor::from_interned(fetch_dir_entry(&pathsym));
+    }
 }
 
 impl Hash for DirEntry {
@@ -216,16 +287,18 @@ impl PathDescriptor {
         for ancestor in self.components() {
             parts.push(ancestor.as_ref().get_rc_name());
         }
-        parts.pop();
+        parts.pop(); // last component (self) is removed and added later
         let parent_path =
             OsString::with_capacity(parts.iter().fold(cap, |acc, x| acc + x.len() + 1));
-        let mut parent_path = parts.iter().fold(parent_path, |mut acc, x| {
-            acc.push(x.as_ref());
-            acc.push("/");
-            acc
-        });
+        let mut parent_path = parts
+            .iter()
+            .skip(1) // skip the "./" component
+            .fold(parent_path, |mut acc, x| {
+                acc.push(x.as_ref());
+                acc.push("/");
+                acc
+            });
         parent_path.push(self.as_ref().get_rc_name().as_ref());
-        //let path = parts.join("/");
         let path = NormalPath::new_from_raw(parent_path);
         *self.as_ref().cached_path.borrow_mut() = Some(path.clone());
         path
@@ -258,6 +331,7 @@ impl PathDescriptor {
         for ancestor in self.ancestors() {
             all_components.push(ancestor);
         }
+        all_components.push(PathDescriptor::default());
         std::iter::from_fn(move || all_components.pop())
     }
 }
@@ -322,7 +396,7 @@ impl<T> NamedPathEntry<T> {
         self.1.as_ref()
     }
     /// get path descriptor of the group or bin
-    pub fn get_descriptor(&self) -> &PathDescriptor {
+    pub fn get_dir_descriptor(&self) -> &PathDescriptor {
         &self.0
     }
 }
@@ -370,6 +444,11 @@ impl<T: Eq + Hash + Send + Sync + 'static + Display> Descriptor<T> {
     /// integer representation of the descriptor
     pub fn to_u64(&self) -> u64 {
         self.0.to_u64()
+    }
+
+    /// from integer representation of the descriptor
+    pub fn from_u64(u: u64) -> Self {
+        unsafe { Self::from_interned(Intern::from_u64(u)) }
     }
 }
 
@@ -444,9 +523,9 @@ pub trait GenBufferObject {
         Intern::fetch_interned(t).map(Descriptor::from_interned)
     }
     /// apply a function  over all the (group_desciptors)  stored in this buffer
-    fn for_each<F>(mut f: F)
+    fn for_each<F>(mut f: F) -> Result<(), Error>
     where
-        F: FnMut(&Descriptor<Self::T>) -> (),
+        F: FnMut(&Descriptor<Self::T>) -> Result<(), Error>,
     {
         Intern::iter_interned(move |x| f(&Descriptor::from_interned(x)))
     }
@@ -555,13 +634,6 @@ impl GroupBufferObject {
     // Returns name of group (wrapped with angle-brackets)
     fn get_group_name(group_desc: &GroupPathDescriptor) -> String {
         group_desc.get().get_name().to_string()
-    }
-    /// iterator over all the (groupid, grouppath) pairs stored in this buffer
-    pub(crate) fn group_iter<F>(mut f: F)
-    where
-        F: FnMut(GroupPathDescriptor) -> (),
-    {
-        Intern::iter_interned(move |x| f(GroupPathDescriptor::from_interned(x)))
     }
 }
 
@@ -1016,19 +1088,8 @@ impl Hash for MyGlob {
 }
 
 impl MyGlob {
-    /*    pub(crate) fn new(path_pattern: Candidate) -> Result<Self, Error> {
-        let to_glob_error = |e: &glob::Error| {
-            Error::GlobError(path_pattern.to_string() + ":" + e.kind().to_string().as_str())
-        };
-        let glob_pattern = GlobBuilder::new(path_pattern.path().to_str_lossy().as_ref())
-            .literal_separator(true)
-            .capture_globs(true)
-            .build()
-            .map_err(|e| to_glob_error(&e))?;
-        let matcher = glob_pattern.compile_matcher();
-        Ok(MyGlob { matcher })
-    } */
-
+    /// Create a new glob from a path pattern
+    /// It is assumed that path_pattern is relative to root directory
     pub(crate) fn new_raw(path_pattern: &Path) -> Result<Self, Error> {
         let to_glob_error = |e: &glob::Error| {
             Error::GlobError(
@@ -1112,6 +1173,7 @@ impl BufferObjects {
     }
 }
 
+/// Methods to add or get objects from a buffer
 impl PathBuffers for BufferObjects {
     /// Add path of bin. Folder is the one where  Tupfile declaring the bin. name is bin name
     fn add_bin_path_expr(&self, tup_cwd: &PathDescriptor, pe: &str) -> BinDescriptor {
@@ -1143,9 +1205,12 @@ impl PathBuffers for BufferObjects {
         self.path_bo.add_relative(tup_cwd, path.as_ref())
     }
 
+    /// Add a rule formula to the buffer and return its descriptor
     fn add_rule(&self, r: RuleFormulaInstance) -> RuleDescriptor {
         RuleBufferObject::add_ref(r)
     }
+
+    ///  add a tup file path to the buffer and return its descriptor
     fn add_tup(&self, p: &Path) -> TupPathDescriptor {
         if p.is_absolute() {
             let p = diff_paths(p, self.path_bo.get_root_dir()).unwrap();
@@ -1180,6 +1245,7 @@ impl PathBuffers for BufferObjects {
         }
     }
 
+    /// add a task to the buffer and return its descriptor
     fn add_task_path(&self, task: TaskInstance) -> TaskDescriptor {
         TaskBufferObject::add_ref(task)
     }
@@ -1204,9 +1270,9 @@ impl PathBuffers for BufferObjects {
     fn get_path(&self, pd: &PathDescriptor) -> NormalPath {
         PathBufferObject::get_path(pd)
     }
-    fn get_rel_path<P: AsRef<Path>>(&self, pd: &PathDescriptor, vd: P) -> NormalPath {
-        let np1 = self.get_path(pd);
-        NormalPath::new_from_cow_path(diff_paths(np1.as_path(), vd.as_ref()).unwrap().into())
+    fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> NormalPath {
+        let rel = RelativeDirEntry::new(base.clone(), pd.clone());
+        rel.get_path()
     }
 
     /// Returns rule corresponding to a rule descriptor. Panics if none is found
@@ -1227,6 +1293,7 @@ impl PathBuffers for BufferObjects {
         TaskBufferObject::get(id)
     }
 
+    /// query for task at specified path by its name
     fn try_get_task_desc(&self, tup_cwd: &PathDescriptor, name: &str) -> Option<TaskDescriptor> {
         let task = TaskInstance::new(
             tup_cwd,
@@ -1272,15 +1339,7 @@ impl PathBuffers for BufferObjects {
         p.as_path().to_string_lossy().to_string()
     }
 
-    /// Return an iterator over all the id-group path pairs.
-    /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
-    fn group_iter<F>(&self, f: F)
-    where
-        F: FnMut(&GroupPathDescriptor) -> (),
-    {
-        GroupBufferObject::for_each(f)
-    }
-
+    /// return name of bin stored against its id
     fn get_bin_name<'a>(&'a self, b: &'a BinDescriptor) -> Cow<'_, str> {
         b.get().get_name().into()
     }

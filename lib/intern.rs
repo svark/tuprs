@@ -251,16 +251,18 @@ impl<T: Eq + Hash + Send + Sync + 'static> Intern<T> {
         INTERN_CONTAINERS.with(|m: &mut HashSet<&'static T>| -> usize { m.len() })
     }
     /// Iterate over all interned objects and apply a function to each one.
-    pub fn iter_interned<F, R>(mut f: F)
+    pub fn iter_interned<F>(mut f: F) -> Result<(), crate::errors::Error>
     where
-        F: FnMut(Intern<T>) -> R,
-        R: 'static,
+        F: FnMut(Intern<T>) -> Result<(), crate::errors::Error>,
     {
-        INTERN_CONTAINERS.with(|m: &mut HashSet<&'static T>| {
-            m.0.keys().for_each(move |&k| {
-                f(Intern { pointer: k });
-            })
-        })
+        INTERN_CONTAINERS.with(
+            |m: &mut HashSet<&'static T>| -> Result<(), crate::errors::Error> {
+                m.0.keys()
+                    .try_for_each(move |&k| -> Result<(), crate::errors::Error> {
+                        f(Intern { pointer: k })
+                    })
+            },
+        )
     }
     /// Check if a value has been interned.
     pub fn is_interned(t: &T) -> bool {

@@ -18,7 +18,8 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::buffers::{
     BinDescriptor, EnvDescriptor, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder,
-    OutputType, PathBuffers, PathDescriptor, RuleDescriptor, TaskDescriptor, TupPathDescriptor,
+    OutputType, PathBuffers, PathDescriptor, RelativeDirEntry, RuleDescriptor, TaskDescriptor,
+    TupPathDescriptor,
 };
 use crate::errors::{Error as Err, Error};
 use crate::paths::{
@@ -38,54 +39,11 @@ pub trait PathSearcher {
     ) -> Result<Vec<MatchingPath>, Error>;
 
     /// Discover Tuprules.lua or Tuprules.tup in all parent directories of tup_cwd
-    fn locate_tuprules(&self, tup_cwd: &PathDescriptor) -> Vec<PathDescriptor>;
-
-    /// Discover paths that match glob pattern and have pattern in its contents
-    fn discover_paths_with_pattern(
+    fn locate_tuprules(
         &self,
+        tup_cwd: &PathDescriptor,
         path_buffers: &impl PathBuffers,
-        glob: &[GlobPath],
-        pattern: &str,
-    ) -> Result<Vec<MatchingPath>, Error>;
-
-    /// retain paths that have pattern in its contents
-    fn paths_with_pattern(
-        pattern: &&str,
-        mut paths: Vec<MatchingPath>,
-    ) -> Result<Vec<MatchingPath>, Error> {
-        let mut buffer = String::new();
-        let mut use_regex: Option<Regex> = None;
-        if pattern.contains("%") {
-            use_regex = Regex::new(&to_regex(pattern))
-                .expect("Failed to convert pattern to regex")
-                .into();
-        }
-
-        paths.retain(|path| {
-            let mut has_match = false;
-            if let Ok(f) = File::open(path.get_path().as_path()) {
-                let mut buf = BufReader::new(f);
-                buffer.clear();
-                while let Ok(num_read) = buf.read_line(&mut buffer) {
-                    if num_read == 0 {
-                        break;
-                    }
-                    if use_regex.is_none() && buffer.contains(pattern) {
-                        //paths[j] = path;
-                        has_match = true;
-                        break;
-                    } else if use_regex.clone().unwrap().is_match(buffer.as_str()) {
-                        //    paths[j] = path;
-                        has_match = true;
-                        break;
-                    }
-                }
-            }
-            has_match
-        });
-        //paths.resize(j, Default::default());
-        Ok(paths)
-    }
+    ) -> Vec<PathDescriptor>;
 
     /// Find Outputs
     fn get_outs(&self) -> &OutputHolder;
@@ -409,19 +367,15 @@ impl PathSearcher for DirSearcher {
                 }
             } else {
                 let base_path = glob_path.get_base_abs_path();
-                if !path_buffers
-                    .get_root_dir()
-                    .join(base_path.as_path())
-                    .is_dir()
-                {
+                let base_path_from_root = path_buffers.get_root_dir().join(base_path.as_path());
+                if !base_path_from_root.is_dir() {
                     debug!("base path {:?} is not a directory", base_path);
                     continue;
                 }
                 let globs = MyGlob::new_raw(to_match.as_path())?;
                 debug!("glob regex used for finding matches {}", globs.re());
                 debug!("base path for files matching glob: {:?}", base_path);
-                let mut walkdir =
-                    WalkDir::new(path_buffers.get_root_dir().join(base_path.as_path()));
+                let mut walkdir = WalkDir::new(base_path_from_root);
                 if glob_path.is_recursive_prefix() {
                     walkdir = walkdir.max_depth(usize::MAX);
                 } else {
@@ -470,17 +424,11 @@ impl PathSearcher for DirSearcher {
         Ok(pes)
     }
 
-    fn discover_paths_with_pattern(
+    fn locate_tuprules(
         &self,
-        path_buffers: &impl PathBuffers,
-        glob: &[GlobPath],
-        pattern: &str,
-    ) -> Result<Vec<MatchingPath>, Error> {
-        let paths = self.discover_paths(path_buffers, glob)?;
-        <DirSearcher as PathSearcher>::paths_with_pattern(&pattern, paths)
-    }
-
-    fn locate_tuprules(&self, tup_cwd: &PathDescriptor) -> Vec<PathDescriptor> {
+        tup_cwd: &PathDescriptor,
+        _path_buffers: &impl PathBuffers,
+    ) -> Vec<PathDescriptor> {
         crate::parser::locate_tuprules_from(tup_cwd.clone())
     }
 
@@ -529,15 +477,16 @@ impl DecodeInputPaths for PathExpr {
                 let glob_path = GlobPath::build_from_relative(tup_cwd, pbuf.as_path())?;
                 let glob_path_desc = glob_path.get_glob_path_desc();
                 let mut glob_paths = vec![glob_path];
+                let rel_path_desc = RelativeDirEntry::new(tup_cwd.clone(), glob_path_desc.clone());
                 for search_dir in search_dirs {
-                    //let dir = path_buffers.get_path(search_dir).clone();
-                    let glob_path = GlobPath::build_from_relative(search_dir, pbuf.as_path())?;
+                    let glob_path = GlobPath::build_from_relative_desc(search_dir, &rel_path_desc)?;
                     debug!("glob str: {:?}", glob_path.get_abs_path());
                     glob_paths.push(glob_path);
                 }
 
                 let pes = path_searcher.discover_paths(path_buffers, glob_paths.as_slice())?;
                 if pes.is_empty() {
+                    log::warn!("Could not find any paths matching {:?}", glob_path_desc);
                     vs.push(InputResolvedType::UnResolvedFile(glob_path_desc));
                 } else {
                     vs.extend(pes.into_iter().map(InputResolvedType::Deglob));
@@ -1313,10 +1262,8 @@ impl ResolvedLink {
         rule_ref: &TupLoc,
         search_dirs: &[PathDescriptor],
     ) -> Result<Vec<MatchingPath>, Error> {
-        let tup_cwd = path_buffers
-            .get_tup_path(&rule_ref.tup_path_desc)
-            .to_path_buf();
-        let rel_path = path_buffers.get_rel_path(p, tup_cwd.as_path());
+        let tup_cwd = path_buffers.get_parent_id(&rule_ref.tup_path_desc);
+        let rel_path = path_buffers.get_rel_path(p, &tup_cwd);
         let glob_path = GlobPath::build_from(p)?;
         debug!("need to resolve file:{:?}", glob_path.get_abs_path());
         let mut glob_paths = vec![glob_path];
@@ -1785,4 +1732,43 @@ pub fn parse_tupfiles(
         parser.reresolve(artifacts_all)?,
         parser.read_write_buffers(),
     ))
+}
+
+/// retain paths that have pattern in its contents
+pub fn paths_with_pattern(
+    pattern: &&str,
+    mut paths: Vec<MatchingPath>,
+) -> Result<Vec<MatchingPath>, Error> {
+    let mut buffer = String::new();
+    let mut use_regex: Option<Regex> = None;
+    if pattern.contains("%") {
+        use_regex = Regex::new(&to_regex(pattern))
+            .expect("Failed to convert pattern to regex")
+            .into();
+    }
+
+    paths.retain(|path| {
+        let mut has_match = false;
+        if let Ok(f) = File::open(path.get_path().as_path()) {
+            let mut buf = BufReader::new(f);
+            buffer.clear();
+            while let Ok(num_read) = buf.read_line(&mut buffer) {
+                if num_read == 0 {
+                    break;
+                }
+                if use_regex.is_none() && buffer.contains(pattern) {
+                    //paths[j] = path;
+                    has_match = true;
+                    break;
+                } else if use_regex.clone().unwrap().is_match(buffer.as_str()) {
+                    //    paths[j] = path;
+                    has_match = true;
+                    break;
+                }
+            }
+        }
+        has_match
+    });
+    //paths.resize(j, Default::default());
+    Ok(paths)
 }

@@ -936,11 +936,12 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
         let script_path = parse_state.get_cur_file().to_path_buf();
         let script_dir_desc = parse_state.get_tup_dir_desc();
 
+        let pbuffers = path_buffers.clone();
         let tup_script_ctx = TupScriptContext::new(parse_state, path_buffers, path_searcher);
         let mut rules = Vec::new();
         for tup_rules in tup_script_ctx
             .get_path_searcher()
-            .locate_tuprules(&script_dir_desc)
+            .locate_tuprules(&script_dir_desc, pbuffers.deref())
         {
             rules.push(tup_rules.get_path());
         }

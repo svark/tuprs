@@ -84,6 +84,10 @@ pub enum Error {
     /// negative index specific for word
     #[error("Could not find task by name:{0} at {1}")]
     TaskNotFound(String, TupLoc),
+
+    /// Failure during running a callback to fetch all groupids
+    #[error("Call back error: {0}")]
+    CallBackError(String),
 }
 
 /// Error along with the tupfile path where it occurred
@@ -118,5 +122,9 @@ impl Error {
     /// to have  have fallible implementations outside of this library
     pub fn new_path_search_error(error_str: String) -> Error {
         Error::PathSearchError(error_str.to_string())
+    }
+    /// Create an error from outside this library, when invoking a callback
+    pub fn new_callback_error(error_str: String) -> Error {
+        Error::CallBackError(error_str.to_string())
     }
 }

@@ -13,7 +13,7 @@ use tap::Pipe;
 
 use crate::buffers::{
     BufferObjects, GlobPathDescriptor, MyGlob, PathBufferObject, PathBuffers, PathDescriptor,
-    TaskDescriptor,
+    RelativeDirEntry, TaskDescriptor,
 };
 use crate::decode::{GroupInputs, TupLoc};
 use crate::errors::Error;
@@ -187,8 +187,7 @@ impl Display for MatchingPath {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
             "MatchingPath(path:{:?}, captured_globs:{:?})",
-            self.path_descriptor.get_path(),
-            self.captured_globs
+            self.path_descriptor, self.captured_globs
         ))
     }
 }
@@ -256,7 +255,15 @@ impl GlobPath {
         let ided_path = tup_cwd.join(glob_path);
         Self::build_from(&ided_path)
     }
-
+    /// append a relative path to tup_cwd, to construct a new glob search path
+    pub fn build_from_relative_desc(
+        tup_cwd: &PathDescriptor,
+        glob_path: &RelativeDirEntry,
+    ) -> Result<Self, Error> {
+        let mut ided_path = tup_cwd.clone();
+        ided_path += glob_path;
+        Self::build_from(&ided_path)
+    }
     pub(crate) fn build_from(glob_path_desc: &PathDescriptor) -> Result<GlobPath, Error> {
         let (base_path_desc, _has_glob) = get_non_pattern_prefix(glob_path_desc);
         let glob = MyGlob::new_raw(glob_path_desc.get_path().as_path())?;
@@ -564,7 +571,7 @@ impl InputResolvedType {
     }
 
     /// Extracts the actual file system path corresponding to a de-globbed input or bin or group entry
-    pub(crate) fn get_resolved_path<'a, 'b>(&'a self, _pbo: &'b PathBufferObject) -> NormalPath {
+    pub(crate) fn get_resolved_path(&self, _pbo: &PathBufferObject) -> NormalPath {
         match self {
             InputResolvedType::Deglob(e) => e.path_descriptor().get_path(),
             InputResolvedType::GroupEntry(_, p) => p.get_path(),

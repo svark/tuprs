@@ -17,18 +17,19 @@ use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use pathdiff::diff_paths;
 
 use crate::buffers::{
-    BufferObjects, EnvDescriptor, GlobPathDescriptor, GroupBufferObject, GroupPathDescriptor,
-    OutputHolder, PathBuffers, PathDescriptor, RuleDescriptor, TaskDescriptor, TupPathDescriptor,
+    BufferObjects, EnvDescriptor, GenBufferObject, GlobPathDescriptor, GroupBufferObject,
+    GroupPathDescriptor, OutputHolder, PathBuffers, PathDescriptor, RelativeDirEntry,
+    RuleDescriptor, TaskDescriptor, TupPathDescriptor,
 };
 use crate::decode::{
-    PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance,
-    TupLoc,
+    paths_with_pattern, PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask,
+    RuleFormulaInstance, TaskInstance, TupLoc,
 };
 use crate::errors::Error::RootNotFound;
 use crate::errors::{Error as Err, Error};
 use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
-use crate::paths::NormalPath;
 use crate::paths::{GlobPath, InputResolvedType};
+use crate::paths::{MatchingPath, NormalPath};
 use crate::platform::*;
 use crate::scriptloader::parse_script;
 use crate::statements::DollarExprs;
@@ -414,10 +415,15 @@ impl ExpandRun for Statement {
                                     &parse_state.get_tup_dir_desc(),
                                     arg_path,
                                 )?;
+                                let glob_path_desc = glob_path.get_glob_path_desc();
+                                let rel_path = RelativeDirEntry::new(
+                                    parse_state.get_tup_dir_desc(),
+                                    glob_path_desc,
+                                );
                                 let mut glob_paths = vec![glob_path];
                                 for dir_desc in parse_state.load_dirs.iter() {
                                     let glob_path =
-                                        GlobPath::build_from_relative(dir_desc, arg_path)?;
+                                        GlobPath::build_from_relative_desc(dir_desc, &rel_path)?;
                                     glob_paths.push(glob_path);
                                 }
                                 let matches = path_searcher
@@ -660,6 +666,17 @@ pub(crate) fn to_regex(pat: &str) -> String {
     }
     regex_pattern.push('$');
     regex_pattern
+}
+
+/// Discover paths that match glob pattern and have pattern in its contents
+fn discover_paths_with_pattern(
+    psx: &impl PathSearcher,
+    path_buffers: &impl PathBuffers,
+    glob: &[GlobPath],
+    pattern: &str,
+) -> Result<Vec<MatchingPath>, Error> {
+    let paths = psx.discover_paths(path_buffers, glob)?;
+    paths_with_pattern(&pattern, paths)
 }
 
 fn to_regex_replacement(pat: &str) -> String {
@@ -980,13 +997,14 @@ impl DollarExprs {
                 let dir = m.get_tup_dir_desc();
                 let ldirs = m.load_dirs.clone();
                 m.with_path_buffers_do(|path_buffers_mut| {
-                    let glob_path =
-                        GlobPath::build_from_relative(&dir, Path::new(gstr.as_str())).unwrap();
+                    let glob_path = GlobPath::build_from_relative(&dir, Path::new(gstr.as_str()))
+                        .expect("Failed to build a glob path");
                     let mut glob_paths = vec![glob_path];
+                    let glob_path_desc = glob_paths[0].get_glob_path_desc();
+                    let rel_path = RelativeDirEntry::new(dir.clone(), glob_path_desc);
                     for dir_desc in ldirs.iter() {
-                        let glob_path =
-                            GlobPath::build_from_relative(dir_desc, Path::new(gstr.as_str()))
-                                .unwrap();
+                        let glob_path = GlobPath::build_from_relative_desc(dir_desc, &rel_path)
+                            .expect("Failed to build a glob path");
                         glob_paths.push(glob_path); // other directories in which to look for paths
                     }
                     let paths = path_searcher
@@ -1383,16 +1401,16 @@ impl DollarExprs {
                         //m.load_dirs.push(dirid);
                         glob_paths.push(glob_path); // other directories in which to look for paths
                     }
-                    let paths = path_searcher
-                        .discover_paths_with_pattern(
-                            path_buffers_mut,
-                            glob_paths.as_slice(),
-                            pattern.as_str(),
-                        )
-                        .unwrap_or_else(|e| {
-                            log::warn!("Error while globbing {:?}: {}", glob_paths, e);
-                            vec![]
-                        });
+                    let paths = discover_paths_with_pattern(
+                        path_searcher,
+                        path_buffers_mut,
+                        glob_paths.as_slice(),
+                        pattern.as_str(),
+                    )
+                    .unwrap_or_else(|e| {
+                        log::warn!("Error while globbing {:?}: {}", glob_paths, e);
+                        vec![]
+                    });
                     paths
                 });
                 paths
@@ -1889,7 +1907,9 @@ impl LocatedStatement {
                 debug!("attempting to read tuprules");
                 let mut found = false;
                 // locate tupfiles up the heirarchy from the current Tupfile folder
-                for f in path_searcher.locate_tuprules(&parent) {
+                for f in
+                    path_searcher.locate_tuprules(&parent, parse_state.get_path_buffers().deref())
+                {
                     debug!("reading tuprules {:?}", f);
                     parse_state.switch_tupfile_and_process(
                         f.get_path().as_path(),
@@ -2313,19 +2333,14 @@ impl ReadWriteBufferObjects {
         self.get_mut().add_abs(p)
     }
     /// iterate over all the (grouppath, groupid) pairs stored in buffers during parsing
-    pub fn for_each_group<F>(&self, f: F)
-    where
-        F: FnMut(&GroupPathDescriptor),
-    {
-        let r = self.get_mut();
-        r.group_iter(f)
-    }
+
     /// Iterate over group ids
-    pub fn map_group_desc<F>(&self, f: F)
+    /// Group path is of the form folder/\<group\>, Where folder is the file system path relative to root
+    pub fn for_each_group<F>(&self, f: F) -> Result<(), crate::errors::Error>
     where
-        F: FnMut(GroupPathDescriptor) -> (),
+        F: FnMut(&GroupPathDescriptor) -> Result<(), crate::errors::Error>,
     {
-        GroupBufferObject::group_iter(f)
+        GroupBufferObject::for_each(f)
     }
 
     /// returns the rule corresponding to `RuleDescriptor`
