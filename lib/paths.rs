@@ -202,7 +202,12 @@ pub struct GlobPath {
 impl GlobPath {
     /// tup_cwd should include root (it is not relative to root but includes root)
     pub fn build_from_relative(tup_cwd: &PathDescriptor, glob_path: &Path) -> Result<Self, Error> {
-        let ided_path = tup_cwd.join(glob_path);
+        let ided_path = tup_cwd
+            .join(glob_path)
+            .ok_or(Error::PathSearchError(format!(
+                "Could not join {:?} with {:?}",
+                tup_cwd, glob_path
+            )))?;
         Self::build_from(&ided_path)
     }
     /// append a relative path to tup_cwd, to construct a new glob search path
@@ -314,6 +319,7 @@ impl OutputsAsPaths {
         self.outputs.is_empty()
     }
 
+    /// returns the location of the rule that generated these outputs
     pub(crate) fn get_rule_ref(&self) -> &TupLoc {
         &self.rule_ref
     }

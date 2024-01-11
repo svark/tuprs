@@ -20,6 +20,7 @@ use crate::buffers::{
     OutputType, PathBuffers, PathDescriptor, RelativeDirEntry, RuleDescriptor, TaskDescriptor,
     TupPathDescriptor,
 };
+use crate::errors::Error::PathSearchError;
 use crate::errors::{Error as Err, Error};
 use crate::paths::{
     ExcludeInputPaths, GlobPath, InputResolvedType, InputsAsPaths, MatchingPath, OutputsAsPaths,
@@ -53,8 +54,6 @@ pub trait PathSearcher {
     /// Merge outputs from previous outputs
     fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error>;
 }
-
-/// Normal Path packages a PathBuf, giving relative paths wrt current tup directory
 
 /// `TupLoc` keeps track of the current file being processed and rule location.
 /// This is mostly useful for error handling to let the user know we ran into problem with a rule at
@@ -275,7 +274,7 @@ pub trait OutputHandler {
         &self,
     ) -> MappedRwLockReadGuard<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>>;
     /// the parent rule that generates a output file
-    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<MappedRwLockReadGuard<'_, TupLoc>>;
+    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<TupLoc>;
     /// parent rule of each output path
     fn with_parent_rules<R, F>(&self, f: F) -> R
     where
@@ -392,7 +391,13 @@ impl PathSearcher for DirSearcher {
                     })
                     .filter(|entry| globs.is_match(entry.as_path()));
                 for path in filtered_paths {
-                    let path_desc = path_buffers.add_abs(path.as_path());
+                    let path_desc =
+                        path_buffers
+                            .add_abs(path.as_path())
+                            .ok_or(PathSearchError(format!(
+                                "Path join error on {}",
+                                path.as_path().display()
+                            )))?;
                     let captured_globs = globs.group(path.as_path());
                     debug!("found path {:?} with captures {:?}", path, captured_globs);
                     if unique_path_descs.insert(path_desc.clone()) {
@@ -493,7 +498,10 @@ impl DecodeInputPaths for PathExpr {
             }
             PathExpr::Group(dir, name) => {
                 let to_join = dir.cat();
-                let group_dir = tup_cwd.join(to_join.as_str());
+                let group_dir = tup_cwd.join(to_join.as_str()).ok_or(Error::PathNotFound(
+                    format!("{:?}/{:?}/<{:?}>", tup_cwd, to_join, name.cat()),
+                    rule_ref.clone(),
+                ))?;
                 let ref grp_desc = path_buffers.add_group_pathexpr(&group_dir, name.cat().as_str());
                 {
                     debug!(
@@ -971,8 +979,7 @@ fn excluded_patterns(
             if let PathExpr::ExcludePattern(pattern) = x {
                 let s = "^".to_string() + pattern.as_str();
                 let path = Path::new(s.as_str());
-                let pid = path_buffers.add_path_from(tup_cwd, path);
-                Some(pid)
+                path_buffers.add_path_from(tup_cwd, path)
             } else {
                 None
             }
@@ -992,10 +999,11 @@ fn paths_from_exprs(
         )
     })
     .filter(|x| !x.is_empty())
-    .map(|x| {
+    .filter_map(|x| {
         let path = PathBuf::new().join(x.to_vec().cat());
-        let pid = path_buffers.add_path_from(tup_cwd, path.as_path());
-        OutputType::new(pid)
+        path_buffers
+            .add_path_from(tup_cwd, path.as_path())
+            .map(|pid| OutputType::new(pid))
     })
     .collect()
 }
@@ -1105,13 +1113,25 @@ fn get_deglobbed_rule(
             Default::default()
         }
     });
-    let group_desc = t
-        .group
-        .as_ref()
-        .and_then(PathExpr::get_group)
-        .map(|(dir, x)| {
-            path_buffers.add_group_pathexpr(&tup_cwd.join(dir.cat().as_str()), x.cat().as_str())
-        });
+    let group = t.group.as_ref().and_then(PathExpr::get_group);
+    let group_desc = if let Some((dir, x)) = group {
+        let fullp = tup_cwd.join(dir.cat().as_str());
+        fullp
+            .as_ref()
+            .map(|p| debug!("group:{:?}/<{:?}>", p, x.cat()));
+
+        let fullp = fullp.ok_or_else(|| {
+            PathSearchError(format!(
+                "Failed to join group path {:?} with base directory {:?} for rule: {:?}",
+                tup_cwd,
+                dir.cat(),
+                rule_ref
+            ))
+        })?;
+        Some(path_buffers.add_group_pathexpr(&fullp, x.cat().as_str()))
+    } else {
+        None
+    };
 
     let rule_formula_desc =
         path_buffers.add_rule(RuleFormulaInstance::new(resolved_rule, rule_ref.clone()));

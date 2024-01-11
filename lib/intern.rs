@@ -18,9 +18,10 @@ use tinyset::Fits64;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// A `TypeHolder` is a container for a single type.
+/// A `TypeHolder` is a container for any sendable type.
 pub struct TypeHolderSend(Vec<AnySend>);
 
+/// `AnySend` is a wrapper around `Any` that is `Send`.
 struct AnySend(Box<dyn Any + Send>);
 
 struct HashSet<P>(HashMap<P, ()>);
@@ -98,7 +99,7 @@ impl TypeHolderSend {
     }
 }
 
-const INTERN_CONTAINER_COUNT: usize = 32;
+const INTERN_CONTAINER_COUNT: usize = 16;
 
 /// A `Arena` is a container for `TypeHolder`s.
 struct Arena {

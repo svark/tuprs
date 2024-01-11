@@ -1668,13 +1668,13 @@ pub(crate) fn locate_tuprules_from(cur_tupfile: PathDescriptor) -> Vec<PathDescr
         log::debug!("try:{:?}", anc);
         let rulestup = anc.get_path().as_path().join("TupRules.tup");
         if rulestup.is_file() {
-            let tupr = anc.join("Tuprules.tup");
-            v.push_front(tupr);
+            anc.join("Tuprules.tup")
+                .map(|tupr| v.push_front(tupr.clone()));
         } else {
             rulestup.with_extension("lua");
             if rulestup.is_file() {
-                let tupr = anc.join("Tuprules.lua");
-                v.push_front(tupr);
+                anc.join("Tuprules.lua")
+                    .map(|tupr| v.push_front(tupr.clone()));
             }
         }
     }

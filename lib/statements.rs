@@ -33,9 +33,9 @@ pub(crate) enum PathExpr {
     Bin(String),
     /// !macro_name reference to a macro to be expanded
     MacroRef(String),
-    // resolved glob references
+    /// resolved glob references
     DeGlob(MatchingPath),
-    // Task Ref
+    /// Task Ref
     TaskRef(Ident),
 }
 /// level of the message to display when parsing tupfiles

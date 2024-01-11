@@ -37,9 +37,13 @@ pub trait PathBuffers {
     fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> GroupPathDescriptor;
 
     /// add a path from root and fetch its unique id
-    fn add_abs<P: AsRef<Path>>(&self, path: P) -> PathDescriptor;
-    /// add a path relative to tup_cwd and fetch its unique id
-    fn add_path_from<P: AsRef<Path>>(&self, tup_cwd: &PathDescriptor, path: P) -> PathDescriptor;
+    fn add_abs<P: AsRef<Path>>(&self, path: P) -> Option<PathDescriptor>;
+    /// add a path relative to tup_cwd and fetch its unique id. It can fail if path is not relative to tup_cwd
+    fn add_path_from<P: AsRef<Path>>(
+        &self,
+        tup_cwd: &PathDescriptor,
+        path: P,
+    ) -> Option<PathDescriptor>;
 
     /// add a rule and fetch a unique id
     fn add_rule(&self, rule: RuleFormulaInstance) -> RuleDescriptor;
@@ -83,10 +87,6 @@ pub trait PathBuffers {
 
     /// Try get a bin path entry by its descriptor.
     fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &GroupPathEntry;
-
-    /// Get group ids as an iter
-    /// Get tup id corresponding to its path
-    fn add_tup_file(&self, p: &Path) -> TupPathDescriptor;
 
     /// Return root folder where tup was initialized
     fn get_root_dir(&self) -> &Path;
@@ -259,18 +259,20 @@ impl Default for DirEntry {
 
 impl PathDescriptor {
     /// build a new path descriptor by adding path components to the current path
-    pub fn join<P: AsRef<Path>>(&self, name: P) -> Self {
+    pub fn join<P: AsRef<Path>>(&self, name: P) -> Option<Self> {
         debug!("join:{:?} to {:?}", name.as_ref(), self);
-        name.as_ref().components().fold(self.clone(), |acc, x| {
-            debug!("acc:{:?}, x:{:?}", acc, x);
+        name.as_ref().components().try_fold(self.clone(), |acc, x| {
             match x {
                 Component::Normal(name) => {
                     let dir_entry = DirEntry::new(acc.to_u64(), name);
-                    Self::from_interned(Intern::from(dir_entry))
+                    Some(Self::from_interned(Intern::from(dir_entry)))
                 }
-                Component::ParentDir => acc.as_ref().get_parent_descriptor(),
-                Component::CurDir => acc,
-                _ => panic!("expected a normal path component but found:{:?} ", x),
+                Component::ParentDir => Some(acc.as_ref().get_parent_descriptor()),
+                Component::CurDir => Some(acc),
+                _ => {
+                    log::warn!("unexpected component:{:?}", x);
+                    None
+                } // Component::RootDir is unexpected here.
             }
         })
     }
@@ -591,9 +593,11 @@ impl PathBufferObject {
         &self,
         tup_cwd: &PathDescriptor,
         path: P,
-    ) -> PathDescriptor {
+    ) -> Option<PathDescriptor> {
         let joined_path = tup_cwd.join(path.as_ref());
-        debug!("joined paths to get {:?}", joined_path);
+        if joined_path.is_none() {
+            log::warn!("could not join path {:?} with {:?}", tup_cwd, path.as_ref());
+        }
         joined_path
     }
 
@@ -604,23 +608,11 @@ impl PathBufferObject {
 
     /// Store a path relative to rootdir. path is expected not to have dots
     /// descriptor is assigned by finding using size of buffer
-    pub fn add<P: AsRef<Path>>(&self, path: P) -> PathDescriptor {
+    pub fn add<P: AsRef<Path>>(&self, path: P) -> Option<PathDescriptor> {
         let tup_cwd = PathDescriptor::default();
         tup_cwd.join(path)
     }
 
-    /// add a path with a automatically assigned id
-    /*    fn add_normal_path(np: NormalPath) -> PathDescriptor {
-        let dir_entry0 = Intern::from(DirEntry::default());
-        let dir_entry = np
-            .as_path()
-            .components()
-            .fold(dir_entry0, |acc, x| {
-                let dir_entry = DirEntry::new(acc.to_u64(), x.as_os_str());
-                Intern::from(dir_entry)
-            });
-        PathDescriptor::from_interned(dir_entry)
-    } */
     fn fetch_interned_from(&self, np: &NormalPath) -> Option<PathDescriptor> {
         //self.descriptor_arena.intern(np)
         let dir_entry0 = Intern::from(DirEntry::default());
@@ -1051,15 +1043,9 @@ impl OutputHandler for OutputHolder {
         RwLockReadGuard::map(self.get(), |x| x.get_children())
     }
 
-    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<MappedRwLockReadGuard<'_, TupLoc>> {
+    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<TupLoc> {
         let r = self.get();
-        if r.get_parent_rule(o).is_some() {
-            Some(RwLockReadGuard::map(self.get(), |x| {
-                x.get_parent_rule(o).unwrap()
-            }))
-        } else {
-            None
-        }
+        r.get_parent_rule(o).map(|x| x.clone())
     }
     fn with_parent_rules<R, F>(&self, mut f: F) -> R
     where
@@ -1218,13 +1204,16 @@ impl PathBuffers for BufferObjects {
 
     /// Add a path to buffer and return its unique id in the buffer
     /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
-    fn add_abs<P: AsRef<Path>>(&self, p: P) -> PathDescriptor {
-        //let p = paths::without_curdir_prefix(p.as_ref());
+    fn add_abs<P: AsRef<Path>>(&self, p: P) -> Option<PathDescriptor> {
         self.path_bo.add(p)
     }
 
     /// Add a path to buffer and return its unique id in the buffer
-    fn add_path_from<P: AsRef<Path>>(&self, tup_cwd: &PathDescriptor, path: P) -> PathDescriptor {
+    fn add_path_from<P: AsRef<Path>>(
+        &self,
+        tup_cwd: &PathDescriptor,
+        path: P,
+    ) -> Option<PathDescriptor> {
         self.path_bo.add_relative(tup_cwd, path.as_ref())
     }
 
@@ -1238,9 +1227,13 @@ impl PathBuffers for BufferObjects {
         if p.is_absolute() {
             let num_base_comps = self.path_bo.get_root_dir().components().count();
             let p: PathBuf = p.components().skip(num_base_comps).collect();
-            self.path_bo.add(p)
+            self.path_bo
+                .add(p.as_path())
+                .expect(format!("unable to add tup path {}", p.display()).as_str())
         } else {
-            self.path_bo.add(p)
+            self.path_bo
+                .add(p)
+                .expect(format!("unable to add tup path {}", p.display()).as_str())
         }
     }
 
@@ -1336,13 +1329,6 @@ impl PathBuffers for BufferObjects {
     /// Try get a bin path entry by its descriptor.
     fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &GroupPathEntry {
         GroupBufferObject::get(gd)
-    }
-    /// Get group ids as an iter
-
-    /// Get tup id corresponding to its path
-    fn add_tup_file(&self, p: &Path) -> TupPathDescriptor {
-        //let p = paths::without_curdir_prefix(p);
-        self.path_bo.add(p)
     }
 
     /// Return root folder where tup was initialized

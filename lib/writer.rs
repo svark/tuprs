@@ -261,7 +261,7 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
             write!(
                 writer,
                 "{}/{}",
-                mp_par.to_string(),
+                mp_par.get_path().to_string(),
                 mp.path_descriptor().get().get_name()
             )
             .unwrap();

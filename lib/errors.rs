@@ -60,7 +60,7 @@ pub enum Error {
     #[error("Tup rules could not be located from {0}")]
     TupRulesNotFound(TupLoc),
     /// Tuprules file could not be located from current Tupfile
-    #[error("Include path {0} referred in {1} could not be located")]
+    #[error("Path {0} referred in {1} could not be located")]
     PathNotFound(String, TupLoc),
     /// Rule creates a directory
     #[error("Output path is a directory: {0} defined at {1}")]
