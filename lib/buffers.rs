@@ -1,6 +1,7 @@
 //! Module to hold buffers of tupfile paths, bins, groups which can be referenced by their descriptors
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
+use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
@@ -9,7 +10,6 @@ use std::ops::{AddAssign, Deref};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use hashbrown::{hash_map::Entry, HashMap, HashSet};
 use log::{debug, log_enabled};
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tinyset::Fits64;

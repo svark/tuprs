@@ -1,6 +1,7 @@
 //! This module handles decoding and de-globbing of rules
 use std::cmp::Ordering;
 use std::collections::LinkedList;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
@@ -9,7 +10,6 @@ use std::io::{BufRead, BufReader};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use hashbrown::{HashMap, HashSet};
 use log::{debug, log_enabled};
 use parking_lot::MappedRwLockReadGuard;
 use regex::{Captures, Regex};

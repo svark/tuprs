@@ -1,9 +1,8 @@
 //! This module has datastructures that capture parsed tupfile expressions
 use std::borrow::Cow;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-
-use hashbrown::HashMap;
 
 use crate::buffers::{EnvDescriptor, PathDescriptor};
 use crate::paths::MatchingPath;

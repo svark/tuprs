@@ -1,6 +1,7 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
 use std::borrow::Cow;
 use std::cell::Ref;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::ops::ControlFlow::Continue;
 use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
@@ -11,7 +12,6 @@ use std::sync::Once;
 use std::vec::Drain;
 
 use crossbeam::channel::{Receiver, Sender};
-use hashbrown::HashMap;
 use log::debug;
 use nom::AsBytes;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -2742,9 +2742,8 @@ pub fn locate_file<P: AsRef<Path>>(
 
 /// functions for testing transformations
 pub mod testing {
+    use std::collections::HashMap;
     use std::path::Path;
-
-    use hashbrown::HashMap;
 
     use crate::decode::DirSearcher;
     use crate::statements::{CleanupPaths, LocatedStatement};
