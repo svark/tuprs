@@ -948,7 +948,7 @@ fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
     Ok((s, (Statement::IncludeRules, i.slice(..offset)).into()))
 }
 
-// parse comment expresssion
+/// parse comment expresssion
 fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     let (s, _) = tag("#")(s)?;
