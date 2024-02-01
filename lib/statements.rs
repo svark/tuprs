@@ -1,14 +1,17 @@
 //! This module has datastructures that capture parsed tupfile expressions
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
+use crate::buffers::{EnvDescriptor, PathDescriptor};
 use crate::paths::MatchingPath;
-use crate::{transform, PathDescriptor};
 
 /// PathExpr are tokens that hold some meaning in tupfiles
 #[derive(PartialEq, Debug, Clone, Hash, Eq)]
 pub(crate) enum PathExpr {
+    /// New line
+    NL,
     /// a normal string
     Literal(String),
     /// spaces between paths
@@ -29,9 +32,9 @@ pub(crate) enum PathExpr {
     Bin(String),
     /// !macro_name reference to a macro to be expanded
     MacroRef(String),
-    // resolved glob references
+    /// resolved glob references
     DeGlob(MatchingPath),
-    // Task Ref
+    /// Task Ref
     TaskRef(Ident),
 }
 /// level of the message to display when parsing tupfiles
@@ -45,6 +48,14 @@ pub enum Level {
     Error,
 }
 
+impl PathExpr {
+    pub(crate) fn get_group(&self) -> Option<(&Vec<PathExpr>, &Vec<PathExpr>)> {
+        match self {
+            PathExpr::Group(g, g1) => Some((g, g1)),
+            _ => None,
+        }
+    }
+}
 impl Default for Level {
     fn default() -> Self {
         Level::Info
@@ -135,6 +146,10 @@ pub(crate) enum DollarExprs {
     If(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
     // $(call name, arg1, arg2, ...)
     Call(Vec<PathExpr>, Vec<Vec<PathExpr>>),
+    // $(shell ..)
+    Shell(Vec<PathExpr>),
+    // $(grep-files content-pattern, glob-pattern, paths, ...)
+    GrepFiles(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
 }
 
 /// represents the equality condition in if(n)eq (LHS,RHS)
@@ -147,7 +162,7 @@ pub(crate) struct EqCond {
 
 /// name of a variable in let expressions such as X=1 or
 /// &X = 1
-#[derive(PartialEq, Debug, Clone, Hash, Eq)]
+#[derive(PartialEq, Debug, Clone, Hash, Eq, Default)]
 pub(crate) struct Ident {
     pub name: String,
 }
@@ -170,8 +185,23 @@ impl Ident {
 }
 /// variable being checked for defined
 #[derive(PartialEq, Debug, Clone)]
-pub(crate) struct CheckedVar(pub Ident, pub bool);
+pub(crate) struct CheckedVar {
+    var: Ident,
+    not_cond: bool,
+}
 
+impl CheckedVar {
+    pub fn new(v: Ident, not_cond: bool) -> Self {
+        Self { var: v, not_cond }
+    }
+    pub fn is_not_cond(&self) -> bool {
+        self.not_cond
+    }
+
+    pub fn get_var(&self) -> &Ident {
+        &self.var
+    }
+}
 /// represents source of a link (tup rule)
 #[derive(PartialEq, Debug, Clone, Default)]
 pub(crate) struct Source {
@@ -256,6 +286,17 @@ pub struct Env {
     set: BTreeSet<String>,
 }
 
+impl Display for Env {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut s = String::new();
+        for var in self.set.iter() {
+            s.push_str(var);
+            s.push_str(":");
+        }
+        s.pop();
+        write!(f, "{}", s)
+    }
+}
 impl Env {
     /// create list of env vars from a map
     pub fn new(map: HashMap<String, String>) -> Self {
@@ -282,8 +323,8 @@ impl Env {
         hmap
     }
     /// return a set of env vars
-    pub fn get_keys(&self) -> &BTreeSet<String> {
-        &self.set
+    pub fn get_keys(&self) -> impl Iterator<Item = &String> {
+        self.set.iter()
     }
     /// returns value of env var if present
     pub fn get_env_var(&self, k: &str) -> Option<String> {
@@ -294,38 +335,70 @@ impl Env {
         }
     }
 }
-/// ```EnvDescriptor``` is a unique id to current environment for a rule
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
-pub struct EnvDescriptor(usize);
-impl From<usize> for EnvDescriptor {
-    fn from(i: usize) -> Self {
-        Self(i)
-    }
+
+#[derive(PartialEq, Debug, Clone)]
+pub(crate) struct CondThenStatements {
+    pub(crate) eq: EqCond,
+    pub(crate) then_statements: Vec<LocatedStatement>,
 }
-impl From<EnvDescriptor> for usize {
-    fn from(e: EnvDescriptor) -> Self {
-        e.0
-    }
-}
-impl Default for EnvDescriptor {
-    fn default() -> Self {
-        Self(usize::MAX)
+
+impl CleanupPaths for CondThenStatements {
+    fn cleanup(&mut self) {
+        self.eq.lhs.cleanup();
+        self.eq.rhs.cleanup();
+        self.then_statements.cleanup();
     }
 }
 
-impl EnvDescriptor {
-    /// create EnvDescriptor from usize
-    pub fn new(i: usize) -> Self {
-        Self(i)
-    }
-    /// copy id from other
-    pub fn setid(&mut self, o: &EnvDescriptor) {
-        self.0 = o.0;
+#[derive(PartialEq, Debug, Clone)]
+pub(crate) struct CheckedVarThenStatements {
+    pub(crate) checked_var: CheckedVar,
+    pub(crate) then_statements: Vec<LocatedStatement>,
+}
+
+impl CleanupPaths for CheckedVarThenStatements {
+    fn cleanup(&mut self) {
+        self.then_statements.cleanup();
     }
 }
-impl Display for EnvDescriptor {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{0}({1})", stringify!($t), self.0)
+
+#[derive(PartialEq, Debug, Clone, Default)]
+pub(crate) struct TaskDetail {
+    target: Ident,
+    deps: Vec<PathExpr>,
+    body: Vec<Vec<PathExpr>>,
+    search_dirs: Vec<PathDescriptor>,
+}
+
+impl TaskDetail {
+    pub(crate) fn new(target: Ident, deps: Vec<PathExpr>, body: Vec<Vec<PathExpr>>) -> Self {
+        Self {
+            target,
+            deps,
+            body,
+            search_dirs: Vec::new(),
+        }
+    }
+
+    pub(crate) fn get_target(&self) -> &Ident {
+        &self.target
+    }
+    pub(crate) fn get_deps(&self) -> &Vec<PathExpr> {
+        &self.deps
+    }
+    pub(crate) fn get_body(&self) -> &Vec<Vec<PathExpr>> {
+        &self.body
+    }
+    pub(crate) fn get_mut_body(&mut self) -> &mut Vec<Vec<PathExpr>> {
+        &mut self.body
+    }
+
+    pub(crate) fn get_mut_deps(&mut self) -> &mut Vec<PathExpr> {
+        &mut self.deps
+    }
+
+    pub(crate) fn get_search_dirs(&self) -> &Vec<PathDescriptor> {
+        &self.search_dirs
     }
 }
 
@@ -338,21 +411,25 @@ pub(crate) enum Statement {
         is_append: bool,
         is_empty_assign: bool,
     },
-    AsignRefExpr {
+    LazyAssignExpr {
+        left: Ident,
+        right: Vec<PathExpr>,
+    },
+    AssignRefExpr {
         left: Ident,
         right: Vec<PathExpr>,
         is_append: bool,
         is_empty_assign: bool,
     },
     IfElseEndIf {
-        eq: EqCond,
-        then_statements: Vec<LocatedStatement>,
-        else_statements: Vec<LocatedStatement>,
+        then_elif_statements: Vec<CondThenStatements>,
+        // many if[n]eq (cond) or else if[n]eq(cond) statements that precede else or endif
+        else_statements: Vec<LocatedStatement>, // final else block
     },
     IfDef {
-        checked_var: CheckedVar,
-        then_statements: Vec<LocatedStatement>,
-        else_statements: Vec<LocatedStatement>,
+        checked_var_then_statements: Vec<CheckedVarThenStatements>,
+        // many ifdef or else if statements that precede  else or endif
+        else_statements: Vec<LocatedStatement>, // final else block
     },
     IncludeRules,
     Include(Vec<PathExpr>),
@@ -367,15 +444,9 @@ pub(crate) enum Statement {
     /// Define a multi-line variable
     /// define name { body }
     /// body is a list of statements
-    Define(Ident, String),
-    Task(
-        Ident,
-        Vec<PathExpr>,
-        Vec<Vec<PathExpr>>,
-        Vec<PathDescriptor>,
-    ),
+    Define(Ident, Vec<PathExpr>),
+    Task(TaskDetail),
     EvalBlock(Vec<PathExpr>),
-    SearchPaths(Vec<PathExpr>),
 }
 
 // we could have used `Into' or 'ToString' trait
@@ -399,6 +470,7 @@ impl CleanupPaths for Vec<PathExpr> {
         let mut newpesall = Vec::new();
         let mut was_lit = false;
         let mut was_sp = false;
+        let mut was_nl = false;
         for pe in self.iter() {
             if let PathExpr::Quoted(vs) = pe {
                 let mut vs = vs.clone();
@@ -418,11 +490,18 @@ impl CleanupPaths for Vec<PathExpr> {
             if matches!(pe, PathExpr::Sp1) {
                 was_sp = true;
             } else if was_sp {
-                newpesall.push(PathExpr::Sp1);
+                newpesall.push(PathExpr::Sp1); // keep only one space
+                was_sp = false;
+            }
+            if matches!(pe, PathExpr::NL) {
+                was_nl = true;
+            } else if was_nl {
+                newpesall.push(PathExpr::NL); // keep only one newline
+                was_nl = false;
             }
             if !matches!(
                 pe,
-                PathExpr::Sp1 | PathExpr::Literal(_) | PathExpr::Quoted(_)
+                PathExpr::NL | PathExpr::Sp1 | PathExpr::Literal(_) | PathExpr::Quoted(_)
             ) {
                 newpesall.push(pe.clone());
             }
@@ -460,17 +539,30 @@ impl CleanupPaths for Statement {
             } => {
                 right.cleanup();
             }
-            Statement::AsignRefExpr {
+            Statement::LazyAssignExpr {
+                left: _left, right, ..
+            } => {
+                right.cleanup();
+            }
+            Statement::AssignRefExpr {
                 left: _left, right, ..
             } => {
                 right.cleanup();
             }
             Statement::IfElseEndIf {
-                eq: _,
-                then_statements,
+                then_elif_statements,
                 else_statements,
             } => {
-                then_statements.cleanup();
+                then_elif_statements.iter_mut().for_each(|i| i.cleanup());
+                else_statements.cleanup();
+            }
+            Statement::IfDef {
+                checked_var_then_statements,
+                else_statements,
+            } => {
+                checked_var_then_statements
+                    .iter_mut()
+                    .for_each(|i| i.cleanup());
                 else_statements.cleanup();
             }
             Statement::Include(r) => {
@@ -488,10 +580,14 @@ impl CleanupPaths for Statement {
             Statement::Run(v) => {
                 v.cleanup();
             }
-            Statement::SearchPaths(v) => {
+            Statement::EvalBlock(v) => {
                 v.cleanup();
             }
-            _ => (),
+            Statement::Task(t) => {
+                t.get_mut_body().iter_mut().for_each(|x| x.cleanup());
+                t.get_mut_deps().cleanup();
+            }
+            _ => {}
         }
     }
 }
@@ -510,15 +606,7 @@ impl CleanupPaths for Vec<LocatedStatement> {
         }
     }
 }
-impl Cat for &Vec<PathExpr> {
-    fn cat(self) -> String {
-        self.iter()
-            .map(|x| x.cat_ref())
-            .fold(String::new(), |x, y| x + y.as_ref())
-    }
-}
 
-// conversion to from string
 impl From<String> for PathExpr {
     fn from(s: String) -> PathExpr {
         PathExpr::Literal(s)
@@ -531,39 +619,6 @@ impl From<DollarExprs> for PathExpr {
     }
 }
 
-impl Cat for &PathExpr {
-    fn cat(self) -> String {
-        match self {
-            PathExpr::Literal(x) => x.clone(),
-            PathExpr::Sp1 => " ".to_string(),
-            PathExpr::Quoted(v) => format!("\"{}\"", v.cat()),
-            PathExpr::Group(p, g) => format!("{}<{}>", p.cat(), g.cat()),
-            PathExpr::DeGlob(mp) => format!("{:?}", transform::get_path_with_fsep(mp.get_path())),
-            PathExpr::TaskRef(name) => format!("&task:/{}", name.to_string()),
-            _ => String::new(),
-        }
-    }
-}
-
-impl CatRef for PathExpr {
-    fn cat_ref(&self) -> Cow<str> {
-        match self {
-            PathExpr::Literal(x) => Cow::Borrowed(x.as_str()),
-            PathExpr::DeGlob(mp) => mp.get_path().to_string_lossy(),
-            PathExpr::Sp1 => Cow::Borrowed(" "),
-            _ => Cow::Borrowed(""),
-        }
-    }
-}
-impl Cat for &RuleFormula {
-    fn cat(self) -> String {
-        if self.description.is_empty() {
-            self.formula.cat()
-        } else {
-            format!("^{}^ {}", self.description.cat(), self.formula.cat())
-        }
-    }
-}
 impl RuleFormula {
     #[allow(dead_code)]
     pub(crate) fn new(description: String, formula: String) -> RuleFormula {
@@ -614,6 +669,7 @@ impl Cat for &Statement {
             ) => {
                 format!("{} {}: {}", r.description.cat(), r.formula.cat(), pos)
             }
+            Statement::EvalBlock(body) => body.cat(),
             _ => "".to_owned(),
         }
     }

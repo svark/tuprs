@@ -1,7 +1,6 @@
 //! Module for tracking errors during tupfile parsing
 use std::io::Error as IoErr;
 
-use regex::Regex;
 use thiserror::Error as ThisError;
 
 use crate::buffers::{PathDescriptor, TupPathDescriptor};
@@ -24,7 +23,7 @@ pub enum Error {
     /// Macro with given name could not found for expansion
     #[error("Unknown macro reference:{0}")]
     UnknownMacroRef(String, TupLoc),
-    /// Dependency cylcle  between rules of tupfile because groups refer to one another
+    /// Dependency cycle  between rules of tupfile because groups refer to one another
     #[error("Dependency cycle between {0}, {1}")]
     DependencyCycle(String, String),
     /// Tupfile.ini could not be found, hence root directory could not established
@@ -61,7 +60,7 @@ pub enum Error {
     #[error("Tup rules could not be located from {0}")]
     TupRulesNotFound(TupLoc),
     /// Tuprules file could not be located from current Tupfile
-    #[error("Include path {0} referred in {1} could not be located")]
+    #[error("Path {0} referred in {1} could not be located")]
     PathNotFound(String, TupLoc),
     /// Rule creates a directory
     #[error("Output path is a directory: {0} defined at {1}")]
@@ -85,6 +84,10 @@ pub enum Error {
     /// negative index specific for word
     #[error("Could not find task by name:{0} at {1}")]
     TaskNotFound(String, TupLoc),
+
+    /// Failure during running a callback to fetch all groupids
+    #[error("Call back error: {0}")]
+    CallBackError(String),
 }
 
 /// Error along with the tupfile path where it occurred
@@ -120,22 +123,8 @@ impl Error {
     pub fn new_path_search_error(error_str: String) -> Error {
         Error::PathSearchError(error_str.to_string())
     }
-    pub(crate) fn human_readable(&self, path_buffers: &impl crate::buffers::PathBuffers) -> String {
-        let r = Regex::new(r"TupPathDescriptor\((\d+)\)").unwrap();
-
-        let selstr = self.to_string();
-        let replacement = r.replace_all(selstr.as_str(), |caps: &regex::Captures| {
-            let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
-            let path = path_buffers.get_tup_path(&TupPathDescriptor::new(num));
-            path.to_string_lossy().to_string()
-        });
-
-        let r = Regex::new(r"PathDescriptor\((\d+)\)").unwrap();
-        r.replace_all(replacement.as_ref(), |caps: &regex::Captures| {
-            let num = caps.get(1).unwrap().as_str().parse::<usize>().unwrap();
-            let path = path_buffers.get_path(&PathDescriptor::new(num));
-            path.as_path().to_string_lossy().to_string()
-        })
-        .to_string()
+    /// Create an error from outside this library, when invoking a callback
+    pub fn new_callback_error(error_str: String) -> Error {
+        Error::CallBackError(error_str.to_string())
     }
 }

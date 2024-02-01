@@ -1,0 +1,34 @@
+S = a.cxx b.c
+S += dir/c.cpp
+
+S ?= d.C
+
+O = $(patsubst %.cxx,%.o,$(S))
+O += $(patsubst %.cpp,%.o,$(O))
+
+FILES :=  ./file.c file.o file.h readme.txt
+SOURCES := $(filter %.c, $(FILES))
+SOURCES := $(subst \,/,$(SOURCES))
+CXX_SOURCES := $(filter-out %.c, $(S))
+
+TX = a1.tx a2.tx
+GEN_FILES := $(addsuffix x, $(addprefix ../gen/,$(subst a,g,$(subst tx,cx,$(TX)))))
+GEN_FILES := $(GEN_FILES:%.cxx=%.gen)
+sep:= :
+empty:=
+space:= $(empty) $(empty)
+FILES_JOINED := $(subst $(space),$(sep), $(FILES))
+FILES_JOINED_STRIPPED := $(FILES_JOINED) $(space)
+FILES_JOINED_STRIPPED := $(strip $(FILES_JOINED_STRIPPED))
+
+SUBDIR = dir subdir subdir2
+MORE_SUBDIR = $(foreach dir,$(SUBDIR),$(dir) $(dir)/private)
+LOCATE_FILES = $(grep-files "main" %.h $(MORE_SUBDIR))
+
+
+
+
+
+
+
+

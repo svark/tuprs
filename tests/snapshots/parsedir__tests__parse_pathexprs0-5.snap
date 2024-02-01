@@ -1,0 +1,5 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: "v2.get(\"GEN_FILES\").unwrap().join(\" \")"
+---
+../gen/g1.gen ../gen/g2.gen

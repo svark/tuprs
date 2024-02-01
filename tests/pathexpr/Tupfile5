@@ -1,0 +1,16 @@
+# Source files
+DEBUG = 1
+SRCS= *.cxx
+SRCS +=*.cpp
+# rule macros
+!CC = |> cl %f /Fout:a.o |>
+# rules split over multiple lines, and rules using macros
+# pathexprs addprefix and addsuffix
+: foreach $(SRCS) |>\
+     !CC  %<grp> %<grp2> |> $(addprefix %B, $(addsuffix o, .))\
+      | command.pch ../<grp3>
+# rules with recursive glob inputs
+:  **/ib*.txt |> cp %f %o |> out%h/o%g.txt
+# rules with no inputs
+# rules with description string
+:|> ^ touch %o^ touch %o |> out.txt

@@ -1,0 +1,5 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: "v2.get(\"FILES_JOINED\").unwrap().join(\" \")"
+---
+./file.c:file.o:file.h:readme.txt

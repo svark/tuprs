@@ -1,0 +1,16 @@
+# tupfile include
+include TupDefines4.tup
+ifeq ($(DEBUG),1)
+# rules with foreach
+ :foreach $(SRCS)  ../<grp> ../<grp2> |> !CC %<grp> %<grp2> \
+ |> | command.pch  ^exclude_pattern.* {objs}
+ # ampersand variables
+ &v := src/main.rs
+ # ampersand variables as rule inputs that are split over multiple lines
+:&(v) |> type %f > file.txt |> \
+file.txt |
+# no inputs or outputs
+: |> type &(v) |>
+else
+  x+=eere #append
+endif

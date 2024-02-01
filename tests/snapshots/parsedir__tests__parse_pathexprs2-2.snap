@@ -1,0 +1,5 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: "v2.get(\"CFLAGS\").unwrap().join(\" \")"
+---
+-DEBUG -Zm -Zi
