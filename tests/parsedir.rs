@@ -30,7 +30,10 @@ mod tests {
 
         outs.pop();
 
-        insta::assert_json_snapshot!(strings);
+        insta::with_settings!({filters => vec![(r"env: Descriptor\(.*\)", "env: Ignored")]}, {
+            insta::assert_json_snapshot!(strings);
+            }
+        );
     }
 
     #[test]
@@ -47,7 +50,11 @@ mod tests {
             }
         }
 
-        insta::assert_json_snapshot!(outs);
+        if cfg!(target_os = "windows") {
+            insta::assert_json_snapshot!("windows_script", outs);
+        }else {
+            insta::assert_json_snapshot!("linux_script", outs);
+        }
     }
 
     #[cfg(test)]

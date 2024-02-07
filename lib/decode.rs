@@ -7,7 +7,6 @@ use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use log::{debug, log_enabled};
@@ -511,7 +510,7 @@ impl DecodeInputPaths for PathExpr {
                     );
                     if let Some(paths) = path_searcher.get_outs().get().get_group(grp_desc) {
                         vs.extend(
-                            paths.deref().iter().map(|x| {
+                            paths.iter().map(|x| {
                                 InputResolvedType::GroupEntry(grp_desc.clone(), x.clone())
                             }),
                         )
@@ -525,7 +524,7 @@ impl DecodeInputPaths for PathExpr {
                 let ref bin_desc = path_buffers.add_bin_path_expr(tup_cwd, b.as_ref());
                 debug!("resolving bin: {:?}/{:?}", tup_cwd, b.as_str());
                 if let Some(paths) = path_searcher.get_outs().get().get_bin(bin_desc) {
-                    for p in paths.deref() {
+                    for p in paths {
                         vs.push(InputResolvedType::BinEntry(bin_desc.clone(), p.clone()))
                     }
                 } else {
