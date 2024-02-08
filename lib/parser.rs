@@ -26,7 +26,7 @@ use crate::statements::*;
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
 
-const END_KEYWORDS: [&str; 3] = ["else", "endif", "endef"];
+const END_KEYWORDS: [&str; 4] = ["else", "endif", "endef", "endtask"];
 fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
 }
@@ -831,8 +831,8 @@ fn parse_include(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = tag("include")(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context("include statement", cut(parse_pathexpr_list_until_ws_plus))(s)?;
-    let (s, _) = multispace0(s)?;
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     log::debug!("parsed include: {:?} ", r.0);
     Ok((s, (Statement::Include(r.0), i.slice(..offset)).into()))
 }
@@ -863,9 +863,9 @@ fn parse_export(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = tag("export")(s)?;
     let (s, _) = sp1(s)?;
     let (s, r) = context("export expression", cut(take_while(is_ident)))(s)?;
+    let offset = i.offset(&s);
     let (s, _) = multispace0(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
-    let offset = i.offset(&s);
     Ok((
         s,
         (Statement::Export(raw.to_owned()), i.slice(..offset)).into(),
@@ -892,8 +892,8 @@ fn parse_import(i: Span) -> IResult<Span, LocatedStatement> {
         tag("="),
         preceded(multispace0, cut(take_while(is_ident))),
     ))(s)?;
-    let (s, _) = multispace0(s)?;
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     let default_raw = def.and_then(|x| from_utf8(x).ok());
     Ok((
         s,
@@ -917,8 +917,8 @@ fn parse_preload(i: Span) -> IResult<Span, LocatedStatement> {
         cut(parse_pelist_till_line_end_with_ws),
     )(s)?;
     log::debug!("parsed preload: {:?} ", r.0);
-    let (s, _) = multispace0(s)?;
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     Ok((s, (Statement::Preload(r.0), i.slice(..offset)).into()))
 }
 
@@ -932,8 +932,8 @@ fn parse_run(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = sp1(s)?;
     // run  script paths
     let (s, r) = context("run expression", cut(parse_pelist_till_line_end_with_ws))(s)?;
-    let (s, _) = multispace0(s)?;
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     log::debug!("parsed run: {:?} ", r.0);
     Ok((s, (Statement::Run(r.0), i.slice(..offset)).into()))
 }
@@ -943,6 +943,7 @@ fn parse_include_rules(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = tag("include_rules")(s)?;
     let (s, _) = complete(ws0_line_ending)(s)?;
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     log::debug!("parsed include_rules");
     Ok((s, (Statement::IncludeRules, i.slice(..offset)).into()))
 }
@@ -952,8 +953,9 @@ fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     let (s, _) = tag("#")(s)?;
     let (s, _) = opt(is_not("\n\r"))(s)?;
+    let offset = i.offset(&s);
     let (s, _) = line_ending(s)?;
-    Ok((s, (Statement::Comment, i).into()))
+    Ok((s, (Statement::Comment, i.slice(..offset)).into()))
 }
 
 /// task(name) : dep1 dep2..
@@ -981,6 +983,7 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
         cut(many_till(read_lines, tag("endtask"))),
     )(s)?;
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     Ok((
         s,
         (
@@ -1071,6 +1074,7 @@ fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
     body.push(PathExpr::NL);
     log::debug!("with body: {:?}", body);
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     Ok((
         s,
         (Statement::Define(ident, body), i.slice(..offset)).into(),
@@ -1103,6 +1107,7 @@ fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
         }
     }
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     Ok((s, (Statement::EvalBlock(body), i.slice(..offset)).into()))
 }
 
@@ -1122,6 +1127,7 @@ fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, r) = context("rhs", cut(complete(parse_pelist_till_line_end_with_ws)))(s)?;
     log::debug!("and rhs: {:?}", r);
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     Ok((
         s,
         (
@@ -1222,7 +1228,7 @@ pub(crate) fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span
 
 fn parse_output_delim(i: Span) -> IResult<Span, Span> {
     alt((
-        complete(line_ending),
+        complete(peek(line_ending)),
         complete(map(peek(one_of(*BRKTAGSNOWS)), |_| i)),
         complete(peek(parse_pathexpr_raw_angle)),
     ))(i)
@@ -1362,6 +1368,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     let macroname_str = from_utf8(macroname).unwrap_or_default();
     log::debug!("built macro:{}", macroname_str);
     let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
     Ok((
         s,
         (
