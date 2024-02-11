@@ -36,7 +36,7 @@ use crate::statements::DollarExprs;
 use crate::statements::PathExpr::DollarExprs as DExpr;
 use crate::statements::*;
 use crate::transform::ParseContext::Expression;
-use crate::writer::words_from_pelist;
+use crate::writer::{cat_literals, words_from_pelist};
 
 fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     static START: Once = Once::new();
@@ -1025,11 +1025,11 @@ impl DollarExprs {
             DollarExprs::RealPath(ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
                 let tup_dir = m.get_tup_dir_desc();
-                vs.iter()
+                vs.split(is_ws)
                     .filter_map(|v| {
-                        let s = v.cat_ref();
+                        let s = v.cat();
                         if !s.is_empty() {
-                            let p = Path::new(s.as_ref());
+                            let p = Path::new(s.as_str());
                             let real_path = tup_dir.join(p);
                             let x = real_path.map(|x| x.get_path().to_string().into());
                             x
@@ -1041,11 +1041,11 @@ impl DollarExprs {
             }
             DollarExprs::BaseName(ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
-                vs.iter()
+                vs.split(is_ws)
                     .filter_map(|v| {
-                        let s = v.cat_ref();
+                        let s = cat_literals(v);
                         if !s.is_empty() {
-                            let p = Path::new(s.as_ref());
+                            let p = Path::new(s.as_str());
                             let base_name = p.file_stem().unwrap_or_else(|| {
                                 panic!("failed to get base name from path: {:?}", p)
                             });
@@ -1061,11 +1061,11 @@ impl DollarExprs {
             }
             DollarExprs::NotDir(ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
-                vs.iter()
+                vs.split(is_ws)
                     .filter_map(|v| {
-                        let s = v.cat_ref();
+                        let s = cat_literals(v);
                         if !s.is_empty() {
-                            let p = Path::new(s.as_ref());
+                            let p = Path::new(s.as_str());
                             let file_name = p.file_name().unwrap_or_else(|| {
                                 panic!("failed to get base name from path: {:?}", p)
                             });
@@ -1084,11 +1084,11 @@ impl DollarExprs {
                         .map_or(false, |s| s.ends_with('/'))
                 }
                 let vs = vs
-                    .iter()
+                    .split(is_ws)
                     .filter_map(|v| {
-                        let s = v.cat_ref();
+                        let s = cat_literals(v);
                         if !s.is_empty() {
-                            let p = Path::new(s.as_ref());
+                            let p = Path::new(s.as_str());
                             Some(if has_trailing_slash(p) {
                                 let mut dirpart = p.to_string_lossy().to_string();
                                 dirpart.push('_');
