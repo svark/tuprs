@@ -1,6 +1,5 @@
 //! Crate for parsing a tupfile and thereafter de-globbing and decoding variables in a Tupfile
 #![warn(missing_docs)]
-extern crate bimap;
 extern crate bstr;
 extern crate crossbeam;
 #[cfg(test)]
