@@ -21,13 +21,17 @@ mod tests {
         let (arts, _rwbuffers) = parse_dir(d.as_path()).expect("failed to parse!");
         let rlinks = arts.rules_by_tup();
         let mut outs = String::new();
-        let strings = rlinks
+        let mut strings = rlinks
             .iter()
             .map(|rl| rl.iter())
             .flatten()
-            .map(|r| r.human_readable())
             .collect::<Vec<_>>();
 
+        strings.sort_by(|a, b| a.cmp(b));
+        let strings = strings
+            .iter()
+            .map(|r| r.human_readable())
+            .collect::<Vec<_>>();
         outs.pop();
 
         insta::with_settings!({filters => vec![(r"env: Descriptor\(.*\)", "env: Ignored")]}, {
@@ -52,7 +56,7 @@ mod tests {
 
         if cfg!(target_os = "windows") {
             insta::assert_json_snapshot!("windows_script", outs);
-        }else {
+        } else {
             insta::assert_json_snapshot!("linux_script", outs);
         }
     }

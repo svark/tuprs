@@ -57,7 +57,7 @@ pub trait PathSearcher {
 /// `TupLoc` keeps track of the current file being processed and rule location.
 /// This is mostly useful for error handling to let the user know we ran into problem with a rule at
 /// a particular line
-#[derive(Debug, Default, PartialEq, Eq, Clone, Hash)]
+#[derive(Debug, Default, PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
 pub struct TupLoc {
     tup_path_desc: TupPathDescriptor,
     loc: Loc,
@@ -65,7 +65,7 @@ pub struct TupLoc {
 
 /// `RuleFormulaInstance` stores both rule formula and its whereabouts(`TupLoc`) in a Tupfile
 /// Caller locations are stored in the linked list
-#[derive(Debug, Default, PartialEq, Eq, Clone, Hash)]
+#[derive(Debug, Default, PartialEq, Eq, Clone, Hash, Ord, PartialOrd)]
 pub struct RuleFormulaInstance {
     rule_formula: RuleFormula,
     rule_ref: LinkedList<TupLoc>,
@@ -1153,7 +1153,7 @@ fn get_deglobbed_rule(
 /// This means that paths stored here are file paths that are or expected to be in file system.
 /// Rule string is also expect to be executable or ready for persistence with all  symbols and variable references resolved
 /// Group references are an exception and may not be resolved until all the tupfiles are read.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Ord)]
 pub struct ResolvedLink {
     /// Inputs that are read by a rule that can be used for %f substitution
     primary_sources: Vec<InputResolvedType>,
@@ -1180,6 +1180,12 @@ pub struct ResolvedLink {
     env: EnvDescriptor,
     /// Vpaths
     search_dirs: Vec<PathDescriptor>,
+}
+
+impl PartialOrd for ResolvedLink {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl ResolvedLink {

@@ -229,7 +229,17 @@ impl Eq for DirEntry {}
 
 impl Ord for DirEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.path_sym, self.name.as_ref()).cmp(&(other.path_sym, other.name.as_ref()))
+        if self.path_sym == other.path_sym {
+            return self.name.as_ref().cmp(other.name.as_ref());
+        } else if self.path_sym == 0 {
+            return std::cmp::Ordering::Less;
+        } else if other.path_sym == 0 {
+            return std::cmp::Ordering::Greater;
+        } else {
+            return self
+                .get_parent_descriptor()
+                .cmp(&other.get_parent_descriptor());
+        }
     }
 }
 

@@ -118,7 +118,7 @@ impl<'a> From<&'a NormalPath> for &'a Path {
 }
 
 /// A Matching path id discovered using glob matcher along with captured groups
-#[derive(Debug, Default, Eq, PartialEq, Clone, Hash)]
+#[derive(Debug, Default, Eq, PartialEq, Clone, Hash, Ord, PartialOrd)]
 pub struct MatchingPath {
     /// path that matched a glob
     path_descriptor: PathDescriptor,
@@ -480,7 +480,7 @@ impl InputsAsPaths {
 
 /// Types of decoded input to rules which includes
 /// files in glob, group paths, bin entries
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Ord, PartialOrd)]
 pub enum InputResolvedType {
     /// DeGlob contains a path that matched glob strings or plain inputs passed to rule
     Deglob(MatchingPath),

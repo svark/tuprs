@@ -8,7 +8,7 @@ use crate::buffers::{EnvDescriptor, PathDescriptor};
 use crate::paths::MatchingPath;
 
 /// PathExpr are tokens that hold some meaning in tupfiles
-#[derive(PartialEq, Debug, Clone, Hash, Eq)]
+#[derive(PartialEq, Debug, Clone, Hash, Eq, Ord, PartialOrd)]
 pub(crate) enum PathExpr {
     /// New line
     NL,
@@ -63,7 +63,7 @@ impl Default for Level {
 }
 /// Variable tracking location of Statement (usually a rule) in a Tupfile
 /// see also [TupLoc] that keeps track of file in which the location is referred
-#[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash)]
+#[derive(PartialEq, Debug, Clone, Copy, Eq, Default, Hash, PartialOrd, Ord)]
 pub struct Loc {
     line: u32,
     col: u32,
@@ -99,7 +99,7 @@ impl From<crate::parser::Span<'_>> for Loc {
     }
 }
 
-#[derive(PartialEq, Debug, Clone, Hash, Eq)]
+#[derive(PartialEq, Debug, Clone, Hash, Eq, Ord, PartialOrd)]
 pub(crate) enum DollarExprs {
     /// $(EXPR)
     DollarExpr(String),
@@ -162,7 +162,7 @@ pub(crate) struct EqCond {
 
 /// name of a variable in let expressions such as X=1 or
 /// &X = 1
-#[derive(PartialEq, Debug, Clone, Hash, Eq, Default)]
+#[derive(PartialEq, Debug, Clone, Hash, Eq, Default, Ord, PartialOrd)]
 pub(crate) struct Ident {
     pub name: String,
 }
@@ -226,7 +226,7 @@ pub(crate) struct Target {
     pub bin: Option<PathExpr>,
 }
 /// formula for a tup rule
-#[derive(PartialEq, Debug, Clone, Default, Hash, Eq)]
+#[derive(PartialEq, Debug, Clone, Default, Hash, Eq, Ord, PartialOrd)]
 pub(crate) struct RuleFormula {
     /// Description of a rule
     pub description: Vec<PathExpr>,
@@ -281,7 +281,7 @@ impl LocatedStatement {
     }
 }
 /// List of env vars that are to be passed for rule execution
-#[derive(PartialEq, Eq, Debug, Clone, Default, Hash)]
+#[derive(PartialEq, Eq, Debug, Clone, Default, Hash, Ord, PartialOrd)]
 pub struct Env {
     set: BTreeSet<String>,
 }
