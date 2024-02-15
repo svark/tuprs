@@ -383,7 +383,7 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
                 write_pathexprs(writer, cmd);
                 write!(writer, "\n").unwrap();
             }
-            write!(writer, "endef\n").unwrap();
+            write!(writer, "endtask\n").unwrap();
         }
         Statement::EvalBlock(body) => {
             write_pathexprs(writer, body);
