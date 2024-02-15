@@ -193,7 +193,7 @@ impl TaskInstance {
     }
 }
 
-impl std::fmt::Display for TupLoc {
+impl Display for TupLoc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}: {}", self.tup_path_desc, self.loc)
     }
@@ -250,7 +250,7 @@ impl RuleFormulaInstance {
     }
 }
 
-impl std::fmt::Display for RuleFormulaInstance {
+impl Display for RuleFormulaInstance {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "?{:?}? {:?}", self.rule_ref, self.rule_formula)
     }
