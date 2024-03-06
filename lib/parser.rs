@@ -2,26 +2,30 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
+use bstr::io::BufReadExt;
+use log::log_enabled;
 use nom::bytes::complete::{is_a, is_not};
 use nom::character::complete::{line_ending, multispace0, space0, space1};
 use nom::character::complete::{multispace1, newline, not_line_ending};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
-use nom::error::{context, ErrorKind};
+use nom::error::{context, ErrorKind, VerboseErrorKind};
 use nom::multi::{many0, many1, many_till};
 use nom::number::{complete, Endianness};
-use nom::sequence::{delimited, preceded};
-use nom::IResult;
+use nom::sequence::{delimited, preceded, terminated};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_until, take_while},
     character::complete::{char, one_of},
 };
+use nom::{error, IResult as nomIResult};
 use nom::{AsBytes, Offset, Slice};
 use nom::{Err, InputIter};
 use nom_locate::LocatedSpan;
 
 use crate::buffers::{EnvDescriptor, PathDescriptor};
 use crate::statements::*;
+
+type IResult<I, O, E = error::VerboseError<I>> = nomIResult<I, O, E>;
 
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
@@ -794,7 +798,9 @@ fn parse_pelist_till_delim_no_ws<'a>(
 }
 
 //  wrapper over the previous parser that handles empty inputs and stops at newline;
-fn parse_pelist_till_line_end_with_ws(input: Span) -> IResult<Span, (Vec<PathExpr>, char)> {
+pub(crate) fn parse_pelist_till_line_end_with_ws(
+    input: Span,
+) -> IResult<Span, (Vec<PathExpr>, char)> {
     alt((
         complete(map(ws0_line_ending, |_| (Vec::new(), '\0'))),
         complete(|i| parse_pelist_till_delim_with_ws(i, "\r\n", &BRKTOKSWS)),
@@ -841,7 +847,7 @@ fn parse_message(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     let (s, level) = alt((
         value(Level::Error, tag("$(error")),
-        value(Level::Warning, tag("$(warn")),
+        value(Level::Warning, alt((tag("$(warning"), tag("$(warn")))),
         value(Level::Info, tag("$(info")),
     ))(s)?;
     let (s, _) = sp1(s)?;
@@ -965,12 +971,17 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     let (s, _) = tag("definetask")(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, name) = context("task name", cut(delimited(tag("{"), parse_ident, tag("}"))))(s)?;
-    let (s, _) = opt(sp1)(s)?;
-    let (s, _) = tag(":")(s)?;
+    let (s, name) = context(
+        "unexpected task name",
+        cut(terminated(parse_ident, preceded(space0, tag(":")))),
+    )(s)?;
+    log::debug!("parsed task name: {:?}", name);
     let (s, _) = opt(sp1)(s)?;
     let (s, deps) = opt(parse_pelist_till_line_end_with_ws)(s)?;
-    log::warn!("remaining: {:?}", s);
+    if log_enabled!(log::Level::Debug) {
+        let nextfew_chars = std::str::from_utf8(&s.fragment()[..10]).unwrap();
+        log::warn!("remaining: {:?}", nextfew_chars);
+    }
     let deps = deps.map(|x| x.0).unwrap_or_default();
 
     let read_lines = |s| {
@@ -980,7 +991,7 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
     // take until enddef or endef occurs
     let (s, (body, _)) = context(
         "task expression",
-        cut(many_till(read_lines, tag("endtask"))),
+        cut(many_till(read_lines, preceded(space0, tag("endtask")))),
     )(s)?;
     let offset = i.offset(&s);
     let (s, _) = multispace0(s)?;
@@ -1028,7 +1039,7 @@ fn parse_lazy_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     // parse the left side of the assignment
     let (s, left) = parse_ident(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, op) = tag("~=")(s)?;
+    let (s, op) = alt((tag(":~"), tag("~=")))(s)?;
     log::debug!(
         "parsing lazy assignment expression with lhs {:?}",
         left.name
@@ -1065,14 +1076,14 @@ fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
     )(s)?;
 
     body.iter_mut().for_each(|x| x.cleanup());
-    log::debug!("with body: {:?}", body);
+    // log::debug!("with body: {:?}", body);
     let body: Vec<_> = body
         .drain(..)
         .filter(|x| !x.is_empty() && x.iter().filter(|x| !x.is_ws()).count() != 0)
         .collect();
     let mut body = body.join(&PathExpr::NL);
     body.push(PathExpr::NL);
-    log::debug!("with body: {:?}", body);
+    //log::debug!("with body: {:?}", body);
     let offset = i.offset(&s);
     let (s, _) = multispace0(s)?;
     Ok((
@@ -1090,9 +1101,16 @@ fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
 fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
     // there is no standard way to determine we are parsing an eval block. Any string of tokens can be an eval block.
     let s = i;
+
     log::debug!(
         "attempting to parse input as eval block: {:?}",
-        from_utf8(s)
+        from_utf8(Span::new(
+            &s.byte_lines()
+                .into_iter()
+                .next()
+                .unwrap()
+                .unwrap_or(Vec::new())
+        )) //from_utf8(s)
     );
     let (s, (body, _)) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     log::debug!("parsed eval block: {:?}", body);
@@ -1450,6 +1468,124 @@ fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>
     many_till(parse_statement, g)(i)
 }
 
+/// Converts nom error into a readable string
+pub fn convert_error(input: Span, e: nom::error::VerboseError<Span>) -> String {
+    use std::fmt::Write;
+
+    let mut result = String::new();
+
+    for (i, (substring, kind)) in e.errors.iter().enumerate() {
+        let offset = input.offset(substring);
+
+        if input.is_empty() {
+            match kind {
+                VerboseErrorKind::Char(c) => {
+                    write!(&mut result, "{}: expected '{}', got empty input\n\n", i, c)
+                }
+                VerboseErrorKind::Context(s) => {
+                    write!(&mut result, "{}: in {}, got empty input\n\n", i, s)
+                }
+                VerboseErrorKind::Nom(e) => {
+                    write!(&mut result, "{}: in {:?}, got empty input\n\n", i, e)
+                }
+            }
+        } else {
+            let prefix = &input.as_bytes()[..offset];
+
+            let rest = &input.as_bytes()[offset..];
+            // Count the number of newlines in the first `offset` bytes of input
+            let line_number = prefix.iter().filter(|&&b| b == b'\n').count() + 1;
+
+            // Find the line that includes the subslice:
+            // Find the *last* newline before the substring starts
+            let line_begin = prefix
+                .iter()
+                .rev()
+                .position(|&b| b == b'\n')
+                .map(|pos| offset - pos)
+                .unwrap_or(0);
+
+            let line_end = rest
+                .as_bytes()
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|pos| offset + pos)
+                .unwrap_or(input.fragment().len());
+
+            // Find the full line after that newline
+            let line = std::str::from_utf8(&input[line_begin..line_end]).unwrap();
+            let line = line.trim_end();
+
+            let substring_str = std::str::from_utf8(substring).unwrap();
+            // The (1-indexed) column number is the offset of our substring into that line
+            let column_number = line.offset(substring_str) + 1;
+
+            match kind {
+                VerboseErrorKind::Char(c) => {
+                    if let Some(actual) = substring_str.chars().next() {
+                        write!(
+                            &mut result,
+                            "{i}: at line {line_number}:\n\
+               {line}\n\
+               {caret:>column$}\n\
+               expected '{expected}', found {actual}\n\n",
+                            i = i,
+                            line_number = line_number,
+                            line = line,
+                            caret = '^',
+                            column = column_number,
+                            expected = c,
+                            actual = actual,
+                        )
+                    } else {
+                        write!(
+                            &mut result,
+                            "{i}: at line {line_number}:\n\
+               {line}\n\
+               {caret:>column$}\n\
+               expected '{expected}', got end of input\n\n",
+                            i = i,
+                            line_number = line_number,
+                            line = line,
+                            caret = '^',
+                            column = column_number,
+                            expected = c,
+                        )
+                    }
+                }
+                VerboseErrorKind::Context(s) => write!(
+                    &mut result,
+                    "{i}: at line {line_number}, in {context}:\n\
+             {line}\n\
+             {caret:>column$}\n\n",
+                    i = i,
+                    line_number = line_number,
+                    context = s,
+                    line = line,
+                    caret = '^',
+                    column = column_number,
+                ),
+                VerboseErrorKind::Nom(e) => write!(
+                    &mut result,
+                    "{i}: at line {line_number}, in {nom_err:?}:\n\
+             {line}\n\
+             {caret:>column$}\n\n",
+                    i = i,
+                    line_number = line_number,
+                    nom_err = e,
+                    line = line,
+                    caret = '^',
+                    column = column_number,
+                ),
+            }
+        }
+        // Because `write!` to a `String` is infallible, this `unwrap` is fine.
+        .unwrap();
+    }
+
+    result
+}
+
 /// parse statements till end of file
 pub(crate) fn parse_statements_until_eof(
     i: Span,
@@ -1458,14 +1594,16 @@ pub(crate) fn parse_statements_until_eof(
         Err::Incomplete(_) => {
             crate::errors::Error::ParseError("Incomplete data found".to_string(), Loc::default())
         }
-        Err::Error(e) => crate::errors::Error::ParseError(
-            format!("Parse Error {:?}", e.code),
-            Loc::from(e.input),
-        ),
-        Err::Failure(e) => crate::errors::Error::ParseError(
-            format!("Parse Failure {:?}", e.code),
-            Loc::from(e.input),
-        ),
+        Err::Error(e) | Err::Failure(e) => {
+            let err_message = convert_error(i, e.clone());
+            let loc = e
+                .errors
+                .first()
+                .map(|x| x.0)
+                .map(|s: Span| Loc::from(s))
+                .unwrap();
+            crate::errors::Error::ParseError(err_message, loc)
+        }
     })
 }
 
@@ -1654,11 +1792,19 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
     use crate::errors::Error as Err;
     use std::fs::File;
     use std::io::prelude::*;
+    let filename = filename.as_ref();
     let mut file = File::open(filename).map_err(|e| Err::IoError(e, Loc::default()))?;
     let mut contents = Vec::new();
-    file.read_to_end(&mut contents)
+    let _res = file
+        .read_to_end(&mut contents)
+        .inspect_err(|e| log::error!("error reading file: {:?}", e))
         .map_err(|e| Err::IoError(e, Loc::default()))?;
-    parse_statements_until_eof(Span::new(contents.as_bytes()))
+    if contents.last() != Some(&b'\n') {
+        contents.push(b'\n');
+    }
+    parse_statements_until_eof(Span::new(contents.as_bytes())).map_err(|e| {
+        crate::errors::Error::ParseFailure(filename.to_string_lossy().to_string(), Box::new(e))
+    })
 }
 
 /// locate TupRules.tup\[.lua\] walking up the directory tree
@@ -1666,12 +1812,13 @@ pub(crate) fn locate_tuprules_from(cur_tupfile: PathDescriptor) -> Vec<PathDescr
     let mut v = VecDeque::new();
 
     log::debug!("locating tuprules for {:?}", cur_tupfile.as_ref());
-    let mut numskip = 0;
-    let is_file = cur_tupfile.get_path().as_path().is_file();
-    if is_file {
-        numskip = 1;
-    }
-    for anc in cur_tupfile.ancestors().skip(numskip) {
+
+    for anc in cur_tupfile
+        .ancestors()
+        .skip(1) // dont include self
+        .chain(std::iter::once(PathDescriptor::default()))
+    // add the root path '.'
+    {
         log::debug!("try:{:?}", anc);
         let rulestup = anc.get_path().as_path().join("TupRules.tup");
         if rulestup.is_file() {

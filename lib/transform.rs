@@ -208,7 +208,13 @@ impl ParseState {
         let cur_file = bo.get_path(&cur_file_desc).clone();
         let dir = cur_file_desc.get_parent_descriptor().get_path().to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
-
+        def_vars.insert(
+            "TUP_ROOT".to_owned(),
+            vec![cur_file_desc
+                .get_path_to_root()
+                .to_string_lossy()
+                .to_string()],
+        );
         ParseState {
             conf_map: conf_map.clone(),
             expr_map: def_vars,
@@ -267,6 +273,13 @@ impl ParseState {
         let cur_file = cur_file_desc.get_path().clone().to_path_buf();
         let dir = get_parent_with_fsep(cur_file.as_path()).to_string();
         def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
+        def_vars.insert(
+            "TUP_ROOT".to_owned(),
+            vec![cur_file_desc
+                .get_path_to_root()
+                .to_string_lossy()
+                .to_string()],
+        );
 
         ParseState {
             expr_map: def_vars,
@@ -277,7 +290,7 @@ impl ParseState {
             ..ParseState::default()
         }
     }
-    /// set the current TUP_CWD in expression map in ParseState as we switch to reading an included file
+    /// set the current TUP_CWD, TUP_ROOT in expression map in ParseState as we switch to reading an included file
     pub fn set_cwd(&mut self, tupfile: &Path) -> Result<(), Error> {
         self.cur_file_desc = self.path_buffers.add_tup(tupfile);
         //self.cur_file = self.cur_file_desc.get_path().to_path_buf();
@@ -291,7 +304,17 @@ impl ParseState {
             self.cur_file_desc.get_parent_descriptor(),
         );
         debug!("switching to diff:{:?}", diff);
-        self.replace_tup_cwd(diff.get_path());
+        if !diff.is_empty() {
+            self.replace_tup_cwd(diff.get_path());
+            self.replace_tup_root(
+                self.cur_file_desc
+                    .get_path_to_root()
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        } else {
+            debug!("no change in cwd!");
+        }
         Ok(())
     }
 
@@ -329,6 +352,17 @@ impl ParseState {
             .write()
             .entry(tup_desc.clone())
             .or_insert(vs);
+    }
+    fn replace_tup_root(&mut self, root: String) {
+        self.expr_map.remove("TUP_ROOT");
+        self.expr_map.insert("TUP_ROOT".to_owned(), vec![root]);
+    }
+
+    pub(crate) fn is_var_defined(&self, v: &str) -> bool {
+        self.expr_map.contains_key(v)
+            || self.rexpr_map.contains_key(v)
+            || self.func_map.contains_key(v)
+            || self.conf_map.contains_key(v)
     }
 }
 
@@ -800,6 +834,17 @@ impl DollarExprs {
                     vs
                 } else if let Some(val) = m.func_map.get(x.as_str()).cloned() {
                     val.subst_pe(m, path_searcher)
+                } else if let Some(val) = m.conf_map.get(x.as_str()).cloned() {
+                    let mut val = val.join(" ");
+                    if !val.ends_with("\n") {
+                        val.push('\n');
+                    }
+                    let pelist = crate::parser::parse_pelist_till_line_end_with_ws(Span::new(
+                        val.as_bytes(),
+                    ))
+                    .map(|x| x.1 .0)
+                    .unwrap_or(vec![]);
+                    pelist.subst_pe(m, path_searcher)
                 } else if m.parse_context == Expression || x.contains('%') {
                     log::warn!("dollarexpr {} not found", x);
                     vec![self.clone().into()]
@@ -1231,34 +1276,34 @@ impl DollarExprs {
                     .take_while(|x| !x.is_whitespace())
                     .collect();
                 debug!("calling function: {}", func_name);
-                let body = m
-                    .func_map
-                    .get(&func_name)
-                    .unwrap_or_else(|| panic!("failed to find function: {}", func_name))
-                    .clone();
-                debug!("wht args: {:?}", args);
-                debug!("body: {:?}", body);
+                if let Some(body) = m.func_map.get(&func_name) {
+                    debug!("wht args: {:?}", args);
+                    debug!("body: {:?}", body);
 
-                let mut call_args_map = CallArgsMap::new();
-                let mut prefixed_args = Vec::new();
-                for (i, mut arg) in args.iter().cloned().enumerate() {
-                    let arg_name = format!("{}", i + 1);
-                    arg.insert(0, PathExpr::from(format!("__arg{}__=", i + 1)));
-                    prefixed_args.extend(arg);
-                    prefixed_args.push(PathExpr::NL);
-                    call_args_map.insert(arg_name, format!("$(__arg{}__)", i + 1))
+                    let mut call_args_map = CallArgsMap::new();
+                    let mut prefixed_args = Vec::new();
+                    for (i, mut arg) in args.iter().cloned().enumerate() {
+                        let arg_name = format!("{}", i + 1);
+                        arg.insert(0, PathExpr::from(format!("__arg{}__=", i + 1)));
+                        prefixed_args.extend(arg);
+                        prefixed_args.push(PathExpr::NL);
+                        call_args_map.insert(arg_name, format!("$(__arg{}__)", i + 1))
+                    }
+
+                    let lines = body;
+                    debug!("call lines: {:?}", lines);
+                    let substed_lines: Vec<_> = prefixed_args
+                        .iter()
+                        .chain(lines.into_iter())
+                        .map(|l| l.subst_ca(&mut call_args_map))
+                        .flatten()
+                        .collect();
+
+                    substed_lines
+                } else {
+                    eprintln!("function {} not found", func_name);
+                    vec![]
                 }
-
-                let mut lines = body;
-                debug!("call lines: {:?}", lines);
-                let substed_lines: Vec<_> = prefixed_args
-                    .drain(..)
-                    .chain(lines.drain(..))
-                    .map(|l| l.subst_ca(&mut call_args_map))
-                    .flatten()
-                    .collect();
-
-                substed_lines
             }
 
             DollarExprs::If(cond, then_part, else_part) => {
@@ -1622,26 +1667,37 @@ fn tovecstring(right: &[PathExpr]) -> Vec<String> {
 pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>, Error> {
     let mut conf_vars = HashMap::new();
     if conf_file.is_file() {
-        if let Some(fstr) = conf_file.to_str() {
-            for LocatedStatement { statement, .. } in parse_tupfile(fstr)?.iter() {
-                if let Statement::AssignExpr { left, right, .. } = statement {
-                    if let Some(rest) = left.name.strip_prefix("CONFIG_") {
-                        log::warn!("conf var:{} = {}", rest, right.cat());
-                        conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
+        for LocatedStatement { statement, .. } in parse_tupfile(conf_file.as_path())?.iter() {
+            if let Statement::AssignExpr { left, right, .. } = statement {
+                if let Some(rest) = left.name.strip_prefix("CONFIG_") {
+                    log::warn!("conf var:{} = {}", rest, right.cat());
+                    conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
+                } else {
+                    log::warn!("conf var:{} = {}", left.name, right.cat());
+                    conf_vars.insert(left.name.clone(), tovecstring(right.as_slice()));
+                }
+            } else if let Statement::Import(e, v) = statement {
+                // import the environment variable `e` into the tupfile as `e` with the value `v` if environment variable `e` is not set.
+                if let Ok(val) = std::env::var(e) {
+                    conf_vars.insert(e.clone(), vec![val]);
+                } else {
+                    if let Some(val) = v.clone() {
+                        if !val.is_empty() {
+                            conf_vars.insert(e.clone(), vec![val]);
+                        }
                     }
                 }
             }
-            // @(TUP_PLATFORM)
-            //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
-            //     @(TUP_ARCH)
-            //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
-            if !conf_vars.contains_key("TUP_PLATFORM") {
-                conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform()]);
-            }
-            if !conf_vars.contains_key("TUP_ARCH") {
-                conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch()]);
-            }
-            return Ok(conf_vars);
+        }
+        // @(TUP_PLATFORM)
+        //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
+        //     @(TUP_ARCH)
+        //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
+        if !conf_vars.contains_key("TUP_PLATFORM") {
+            conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform()]);
+        }
+        if !conf_vars.contains_key("TUP_ARCH") {
+            conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch()]);
         }
     }
     Ok(conf_vars)
@@ -1733,6 +1789,7 @@ impl LocatedStatement {
     ) -> Result<Vec<LocatedStatement>, Error> {
         let mut newstats = Vec::new();
         let loc = self.get_loc();
+        //debug!("subst statement: {:?}", &self);
         match self.get_statement() {
             Statement::AssignExpr {
                 left,
@@ -1850,6 +1907,7 @@ impl LocatedStatement {
                 // ignore
             }
             Statement::Define(name, val) => {
+                log::debug!("adding {} to func_map", name);
                 parse_state.func_map.insert(name.to_string(), val.clone());
             }
             Statement::EvalBlock(body) => {
@@ -1981,7 +2039,7 @@ impl LocatedStatement {
                 if cvar.is_not_cond() { "n" } else { "" },
                 cvar.get_var()
             );
-            if cvar.is_not_cond() == cvar.get_var().as_str().is_empty() {
+            if cvar.is_not_cond() != parse_state.is_var_defined(cvar.get_var().as_str()) {
                 debug!("cvar condition statisfied");
                 return ControlFlow::Break(x.then_statements.subst(parse_state, path_searcher));
             }
@@ -2116,10 +2174,12 @@ impl LocatedStatement {
             parse_state.path_buffers.deref(),
             &[GlobPath::build_from(&fullp)?],
         )?;
-        let p = ps.into_iter().next().ok_or(Error::PathNotFound(
-            pscat.to_string_lossy().to_string(),
-            TupLoc::new(parse_state.get_cur_file_desc(), self.get_loc()),
-        ))?;
+        let p = ps.into_iter().next().ok_or_else(|| {
+            Error::PathNotFound(
+                pscat.to_string_lossy().to_string(),
+                TupLoc::new(parse_state.get_cur_file_desc(), self.get_loc()),
+            )
+        })?;
         parse_state.switch_tupfile_and_process(
             p.get_path_ref().deref(),
             |parse_state| -> Result<(), Error> {

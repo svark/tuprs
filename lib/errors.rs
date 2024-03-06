@@ -88,6 +88,10 @@ pub enum Error {
     /// Failure during running a callback to fetch all groupids
     #[error("Call back error: {0}")]
     CallBackError(String),
+
+    /// Failure during parsing Tupfile.
+    #[error("Error parsing {0}: {1}")]
+    ParseFailure(String, Box<Error>),
 }
 
 /// Error along with the tupfile path where it occurred

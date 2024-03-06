@@ -190,6 +190,11 @@ impl RelativeDirEntry {
         }
         std::iter::from_fn(move || all_components.pop())
     }
+
+    /// check if this path is root
+    pub fn is_empty(&self) -> bool {
+        self.basedir == self.target
+    }
 }
 
 impl AddAssign<&RelativeDirEntry> for PathDescriptor {
@@ -308,6 +313,20 @@ impl PathDescriptor {
             x.as_ref().expect("path not found").as_path()
         })
     }
+
+    /// relative path to root from current path
+    pub fn get_path_to_root(&self) -> PathBuf {
+        let mut path = PathBuf::new();
+        let num_steps = self.ancestors().count();
+        for i in 1..num_steps {
+            if i + 1 < num_steps {
+                path.push("../");
+            } else {
+                path.push("..");
+            }
+        }
+        path
+    }
     /// get path from descriptor
     pub fn get_path(&self) -> Ref<'_, NormalPath> {
         if !self.is_cached() {
@@ -366,7 +385,7 @@ impl PathDescriptor {
         for ancestor in self.ancestors() {
             all_components.push(ancestor);
         }
-        all_components.push(PathDescriptor::default());
+        all_components.push(PathDescriptor::default()); // add root
         std::iter::from_fn(move || all_components.pop())
     }
 }
