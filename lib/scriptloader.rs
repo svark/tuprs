@@ -1,4 +1,3 @@
-use std::borrow::BorrowMut;
 use std::cell::RefMut;
 use std::fs::File;
 use std::io::Read;
@@ -20,7 +19,7 @@ use crate::errors::Error as Err;
 use crate::paths::GlobPath;
 use crate::statements::Statement::Rule;
 use crate::statements::*;
-use crate::transform::{Artifacts, ParseState};
+use crate::transform::{ParseState, ResolvedRules};
 
 lazy_static! {
     static ref LINENO: &'static str = "lineno";
@@ -117,7 +116,7 @@ pub struct TupScriptContext<P: PathBuffers + Sized, Q: PathSearcher + Sized> {
     parse_state: ParseState,
     path_buffers: Arc<P>,
     path_searcher: Arc<RwLock<Q>>,
-    arts: Artifacts,
+    arts: ResolvedRules,
 }
 #[derive(Debug, Default, Clone)]
 pub struct ScriptInputBuilder {
@@ -320,7 +319,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         path_searcher: Arc<RwLock<Q>>,
     ) -> TupScriptContext<P, Q> {
         TupScriptContext {
-            arts: Artifacts::new(),
+            arts: ResolvedRules::new(),
             parse_state,
             path_buffers,
             path_searcher,
@@ -338,6 +337,12 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
     }
     pub(crate) fn get_path_searcher(&self) -> parking_lot::RwLockReadGuard<'_, Q> {
         self.path_searcher.deref().read()
+    }
+    pub fn take_parsed_state(&mut self) -> ParseState {
+        std::mem::take(&mut self.parse_state)
+    }
+    pub fn take_resolved_rules(&mut self) -> ResolvedRules {
+        std::mem::take(&mut self.arts)
     }
 
     pub fn export(&mut self, var: String) {
@@ -930,7 +935,7 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
     parse_state: ParseState,
     path_buffers: Arc<P>,
     path_searcher: Arc<RwLock<Q>>,
-) -> Result<Artifacts, Err> {
+) -> Result<(ResolvedRules, ParseState), Err> {
     let lua = unsafe { Lua::unsafe_new() };
     let r = lua.scope(|scope| {
         let script_path = parse_state.get_cur_file().to_path_buf();
@@ -1027,11 +1032,13 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
         file.read_to_end(&mut contents)?;
         lua.load(contents.as_bytes()).exec()?;
         let tup_shared: AnyUserData = globals.get("tup")?;
-        let script_ctx: RefMut<TupScriptContext<P, Q>> = tup_shared.borrow_mut()?;
+        let mut script_ctx: RefMut<TupScriptContext<P, Q>> = tup_shared.borrow_mut()?;
         {
-            let mut arts = RefMut::map(script_ctx, |x| &mut x.arts);
-            let arts = std::mem::take(arts.borrow_mut().deref_mut());
-            Ok(arts)
+            let (arts, parse_state) = (
+                script_ctx.take_resolved_rules(),
+                script_ctx.take_parsed_state(),
+            );
+            Ok((arts, parse_state))
         }
     })?;
     Ok(r)

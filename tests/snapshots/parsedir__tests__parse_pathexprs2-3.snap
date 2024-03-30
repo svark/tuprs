@@ -1,5 +1,5 @@
 ---
 source: tuprs/tests/parsedir.rs
-expression: "v2.get(\"D\").unwrap().join(\" \")"
+expression: "v2.get_func(\"D\").unwrap()"
 ---
-"a b c x y z w"
+"$(one)"

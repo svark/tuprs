@@ -2,4 +2,4 @@
 source: tuprs/tests/parsedir.rs
 expression: "v2.get(\"CXX_SOURCES\").unwrap().join(\" \")"
 ---
-a.cxx  dir/c.cpp
+a.cxx dir/c.cpp

@@ -277,23 +277,10 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
         Statement::AssignExpr {
             left,
             right,
-            is_append,
-            is_empty_assign,
+            assignment_type,
         } => {
             let left_str = left.to_string();
-            if *is_append {
-                write!(writer, "{} += ", left_str).unwrap();
-            } else if *is_empty_assign {
-                write!(writer, "{} ?= ", left_str).unwrap();
-            } else {
-                write!(writer, "{} = ", left_str).unwrap();
-            }
-            write_pathexprs(writer, &right);
-            write!(writer, "\n").unwrap();
-        }
-        Statement::LazyAssignExpr { left, right } => {
-            let left_str = left.to_string();
-            write!(writer, "{} ~= ", left_str).unwrap();
+            write!(writer, "{} {} ", left_str, assignment_type.to_str()).unwrap();
             write_pathexprs(writer, &right);
             write!(writer, "\n").unwrap();
         }
@@ -402,23 +389,6 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
         Statement::Run(body) => {
             write!(writer, "run ").unwrap();
             write_pathexprs(writer, body);
-            write!(writer, "\n").unwrap();
-        }
-        Statement::AssignRefExpr {
-            left,
-            right,
-            is_append,
-            is_empty_assign,
-        } => {
-            write!(writer, "&{}", left.name).unwrap();
-            if *is_append {
-                write!(writer, " += ").unwrap();
-            } else if *is_empty_assign {
-                write!(writer, " ?= ").unwrap();
-            } else {
-                write!(writer, " := ").unwrap();
-            }
-            write_pathexprs(writer, &right);
             write!(writer, "\n").unwrap();
         }
         Statement::MacroRule(name, link) => {

@@ -25,7 +25,7 @@ use crate::paths::{
     ExcludeInputPaths, GlobPath, InputResolvedType, InputsAsPaths, MatchingPath, OutputsAsPaths,
 };
 use crate::statements::*;
-use crate::transform::{to_regex, Artifacts, TupParser};
+use crate::transform::{to_regex, ResolvedRules, TupParser};
 use crate::ReadWriteBufferObjects;
 
 /// Trait to discover paths from an external source (such as a database)
@@ -195,7 +195,7 @@ impl TaskInstance {
 
 impl Display for TupLoc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.tup_path_desc, self.loc)
+        write!(f, "{}: {}", self.tup_path_desc, self.loc)
     }
 }
 
@@ -353,7 +353,8 @@ impl PathSearcher for DirSearcher {
                 let mut pes = Vec::new();
                 let path_desc = glob_path.get_glob_path_desc();
                 debug!("looking for child {:?}", to_match);
-                if root.join(to_match.as_path()).is_file() {
+                let mp_from_root = root.join(to_match.as_path());
+                if mp_from_root.is_file() || mp_from_root.is_dir() {
                     pes.push(MatchingPath::new(path_desc));
                     if log_enabled!(log::Level::Debug) {
                         for pe in pes.iter() {
@@ -385,9 +386,7 @@ impl PathSearcher for DirSearcher {
                 let filtered_paths = walkdir
                     .min_depth(1)
                     .into_iter()
-                    .filter_map(move |entry| {
-                        entry.ok().filter(|e| e.path().is_file()).map(relative_path)
-                    })
+                    .filter_map(move |entry| entry.ok().map(relative_path))
                     .filter(|entry| globs.is_match(entry.as_path()));
                 for path in filtered_paths {
                     let path_desc =
@@ -1440,7 +1439,7 @@ pub(crate) trait ResolvePaths {
         tup_desc: &TupPathDescriptor,
         path_searcher: &mut impl PathSearcher,
         path_buffers: &impl PathBuffers,
-    ) -> Result<Artifacts, Err>;
+    ) -> Result<ResolvedRules, Err>;
 }
 
 impl ResolvePaths for Vec<ResolvedLink> {
@@ -1449,8 +1448,8 @@ impl ResolvePaths for Vec<ResolvedLink> {
         _tup_desc: &TupPathDescriptor,
         path_searcher: &mut impl PathSearcher,
         path_buffers: &impl PathBuffers,
-    ) -> Result<Artifacts, Err> {
-        let mut resolved_artifacts = Artifacts::new();
+    ) -> Result<ResolvedRules, Err> {
+        let mut resolved_artifacts = ResolvedRules::new();
         for resolved_link in self.iter() {
             if resolved_link.has_unresolved_inputs() {
                 let cur_tup_desc = resolved_link.get_tup_loc().get_tupfile_desc();
@@ -1473,7 +1472,7 @@ impl ResolvePaths for ResolvedLink {
         _tup_desc: &TupPathDescriptor,
         path_searcher: &mut impl PathSearcher,
         path_buffers: &impl PathBuffers,
-    ) -> Result<Artifacts, Err> {
+    ) -> Result<ResolvedRules, Err> {
         let mut rlink: ResolvedLink = self.clone();
         rlink.primary_sources.clear();
         rlink.secondary_sources.clear();
@@ -1543,7 +1542,7 @@ impl ResolvePaths for ResolvedLink {
         let mut out = OutputHolder::new();
         self.gather_outputs(&mut out, path_buffers)?;
         path_searcher.merge(path_buffers, &mut out)?;
-        Ok(Artifacts::from(vec![rlink], vec![]))
+        Ok(ResolvedRules::from(vec![rlink], vec![]))
     }
 }
 
@@ -1584,7 +1583,7 @@ impl LocatedStatement {
         tup_desc: &TupPathDescriptor,
         path_searcher: &mut impl PathSearcher,
         path_buffers: &impl PathBuffers,
-    ) -> Result<(Artifacts, OutputHolder), Err> {
+    ) -> Result<(ResolvedRules, OutputHolder), Err> {
         let tup_cwd = tup_desc.get_parent_descriptor();
         let mut deglobbed = Vec::new();
         // use same resolve_groups as input
@@ -1693,7 +1692,7 @@ impl LocatedStatement {
             }
         }
 
-        Ok((Artifacts::from(deglobbed, tasks), output))
+        Ok((ResolvedRules::from(deglobbed, tasks), output))
     }
 }
 
@@ -1703,8 +1702,8 @@ impl ResolvePaths for Vec<LocatedStatement> {
         tup_desc: &TupPathDescriptor,
         path_searcher: &mut impl PathSearcher,
         path_buffers: &impl PathBuffers,
-    ) -> Result<Artifacts, Err> {
-        let mut merged_arts = Artifacts::new();
+    ) -> Result<ResolvedRules, Err> {
+        let mut merged_arts = ResolvedRules::new();
         debug!("Resolving paths for rules in {:?}", tup_desc.as_ref());
         for stmt in self.iter() {
             let (art, _) = stmt.resolve_paths(tup_desc, path_searcher, path_buffers)?;
@@ -1716,7 +1715,7 @@ impl ResolvePaths for Vec<LocatedStatement> {
 }
 
 /// `parse_dir' scans and parses all Tupfiles from a directory root, When sucessful it returns de-globbed, decoded links(rules)
-pub fn parse_dir(root: &Path) -> Result<(Artifacts, ReadWriteBufferObjects), Error> {
+pub fn parse_dir(root: &Path) -> Result<(ResolvedRules, ReadWriteBufferObjects), Error> {
     let mut tupfiles = Vec::new();
     let tf = OsString::from("Tupfile");
     let tflua = OsString::from("Tupfile.lua");
@@ -1739,12 +1738,12 @@ pub fn parse_dir(root: &Path) -> Result<(Artifacts, ReadWriteBufferObjects), Err
 pub fn parse_tupfiles(
     root: &Path,
     tupfiles: &Vec<PathBuf>,
-) -> Result<(Artifacts, ReadWriteBufferObjects), Error> {
-    let mut artifacts_all = Artifacts::new();
+) -> Result<(ResolvedRules, ReadWriteBufferObjects), Error> {
+    let mut artifacts_all = ResolvedRules::new();
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new())?;
     for tup_file_path in tupfiles.iter() {
-        let artifacts = parser.parse(tup_file_path)?;
-        artifacts_all.extend(artifacts);
+        let resolved_rules = parser.parse(tup_file_path)?;
+        artifacts_all.extend(resolved_rules);
     }
     Ok((
         parser.reresolve(artifacts_all)?,

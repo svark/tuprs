@@ -124,21 +124,11 @@ pub struct DirEntry {
 }
 
 /// ```RelativeDirEntry``` contains a path relative to a base directory
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct RelativeDirEntry {
     basedir: PathDescriptor,
     target: PathDescriptor,
     common_root: PathSym,
-}
-
-impl Default for RelativeDirEntry {
-    fn default() -> Self {
-        Self {
-            basedir: PathDescriptor::default(),
-            target: PathDescriptor::default(),
-            common_root: 0,
-        }
-    }
 }
 
 impl RelativeDirEntry {
@@ -317,14 +307,11 @@ impl PathDescriptor {
     /// relative path to root from current path
     pub fn get_path_to_root(&self) -> PathBuf {
         let mut path = PathBuf::new();
-        let num_steps = self.ancestors().count();
-        for i in 1..num_steps {
-            if i + 1 < num_steps {
-                path.push("../");
-            } else {
-                path.push("..");
-            }
+        const PARENT_WITH_SLASH: &str = "../";
+        for _ in self.ancestors() {
+            path.push(PARENT_WITH_SLASH);
         }
+        path.pop();
         path
     }
     /// get path from descriptor

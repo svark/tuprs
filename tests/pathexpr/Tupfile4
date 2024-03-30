@@ -5,9 +5,9 @@ ifeq ($(DEBUG),1)
  :foreach $(SRCS)  ../<grp> ../<grp2> |> !CC %<grp> %<grp2> \
  |> | command.pch  ^exclude_pattern.* {objs}
  # ampersand variables
- &v := src/main.rs
+ v := src/main.rs
  # ampersand variables as rule inputs that are split over multiple lines
-:&(v) |> type %f > file.txt |> \
+: $(v) |> type %f > file.txt |> \
 file.txt |
 # no inputs or outputs
 : |> type &(v) |>

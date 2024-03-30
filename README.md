@@ -19,7 +19,7 @@ If you are inside a directory that is already initialized with tup init, the fol
 ```rust
 let curdir = std::env::current_dir().unwrap();
 let p = TupParser::try_new_from(curdir).expect("Root not found");
-let artifacts = p.parse(tupfile);
+let resolved_rules = p.parse(tupfile);
 ```
 
 The second version  scans the directory tree and runs the parser over all Tupfiles it finds.

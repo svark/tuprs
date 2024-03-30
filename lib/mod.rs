@@ -14,7 +14,6 @@ extern crate nom;
 extern crate nom_locate;
 extern crate parking_lot;
 extern crate regex;
-extern crate tap;
 extern crate thiserror;
 extern crate walkdir;
 
@@ -28,8 +27,8 @@ pub use decode::ResolvedLink;
 pub use paths::InputResolvedType;
 pub use transform::load_conf_vars_relative_to;
 pub use transform::locate_file;
-pub use transform::Artifacts;
 pub use transform::ReadWriteBufferObjects;
+pub use transform::ResolvedRules;
 pub use transform::TupParser;
 
 pub mod buffers;
@@ -85,7 +84,7 @@ fn test_parse() {
 
     // test
     let stmt = parser::parse_statement(Span::new(
-        b"SOURCES = $(foreach suffix,*.cxx *.c, $(wildcard a/$(suffix)))\n",
+        b"SOURCES := $(foreach suffix,*.cxx *.c, $(wildcard a/$(suffix)))\n",
     ))
     .unwrap()
     .1;
@@ -93,7 +92,7 @@ fn test_parse() {
     use transform::Subst;
     let path_searcher = DirSearcher::new();
     let stmt = stmt.subst(&mut m, &path_searcher).expect("subst failure");
-    let stmt2 = parser::parse_statement(Span::new(b"SOURCES = t1.cxx t2.c\n"))
+    let stmt2 = parser::parse_statement(Span::new(b"SOURCES := t1.cxx t2.c\n"))
         .unwrap()
         .1;
     let mut m = ParseState::default();
@@ -138,12 +137,15 @@ fn test_parse() {
 
 #[test]
 fn parse_x() {
-    use env_logger;
-    let _ = env_logger::try_init();
-    //let root = "c:/ws/fegeomscratch";
-    //std::env::set_current_dir(root).unwrap();
-    /*     let mut parser = TupParser::<crate::decode::DirSearcher>::try_new_from(root, crate::decode::DirSearcher::new()).unwrap();
-            let arts = parser.parse("TupRulesNew.tup").unwrap();
-           assert_eq!(arts.get_resolved_links().len(), 375);
+    /*  use env_logger;
+        let _ = env_logger::try_init();
+        let root = "c:/ws/nxtg/feattempl2";
+        std::env::set_current_dir(root).unwrap();
+        let mut parser = TupParser::<crate::decode::DirSearcher>::try_new_from(root, crate::decode::DirSearcher::new()).unwrap();
+        let arts = parser.parse("hwcommon/xt/manip/mi/Tupfile").map_err( |e| {
+            eprintln!("{:?}", e.to_string());
+            e
+        }).unwrap();
+        assert_eq!(arts.get_resolved_links().len(), 375);
     */
 }

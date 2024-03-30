@@ -5,10 +5,10 @@ define uniq
   ${seen}
 endef
 
-CFLAGS = $(eval $(call uniq,$(CFLAGS)))
+CFLAGS := $(eval $(call uniq,$(CFLAGS)))
 
-one ~= $(two) z w
-two ~= $(three) x y
+one = $(two) z w
+two = $(three) x y
 three = a b c
 D = $(one)
-
+E := $(D)

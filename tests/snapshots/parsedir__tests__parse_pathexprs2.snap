@@ -9,9 +9,10 @@ expression: strings
   " $(foreach word,$(1),$(if $(filter $(word),$(seen)),,seen += $(word)))",
   " $(seen)",
   "endef",
-  "CFLAGS = $(eval $(call uniq,$(CFLAGS), ))",
-  "one ~= $(two) z w",
-  "two ~= $(three) x y",
+  "CFLAGS := $(eval $(call uniq,$(CFLAGS), ))",
+  "one = $(two) z w",
+  "two = $(three) x y",
   "three = a b c",
-  "D = $(one)"
+  "D = $(one)",
+  "E := $(D)"
 ]

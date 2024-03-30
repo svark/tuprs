@@ -1,0 +1,13 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: "v2.get(\"E\").unwrap()"
+---
+[
+  "a",
+  "b",
+  "c",
+  "x",
+  "y",
+  "z",
+  "w"
+]

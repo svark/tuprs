@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use log::debug;
 use regex::Regex;
-use tap::Pipe;
 
 use crate::buffers::{
     BufferObjects, GlobPathDescriptor, MyGlob, PathBuffers, PathDescriptor, RelativeDirEntry,
@@ -19,6 +18,8 @@ use crate::errors::Error;
 use crate::glob::Candidate;
 use crate::statements::PathExpr;
 use crate::{BinDescriptor, GroupPathDescriptor};
+
+//use tap::Pipe;
 
 /// Normal path holds paths wrt root directory of build
 /// Normal path is devoid of ParentDir and CurDir components
@@ -569,7 +570,10 @@ impl InputResolvedType {
             InputResolvedType::BinEntry(b, _) => bo.get_bin_name(b).to_string(),
             InputResolvedType::UnResolvedGroupEntry(g) => bo.get_group_name(g),
             InputResolvedType::UnResolvedFile(p) => bo.get_path_str(p),
-            InputResolvedType::TaskRef(t) => bo.get_task(t).pipe(|x| x.get_target().to_string()),
+            InputResolvedType::TaskRef(t) => {
+                let rt = bo.get_task(t);
+                rt.get_target().to_string()
+            }
         }
     }
 }

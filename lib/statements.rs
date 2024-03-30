@@ -248,7 +248,7 @@ impl Display for Loc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "line:{},  begin:{}, end:{}",
+            "line:{}, span:{}->{}",
             self.get_line(),
             self.get_col(),
             self.get_col() + self.get_span()
@@ -278,6 +278,12 @@ impl LocatedStatement {
     }
     pub(crate) fn is_comment(&self) -> bool {
         matches!(self.statement, Statement::Comment)
+    }
+    pub(crate) fn is_run(&self) -> bool {
+        matches!(self.statement, Statement::Run(_))
+    }
+    pub(crate) fn is_preload(&self) -> bool {
+        matches!(self.statement, Statement::Preload(_))
     }
 }
 /// List of env vars that are to be passed for rule execution
@@ -402,24 +408,40 @@ impl TaskDetail {
     }
 }
 
+#[derive(PartialEq, Debug, Clone)]
+pub(crate) enum AssignmentType {
+    Immediate,
+    Lazy,
+    Append,
+    Conditional,
+}
+
+impl AssignmentType {
+    pub(crate) fn from_str<S: AsRef<str>>(s: S) -> Self {
+        match s.as_ref() {
+            ":=" => AssignmentType::Immediate,
+            "=" => AssignmentType::Lazy,
+            "+=" => AssignmentType::Append,
+            "?=" => AssignmentType::Conditional,
+            _ => panic!("Invalid assignment type"),
+        }
+    }
+    pub(crate) fn to_str(&self) -> &str {
+        match self {
+            AssignmentType::Immediate => ":=",
+            AssignmentType::Lazy => "=",
+            AssignmentType::Append => "+=",
+            AssignmentType::Conditional => "?=",
+        }
+    }
+}
 /// any of the valid statements that can appear in a tupfile
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) enum Statement {
     AssignExpr {
         left: Ident,
         right: Vec<PathExpr>,
-        is_append: bool,
-        is_empty_assign: bool,
-    },
-    LazyAssignExpr {
-        left: Ident,
-        right: Vec<PathExpr>,
-    },
-    AssignRefExpr {
-        left: Ident,
-        right: Vec<PathExpr>,
-        is_append: bool,
-        is_empty_assign: bool,
+        assignment_type: AssignmentType,
     },
     IfElseEndIf {
         then_elif_statements: Vec<CondThenStatements>,
@@ -449,8 +471,8 @@ pub(crate) enum Statement {
     EvalBlock(Vec<PathExpr>),
 }
 
-// we could have used `Into' or 'ToString' trait
-// coherence rules are too strict in rust hence the trait below
+/// we could have used `Into' or 'ToString' trait
+/// coherence rules are too strict in rust hence the trait below
 pub(crate) trait Cat {
     fn cat(self) -> String;
 }
@@ -464,52 +486,71 @@ pub(crate) trait CleanupPaths {
 }
 
 impl CleanupPaths for Vec<PathExpr> {
-    // merges adjacent literals into one. Adjacent literals show up usually after substitution.
     fn cleanup(&mut self) {
-        let mut newpes: String = String::new();
-        let mut newpesall = Vec::new();
-        let mut was_lit = false;
-        let mut was_sp = false;
-        let mut was_nl = false;
-        for pe in self.iter() {
-            if let PathExpr::Quoted(vs) = pe {
-                let mut vs = vs.clone();
-                vs.cleanup();
-                newpesall.push(PathExpr::Quoted(vs));
-                newpes = "".to_string();
-                was_lit = false;
-            } else if matches!(pe, PathExpr::Literal(_)) {
-                let s = pe.cat_ref();
-                newpes += s.as_ref();
-                was_lit = true;
-            } else if was_lit {
-                newpesall.push(PathExpr::Literal(newpes));
-                newpes = "".to_string();
-                was_lit = false;
+        // first check if there are any cleanup operations to be done
+        if self.is_empty() {
+            return;
+        }
+        let needs_cleanup = self.iter().zip(self.iter().skip(1)).any(|(cur, next)| {
+            // Merge adjacent literals, quoted strings and remove spaces, newlines that appear more than once
+            match (cur, next) {
+                (PathExpr::Quoted(_), PathExpr::Quoted(_)) => true,
+                (PathExpr::Literal(_), PathExpr::Literal(_)) => true,
+                (PathExpr::NL, PathExpr::NL) => true,
+                (PathExpr::NL, PathExpr::Sp1) => true,
+                (PathExpr::Sp1, PathExpr::NL) => true,
+                (PathExpr::Sp1, PathExpr::Sp1) => true,
+                _ => false,
             }
-            if matches!(pe, PathExpr::Sp1) {
-                was_sp = true;
-            } else if was_sp {
-                newpesall.push(PathExpr::Sp1); // keep only one space
-                was_sp = false;
-            }
-            if matches!(pe, PathExpr::NL) {
-                was_nl = true;
-            } else if was_nl {
-                newpesall.push(PathExpr::NL); // keep only one newline
-                was_nl = false;
-            }
-            if !matches!(
-                pe,
-                PathExpr::NL | PathExpr::Sp1 | PathExpr::Literal(_) | PathExpr::Quoted(_)
-            ) {
-                newpesall.push(pe.clone());
+        });
+        if needs_cleanup {
+            let newpesall = self.iter().fold(Vec::new(), |mut acc, pe| {
+                // Merge adjacent literals, quoted strings and remove spaces, newlines that appear more than once
+                match pe {
+                    PathExpr::Quoted(vs) => {
+                        //let mut vs = vs.clone();
+                        //vs.cleanup();
+                        if let Some(PathExpr::Quoted(last)) = acc.last_mut() {
+                            last.extend(vs.clone());
+                        } else {
+                            acc.push(pe.clone());
+                        }
+                    }
+                    PathExpr::Literal(s) => {
+                        if let Some(PathExpr::Literal(last)) = acc.last_mut() {
+                            last.push_str(s);
+                        } else {
+                            acc.push(pe.clone());
+                        }
+                    }
+                    PathExpr::NL => {
+                        if matches!(acc.last(), Some(PathExpr::NL)) {
+                        } else {
+                            acc.push(pe.clone());
+                        }
+                    }
+                    PathExpr::Sp1 => {
+                        if matches!(acc.last(), Some(PathExpr::Sp1)) {
+                            // acc.push(pe.clone());
+                        } else if matches!(acc.last(), Some(PathExpr::NL)) {
+                        } else {
+                            acc.push(pe.clone());
+                        }
+                    }
+                    _ => {
+                        acc.push(pe.clone());
+                    }
+                };
+                acc
+            });
+            *self = newpesall;
+        }
+
+        if false && self.len() > 1 {
+            if self.ends_with(&[PathExpr::Sp1]) || self.ends_with(&[PathExpr::NL]) {
+                self.pop();
             }
         }
-        if was_lit {
-            newpesall.push(PathExpr::Literal(newpes));
-        }
-        *self = newpesall;
     }
 }
 impl CleanupPaths for RuleFormula {
@@ -539,21 +580,13 @@ impl CleanupPaths for Statement {
             } => {
                 right.cleanup();
             }
-            Statement::LazyAssignExpr {
-                left: _left, right, ..
-            } => {
-                right.cleanup();
-            }
-            Statement::AssignRefExpr {
-                left: _left, right, ..
-            } => {
-                right.cleanup();
-            }
             Statement::IfElseEndIf {
                 then_elif_statements,
                 else_statements,
             } => {
-                then_elif_statements.iter_mut().for_each(|i| i.cleanup());
+                then_elif_statements
+                    .iter_mut()
+                    .for_each(CleanupPaths::cleanup);
                 else_statements.cleanup();
             }
             Statement::IfDef {
@@ -562,7 +595,7 @@ impl CleanupPaths for Statement {
             } => {
                 checked_var_then_statements
                     .iter_mut()
-                    .for_each(|i| i.cleanup());
+                    .for_each(CleanupPaths::cleanup);
                 else_statements.cleanup();
             }
             Statement::Include(r) => {
@@ -584,7 +617,7 @@ impl CleanupPaths for Statement {
                 v.cleanup();
             }
             Statement::Task(t) => {
-                t.get_mut_body().iter_mut().for_each(|x| x.cleanup());
+                t.get_mut_body().iter_mut().for_each(CleanupPaths::cleanup);
                 t.get_mut_deps().cleanup();
             }
             _ => {}
@@ -663,11 +696,11 @@ impl Cat for &Statement {
                     source: _,
                     target: _,
                     rule_formula: r,
-                    pos,
+                    pos: _,
                 },
                 ..,
             ) => {
-                format!("{} {}: {}", r.description.cat(), r.formula.cat(), pos)
+                format!("{} {}", r.description.cat(), r.formula.cat())
             }
             Statement::EvalBlock(body) => body.cat(),
             _ => "".to_owned(),

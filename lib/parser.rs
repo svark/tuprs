@@ -815,11 +815,6 @@ fn parse_pathexpr_list_until_ws_plus(input: Span) -> IResult<Span, (Vec<PathExpr
     )(input)
 }
 
-// parse a lvalue ref to a ident
-fn parse_lvalue_ref(input: Span) -> IResult<Span, Ident> {
-    let (s, _) = char('&')(input)?;
-    parse_ident(s)
-}
 // parse a lvalue to a ident
 fn parse_ident(input: Span) -> IResult<Span, Ident> {
     map(map_res(take_while(is_ident), from_utf8), Ident::new)(input)
@@ -1011,7 +1006,7 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     // parse the left side of the assignment
     let (s, left) = parse_ident(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, op) = alt((tag("="), tag(":="), tag("?="), tag("+=")))(s)?;
+    let (s, op) = alt((tag(":="), tag("?="), tag("+="), tag("=")))(s)?;
     log::debug!("parsing assignment expression with lhs {:?}", left.name);
     log::debug!("op:{:?}", std::str::from_utf8(op.fragment()).unwrap_or(""));
     let (s, _) = opt(sp1)(s)?;
@@ -1025,34 +1020,11 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
             Statement::AssignExpr {
                 left,
                 right,
-                is_append: op.as_bytes() == b"+=",
-                is_empty_assign: op.as_bytes() == b"?=",
+                assignment_type: AssignmentType::from_str(from_utf8(op).unwrap_or_default()),
             },
             i.slice(..offset),
         )
             .into(),
-    ))
-}
-
-fn parse_lazy_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
-    let s = i;
-    // parse the left side of the assignment
-    let (s, left) = parse_ident(s)?;
-    let (s, _) = opt(sp1)(s)?;
-    let (s, op) = alt((tag(":~"), tag("~=")))(s)?;
-    log::debug!(
-        "parsing lazy assignment expression with lhs {:?}",
-        left.name
-    );
-    log::debug!("op:{:?}", std::str::from_utf8(op.fragment()).unwrap_or(""));
-    let (s, _) = opt(sp1)(s)?;
-    let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
-    log::debug!("and rhs: {:?}", r);
-    let right = r.0;
-    let offset = i.offset(&s);
-    Ok((
-        s,
-        (Statement::LazyAssignExpr { left, right }, i.slice(..offset)).into(),
     ))
 }
 
@@ -1130,36 +1102,6 @@ fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
 }
 
 // parse an assignment expression
-fn parse_ref_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
-    let s = i;
-    let (s, l) = context("lhs", parse_lvalue_ref)(s)?;
-    let (s, _) = opt(sp1)(s)?;
-    let (s, op) = alt((
-        complete(tag("=")),
-        complete(tag(":=")),
-        complete(tag("?=")),
-        complete(tag("+=")),
-    ))(s)?;
-    let (s, _) = opt(sp1)(s)?;
-    log::debug!("parsing assignment expression with lhs  {:?} {:?}", l, op);
-    let (s, r) = context("rhs", cut(complete(parse_pelist_till_line_end_with_ws)))(s)?;
-    log::debug!("and rhs: {:?}", r);
-    let offset = i.offset(&s);
-    let (s, _) = multispace0(s)?;
-    Ok((
-        s,
-        (
-            Statement::AssignRefExpr {
-                left: l,
-                right: r.0,
-                is_append: op.as_bytes() == b"+=",
-                is_empty_assign: op.as_bytes() == b"?=",
-            },
-            i.slice(..offset),
-        )
-            .into(),
-    ))
-}
 // parse description insude a rule (between ^^)
 fn parse_rule_flags_or_description(i: Span) -> IResult<Span, String> {
     let s = i;
@@ -1354,6 +1296,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     let (s, _) = opt(sp1)(s)?;
     let (s, _) = tag("=")(s)?;
     let (s, _) = opt(sp1)(s)?;
+    log::debug!("reading macro: {:?}", from_utf8(macroname).unwrap());
     let (s, for_each) = opt(tag("foreach"))(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, input) = opt(context("rule input", cut(parse_rule_inp)))(s)?;
@@ -1432,19 +1375,17 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_comment),
         complete(parse_include),
         complete(parse_include_rules),
-        complete(parse_ref_assignment_expr),
         complete(parse_assignment_expr),
+        complete(parse_message),
         complete(parse_rule),
         complete(parse_if_else_endif),
         complete(parse_ifdef_endif),
         complete(parse_macroassignment),
-        complete(parse_message),
         complete(parse_export),
         complete(parse_run),
         complete(parse_preload),
         complete(parse_import),
         complete(parse_pathexpr_define),
-        complete(parse_lazy_assignment_expr),
         complete(parse_task_statement),
         complete(parse_eval_block),
     ))(s)
