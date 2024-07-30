@@ -709,7 +709,7 @@ pub struct GeneratedFiles {
     bins: HashMap<BinDescriptor, HashSet<PathDescriptor>>,
     /// paths accumulated in groups
     groups: HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>,
-    /// track the parent rule that generates a output file
+    /// track the parent rule that generates an output file
     parent_rule: HashMap<PathDescriptor, TupLoc>,
 }
 

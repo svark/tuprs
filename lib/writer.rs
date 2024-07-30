@@ -241,9 +241,6 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
         PathExpr::AtExpr(expr) => {
             write!(writer, "@({})", expr).unwrap();
         }
-        PathExpr::AmpExpr(expr) => {
-            write!(writer, "&({})", expr).unwrap();
-        }
         PathExpr::Group(p, name) => {
             write_pathexprs(writer, p);
             write!(writer, "<").unwrap();
@@ -361,7 +358,7 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
         }
         Statement::Task(t) => {
             write!(writer, "definetask").unwrap();
-            write!(writer, " {} ", t.get_target().name).unwrap();
+            write!(writer, " {} ", t.get_target().as_str()).unwrap();
             write!(writer, " : ").unwrap();
             write_pathexprs(writer, t.get_deps());
             write!(writer, "\n").unwrap();

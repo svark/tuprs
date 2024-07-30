@@ -31,10 +31,6 @@ pub(crate) fn get_platform() -> String {
     "dragonfly".to_string()
 }
 
-#[cfg(target_os = "bitrig")]
-pub(crate) fn get_platform() -> String {
-    "bitrig".to_string()
-}
 #[cfg(target_os = "openbsd")]
 pub(crate) fn get_platform() -> String {
     "openbsd".to_string()

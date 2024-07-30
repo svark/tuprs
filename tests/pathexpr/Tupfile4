@@ -10,7 +10,7 @@ ifeq ($(DEBUG),1)
 : $(v) |> type %f > file.txt |> \
 file.txt |
 # no inputs or outputs
-: |> type &(v) |>
+: |> type $(v) |>
 else
   x+=eere #append
 endif

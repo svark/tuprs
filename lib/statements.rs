@@ -7,6 +7,51 @@ use std::fmt::{Display, Formatter};
 use crate::buffers::{EnvDescriptor, PathDescriptor};
 use crate::paths::MatchingPath;
 
+/// TaskTarget encapsulates the target of a task
+#[derive(Debug, Clone, PartialEq)]
+pub enum TaskTarget {
+    /// TaskTarget::Outputs(Vec<PathExpr>) represents a task target that is a list of outputs
+    Outputs(Vec<PathExpr>),
+    /// TaskTarget::Id(Ident) represents a task target that is an identifier
+    Id(Ident),
+}
+
+impl Default for TaskTarget {
+    fn default() -> Self {
+        TaskTarget::Id(Ident::default())
+    }
+}
+impl TaskTarget {
+    pub(crate) fn get_outputs(&self) -> Option<&Vec<PathExpr>> {
+        match self {
+            TaskTarget::Outputs(o) => Some(o),
+            _ => None,
+        }
+    }
+    pub(crate) fn get_id(&self) -> Option<&Ident> {
+        match self {
+            TaskTarget::Id(i) => Some(i),
+            _ => None,
+        }
+    }
+    /// create a new TaskTarget from a list of outputs
+    pub(crate) fn new_outputs(o: Vec<PathExpr>) -> Self {
+        TaskTarget::Outputs(o)
+    }
+    /// create a new TaskTarget from an identifier
+    pub(crate) fn new_id(i: Ident) -> Self {
+        TaskTarget::Id(i)
+    }
+
+    /// get the string representation of the TaskTarget
+    pub fn as_str(&self) -> String {
+        match self {
+            TaskTarget::Outputs(o) => o.cat(),
+            TaskTarget::Id(i) => i.as_str().to_string(),
+        }
+    }
+}
+
 /// PathExpr are tokens that hold some meaning in tupfiles
 #[derive(PartialEq, Debug, Clone, Hash, Eq, Ord, PartialOrd)]
 pub(crate) enum PathExpr {
@@ -24,8 +69,6 @@ pub(crate) enum PathExpr {
     DollarExprs(DollarExprs),
     ///  @(EXPR)
     AtExpr(String),
-    /// &(Expr)
-    AmpExpr(String),
     /// reference to an output available globally across Tupfiles
     Group(Vec<PathExpr>, Vec<PathExpr>),
     ///  {objs} a collector of output
@@ -370,14 +413,14 @@ impl CleanupPaths for CheckedVarThenStatements {
 
 #[derive(PartialEq, Debug, Clone, Default)]
 pub(crate) struct TaskDetail {
-    target: Ident,
+    target: TaskTarget,
     deps: Vec<PathExpr>,
     body: Vec<Vec<PathExpr>>,
     search_dirs: Vec<PathDescriptor>,
 }
 
 impl TaskDetail {
-    pub(crate) fn new(target: Ident, deps: Vec<PathExpr>, body: Vec<Vec<PathExpr>>) -> Self {
+    pub(crate) fn new(target: TaskTarget, deps: Vec<PathExpr>, body: Vec<Vec<PathExpr>>) -> Self {
         Self {
             target,
             deps,
@@ -386,7 +429,7 @@ impl TaskDetail {
         }
     }
 
-    pub(crate) fn get_target(&self) -> &Ident {
+    pub(crate) fn get_target(&self) -> &TaskTarget {
         &self.target
     }
     pub(crate) fn get_deps(&self) -> &Vec<PathExpr> {

@@ -23,6 +23,7 @@ use nom::{Err, InputIter};
 use nom_locate::LocatedSpan;
 
 use crate::buffers::{EnvDescriptor, PathDescriptor};
+use crate::parser::EndClause::{Else, Endif};
 use crate::statements::*;
 
 type IResult<I, O, E = error::VerboseError<I>> = nomIResult<I, O, E>;
@@ -33,6 +34,13 @@ pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
 const END_KEYWORDS: [&str; 4] = ["else", "endif", "endef", "endtask"];
 fn from_utf8(s: Span) -> Result<String, std::str::Utf8Error> {
     std::str::from_utf8(s.as_bytes()).map(|x| x.to_owned())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum EndClause {
+    Else,
+    Endif,
+    //EndDef
 }
 
 impl PathExpr {
@@ -52,11 +60,11 @@ impl PathExpr {
 }
 
 lazy_static! {
-    static ref BRKTOKSINNER: &'static str = "\\\n$&";
-    static ref BRKTOKS: &'static str = "\\\n$@&";
-    static ref BRKTOKSQ: &'static str = "\\\n$@&\"";
-    static ref BRKTOKSWS: &'static str = "\\\n$@& ";
-    static ref BRKTOKSIO: &'static str = "\\\n $@&^<{";
+    static ref BRKTOKSINNER: &'static str = "\\\n$";
+    static ref BRKTOKS: &'static str = "\\\n$@";
+    static ref BRKTOKSQ: &'static str = "\\\n$@\"";
+    static ref BRKTOKSWS: &'static str = "\\\n$@ ";
+    static ref BRKTOKSIO: &'static str = "\\\n $@^<{";
     static ref BRKTAGSNOWS: &'static str = "<|{";
     static ref BRKTAGS: &'static str = " <|{^";
 }
@@ -121,7 +129,7 @@ fn close_bracket(s: char) -> char {
 }
 
 fn parse_pathexpr_ref_raw(schar: char, input: Span) -> IResult<Span, String> {
-    let (s, _) = alt((tag("$"), tag("@"), tag("&")))(input)?;
+    let (s, _) = alt((tag("$"), tag("@")))(input)?;
     let (s, _) = char(schar)(s)?;
     let (s, r) = context("dollar expression name", cut(take_while(is_ident_perc)))(s)?;
     let (s, _) = char(close_bracket(schar))(s)?;
@@ -134,7 +142,7 @@ fn parse_pathexpr_ref_raw(schar: char, input: Span) -> IResult<Span, String> {
 fn parse_pathexpr_patsubst_alt(
     input: Span,
 ) -> IResult<Span, (String, Vec<PathExpr>, Vec<PathExpr>)> {
-    let (s, _) = alt((tag("$("), tag("@("), tag("&(")))(input)?;
+    let (s, _) = alt((tag("$("), tag("@(")))(input)?;
     let (s, r) = take_while(is_ident_perc)(s)?;
     let (s, _) = tag(":")(s)?;
     let (s, (pattern, _)) = context(
@@ -302,14 +310,6 @@ fn parse_pathexpr_dollar_curl(i: Span) -> IResult<Span, PathExpr> {
     )(i)
 }
 
-// parse rvalue ampersand expression eg &(H)
-fn parse_pathexpr_amp(i: Span) -> IResult<Span, PathExpr> {
-    context(
-        "ampersand expression",
-        cut(map(|i| parse_pathexpr_ref_raw('(', i), PathExpr::AmpExpr)),
-    )(i)
-}
-
 // parse a references to a macro
 fn parse_pathexpr_macroref(i: Span) -> IResult<Span, PathExpr> {
     context(
@@ -375,7 +375,7 @@ fn parse_escaped<'a, 'b>(i: Span<'a>, end_tok: &'b str) -> IResult<Span<'a>, Pat
 fn test_pathexpr_ref(i: Span) -> bool {
     let res = || -> IResult<Span, bool> {
         let (_, r) = peek(take(1_usize))(i)?;
-        let ismatch = matches!(r.as_bytes(), b"$" | b"@" | b"&");
+        let ismatch = matches!(r.as_bytes(), b"$" | b"@");
         Ok((i, ismatch))
     };
     res().map(|x| x.1).unwrap_or(false)
@@ -387,7 +387,6 @@ fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
     match r.as_bytes() {
         b"$(" => parse_pathexpr_dollar(s),
         b"@(" => parse_pathexpr_at(s),
-        b"&(" => parse_pathexpr_amp(s),
         b"${" => parse_pathexpr_dollar_curl(s),
         _ => Err(Err::Error(error_position!(i, ErrorKind::Eof))),
     }
@@ -516,7 +515,7 @@ fn parse_pathexpr_filter_out(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_shell(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(shell")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (cmd, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, (cmd, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSQ)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed shell: {:?}", cmd);
     Ok((s, PathExpr::DollarExprs(DollarExprs::Shell(cmd))))
@@ -958,7 +957,36 @@ fn parse_comment(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = line_ending(s)?;
     Ok((s, (Statement::Comment, i.slice(..offset)).into()))
 }
+pub fn parse_ignored_comment(i: Span) -> IResult<Span, ()> {
+    let s = i;
+    if s.is_empty() {
+        return Err(Err::Error(error_position!(i, ErrorKind::Eof)));
+    }
 
+    let (s, _) = opt(sp1)(s)?;
+    let (s, _) = tag("#")(s)?;
+    let (s, _str) = is_not("\n\r")(s)?;
+    let (s, _) = line_ending(s)?;
+    Ok((s, ()))
+}
+
+/// Parse targets by name or by output
+fn parse_task_target(i: Span) -> IResult<Span, TaskTarget> {
+    type Error<'a> = nom::error::Error<Span<'a>>;
+    let (s, targets) = alt((
+        map_res(terminated(parse_ident, preceded(space0, tag(":"))), |x| {
+            Ok::<TaskTarget, Error>(TaskTarget::new_id(x))
+        }),
+        map_res(
+            terminated(
+                |i| parse_pelist_till_delim_no_ws(i, ":", &BRKTOKS),
+                preceded(space0, tag(":")),
+            ),
+            |x| Ok::<TaskTarget, Error>(TaskTarget::new_outputs(x.0)),
+        ),
+    ))(i)?;
+    Ok((s, targets))
+}
 /// task(name) : dep1 dep2..
 ///       commands..
 /// dep1 dep2 could be outputs, group, bin or another task
@@ -966,10 +994,7 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
     let (s, _) = tag("definetask")(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, name) = context(
-        "unexpected task name",
-        cut(terminated(parse_ident, preceded(space0, tag(":")))),
-    )(s)?;
+    let (s, name) = context("Parsing task name/outputs", cut(parse_task_target))(s)?;
     log::debug!("parsed task name: {:?}", name);
     let (s, _) = opt(sp1)(s)?;
     let (s, deps) = opt(parse_pelist_till_line_end_with_ws)(s)?;
@@ -1392,19 +1417,27 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
 }
 
 /// parse until the start of else block
-fn parse_statements_until_else_or_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>, &str)> {
+fn parse_statements_until_else_or_endif(
+    i: Span,
+) -> IResult<Span, (Vec<LocatedStatement>, EndClause)> {
+    let matches_endif = preceded(multispace0, tag("endif"));
+    let matches_else = preceded(multispace0, tag("else"));
     let g = alt((
-        value("else", preceded(multispace0, tag("else"))),
-        value("endif", preceded(multispace0, tag("endif"))),
+        value(EndClause::Else, matches_else),
+        value(EndClause::Endif, matches_endif),
     ));
     many_till(parse_statement, g)(i)
 }
 
 /// parse until endif statement
-fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>, &str)> {
+fn parse_statements_until_endif(i: Span) -> IResult<Span, (Vec<LocatedStatement>, EndClause)> {
     let g = value(
-        "endif",
-        delimited(multispace0, tag("endif"), ws0_line_ending),
+        EndClause::Endif,
+        delimited(
+            multispace0,
+            tag("endif"),
+            alt((ws0_line_ending, parse_ignored_comment)),
+        ),
     );
     many_till(parse_statement, g)(i)
 }
@@ -1598,19 +1631,19 @@ pub(crate) fn parse_checked_var(i: Span) -> IResult<Span, CheckedVar> {
 
 // parse contents inside if else endif bocks(without condition)
 pub(crate) fn parse_ifelseendif_inner(i: Span, eqcond: EqCond) -> IResult<Span, LocatedStatement> {
-    let (s, then_else_s) = parse_statements_until_else_or_endif(i)?;
+    let (s, (then_statements, mut end_clause)) = parse_statements_until_else_or_endif(i)?;
+    let (s, _) = opt(parse_ignored_comment)(s)?;
     let mut cvar_then_statements = vec![CondThenStatements {
         eq: eqcond,
-        then_statements: then_else_s.0,
+        then_statements,
     }];
 
     let mut else_endif_s = Vec::new();
     let mut rest = s;
-    let mut end_clause = then_else_s.1;
-    if end_clause == "endif" {
+    if end_clause == Endif {
         log::debug!("endif reached");
     }
-    while end_clause == "else" {
+    while end_clause == Else {
         // at this point if else block can continue to add more conditional blocks or finish with endif
         if let (s, Some(cvarinner)) = opt(preceded(sp1, parse_eq))(rest)? {
             log::debug!("parsing else if block");
@@ -1675,10 +1708,10 @@ pub(crate) fn parse_ifdef_inner(
 
     let mut else_endif_s = Vec::new();
     let mut rest = s;
-    if end_clause == "endif" {
+    if end_clause == Endif {
         log::debug!("endif reached");
     }
-    while end_clause == "else" {
+    while end_clause == Else {
         // at this point if else block can continue to add more conditional blocks or finish with endif
         if let (s, Some(cvarinner)) = opt(preceded(sp1, parse_checked_var))(rest)? {
             let (s, _) = opt(sp1)(s)?;

@@ -137,15 +137,14 @@ fn test_parse() {
 
 #[test]
 fn parse_x() {
-    /*  use env_logger;
-        let _ = env_logger::try_init();
-        let root = "c:/ws/nxtg/feattempl2";
-        std::env::set_current_dir(root).unwrap();
-        let mut parser = TupParser::<crate::decode::DirSearcher>::try_new_from(root, crate::decode::DirSearcher::new()).unwrap();
-        let arts = parser.parse("hwcommon/xt/manip/mi/Tupfile").map_err( |e| {
-            eprintln!("{:?}", e.to_string());
-            e
-        }).unwrap();
-        assert_eq!(arts.get_resolved_links().len(), 375);
-    */
+    /*   use env_logger;
+    let _ = env_logger::try_init();
+    let root = "c:/ws/nxtg/feattempl2";
+    std::env::set_current_dir(root).unwrap();
+    let mut parser = TupParser::<crate::decode::DirSearcher>::try_new_from(root, crate::decode::DirSearcher::new()).unwrap();
+    let arts = parser.parse("hwcommon/eme/Tupfile").map_err( |e| {
+        eprintln!("{:?}", e.to_string());
+        e
+    }).unwrap();
+    assert_eq!(arts.get_resolved_links().len(), 375); */
 }

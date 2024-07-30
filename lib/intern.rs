@@ -277,13 +277,6 @@ impl<T: Eq + Hash + Send + Sync + 'static> Intern<T> {
     }
 }
 
-#[cfg(feature = "bench")]
-#[test]
-fn test_benchmarking_only_clear_interns() {
-    Intern::<str>::benchmarking_only_clear_interns();
-    assert_eq!(0, Intern::<str>::num_objects_interned());
-}
-
 #[cold]
 fn allocate_ptr() -> *mut usize {
     let aref: &usize = Box::leak(Box::new(0));
@@ -416,14 +409,6 @@ impl<T: Eq + Hash + Send + Sync + PartialOrd> PartialOrd for Intern<T> {
 impl<T: Eq + Hash + Send + Sync + Ord> Ord for Intern<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.as_ref().cmp(other)
-    }
-}
-
-#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
-#[cfg(feature = "serde")]
-impl<T: Eq + Hash + Send + Sync + Serialize> Serialize for Intern<T> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.as_ref().serialize(serializer)
     }
 }
 

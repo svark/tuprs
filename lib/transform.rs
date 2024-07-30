@@ -772,17 +772,6 @@ impl PathExpr {
                     vec![self.clone()]
                 }
             }
-            PathExpr::AmpExpr(ref x) => {
-                if let Some(val) = m.rexpr_map.get(x.as_str()) {
-                    intersperse_sp1(val)
-                } else if !x.contains('%') {
-                    log::warn!("ampexpr {} not found", x);
-                    vec![PathExpr::from("".to_owned())]
-                } else {
-                    debug!("delay subst of ampexpr {}", x);
-                    vec![self.clone()]
-                }
-            }
 
             PathExpr::Quoted(ref x) => {
                 vec![PathExpr::Quoted(x.subst_pe(m, path_searcher))]
@@ -2166,7 +2155,7 @@ impl LocatedStatement {
 
         let ti = TaskInstance::new(
             &tup_dir,
-            name.as_str(),
+            &name.as_str(),
             deps.clone(),
             recipe.clone(),
             tup_loc,

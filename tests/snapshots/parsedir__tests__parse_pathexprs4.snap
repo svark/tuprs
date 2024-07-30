@@ -5,5 +5,5 @@ expression: strings
 [
   ":foreach *.cxx impl/*.cxx *.cpp ../<grp> ../<grp2> |>\" CC %f\" gcc %f /Fout:%o %<grp> %<grp2>   |>  |  command.pch ^exclude_pattern.* ",
   ":src/main.rs |>type %f > file.txt  |> file.txt ",
-  ": |>type   |> "
+  ": |>type src/main.rs  |> "
 ]

@@ -28,7 +28,8 @@ use crate::statements::*;
 use crate::transform::{to_regex, ResolvedRules, TupParser};
 use crate::ReadWriteBufferObjects;
 
-/// Trait to discover paths from an external source (such as a database)
+/// Trait to discover paths from a source (such as a database or directory tree)
+/// Outputs from rules can be added to list of paths searched using `merge` method
 pub trait PathSearcher {
     /// Discover paths from glob string
     fn discover_paths(
@@ -1668,7 +1669,7 @@ impl LocatedStatement {
             let deps = task_detail.get_deps();
             let search_dirs = task_detail.get_search_dirs();
             let task_desc = path_buffers
-                .try_get_task_desc(&tup_cwd, name.as_str())
+                .try_get_task_desc(&tup_cwd, &name.as_str())
                 .ok_or(Err::TaskNotFound(
                     name.as_str().to_string(),
                     tup_loc.clone(),
