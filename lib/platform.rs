@@ -45,10 +45,6 @@ pub(crate) fn get_arch() -> String {
     "x86".to_string()
 }
 
-#[cfg(target_arch = "x8_64")]
-pub(crate) fn get_arch() -> String {
-    "x8_64".to_string()
-}
 #[cfg(target_arch = "x86_64")]
 pub(crate) fn get_arch() -> String {
     "x86_64".to_string()
@@ -70,18 +66,10 @@ pub(crate) fn get_arch() -> String {
 pub(crate) fn get_arch() -> String {
     "arm".to_string()
 }
-#[cfg(target_arch = "arm64")]
-pub(crate) fn get_arch() -> String {
-    "arm64".to_string()
-}
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn get_arch() -> String {
     "aarch64".to_string()
-}
-#[cfg(target_arch = "ia64")]
-pub(crate) fn get_arch() -> String {
-    "ia64".to_string()
 }
 #[cfg(target_arch = "sparc")]
 pub(crate) fn get_arch() -> String {

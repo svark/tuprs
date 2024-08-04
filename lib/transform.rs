@@ -1895,6 +1895,17 @@ impl SubstPEs for EqCond {
     }
 }
 
+impl SubstPEs for Condition {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self
+    where
+        Self: Sized,
+    {
+        match self {
+            Condition::EqCond(ref eq) => Condition::EqCond(eq.subst_pe(m, path_searcher)),
+            _ => self.clone(),
+        }
+    }
+}
 impl Subst for CondThenStatements {
     fn subst(
         &self,
@@ -1905,23 +1916,7 @@ impl Subst for CondThenStatements {
         Self: Sized,
     {
         Ok(CondThenStatements {
-            eq: self.eq.subst_pe(parse_state, path_searcher),
-            then_statements: self.then_statements.subst(parse_state, path_searcher)?,
-        })
-    }
-}
-
-impl Subst for CheckedVarThenStatements {
-    fn subst(
-        &self,
-        parse_state: &mut ParseState,
-        path_searcher: &impl PathSearcher,
-    ) -> Result<Self, Err>
-    where
-        Self: Sized,
-    {
-        Ok(CheckedVarThenStatements {
-            checked_var: self.checked_var.clone(),
+            cond: self.cond.subst_pe(parse_state, path_searcher),
             then_statements: self.then_statements.subst(parse_state, path_searcher)?,
         })
     }
@@ -1960,18 +1955,6 @@ impl LocatedStatement {
                     path_searcher,
                     &mut newstats,
                     then_elif_statements,
-                    else_statements,
-                )?;
-            }
-            Statement::IfDef {
-                checked_var_then_statements,
-                else_statements,
-            } => {
-                Self::subst_ifdef_else(
-                    parse_state,
-                    path_searcher,
-                    &mut newstats,
-                    checked_var_then_statements,
                     else_statements,
                 )?;
             }
@@ -2052,9 +2035,9 @@ impl LocatedStatement {
     ) -> Result<(), Error> {
         let new_then_elif_statements: ControlFlow<_> =
             then_elif_statements.iter().try_for_each(|x| {
-                let e = x.eq.subst_pe(parse_state, path_searcher);
-                debug!("testing {:?} == {:?}", e.lhs, e.rhs);
-                if !e.not_cond == e.lhs.cat().eq(&e.rhs.cat()) {
+                let e = x.cond.subst_pe(parse_state, path_searcher);
+                debug!("testing {:?}", e);
+                if e.verify(parse_state) {
                     debug!("condition satisfied");
                     return ControlFlow::Break(x.then_statements.subst(parse_state, path_searcher));
                 } else {
@@ -2095,40 +2078,6 @@ impl LocatedStatement {
             ),
             *loc,
         ));
-        Ok(())
-    }
-
-    fn subst_ifdef_else(
-        parse_state: &mut ParseState,
-        path_searcher: &impl PathSearcher,
-        newstats: &mut Vec<LocatedStatement>,
-        checked_var_then_statements: &Vec<CheckedVarThenStatements>,
-        else_statements: &Vec<LocatedStatement>,
-    ) -> Result<(), Error> {
-        let r = checked_var_then_statements.iter().try_for_each(|x| {
-            let cvar = &x.checked_var;
-            debug!(
-                "testing if{}def {:?}",
-                if cvar.is_not_cond() { "n" } else { "" },
-                cvar.get_var()
-            );
-            if cvar.is_not_cond() != parse_state.is_var_defined(cvar.get_var().as_str()) {
-                debug!("cvar condition statisfied");
-                return ControlFlow::Break(x.then_statements.subst(parse_state, path_searcher));
-            }
-            debug!("trying alternative branches");
-            Continue(())
-        });
-        match r {
-            ControlFlow::Break(Ok(mut new_then_elif_statements)) => {
-                newstats.append(&mut new_then_elif_statements);
-            }
-            ControlFlow::Break(Err(e)) => return Err(e),
-            _ => {
-                let mut else_s = else_statements.subst(parse_state, path_searcher)?;
-                newstats.append(&mut else_s);
-            }
-        }
         Ok(())
     }
 

@@ -4,8 +4,8 @@ use std::io::BufWriter;
 use std::io::Write;
 
 use crate::statements::{
-    Cat, CatRef, DollarExprs, Level, Link, LocatedStatement, PathExpr, RuleFormula, Source,
-    Statement, Target,
+    Cat, CatRef, Condition, DollarExprs, Level, Link, LocatedStatement, PathExpr, RuleFormula,
+    Source, Statement, Target,
 };
 
 impl Source {
@@ -268,6 +268,31 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
         }
     }
 }
+impl Condition {
+    pub fn write<T: Write>(&self, buf_writer: &mut BufWriter<T>) {
+        match self {
+            Condition::EqCond(eq) => {
+                if self.is_negation() {
+                    buf_writer.write_all(b"ifneq (").unwrap();
+                } else {
+                    buf_writer.write_all(b"ifeq (").unwrap();
+                }
+
+                write_pathexprs(buf_writer, eq.lhs.as_slice());
+                buf_writer.write_all(b",").unwrap();
+                write_pathexprs(buf_writer, eq.rhs.as_slice());
+                buf_writer.write_all(b")\n").unwrap();
+            }
+            Condition::CheckedVar(cv) => {
+                if self.is_negation() {
+                    write!(buf_writer, "ifndef {}\n", cv.get_var()).unwrap();
+                } else {
+                    write!(buf_writer, "ifndef {}\n", cv.get_var()).unwrap();
+                }
+            }
+        }
+    }
+}
 
 pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &LocatedStatement) {
     match stmt.get_statement() {
@@ -286,40 +311,7 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
             else_statements,
         } => {
             for stmt in then_elif_statements {
-                if stmt.eq.not_cond {
-                    write!(writer, "ifneq (").unwrap();
-                } else {
-                    write!(writer, "ifeq (").unwrap();
-                }
-                write_pathexprs(writer, &stmt.eq.lhs);
-                write!(writer, ", ").unwrap();
-                write_pathexprs(writer, &stmt.eq.rhs);
-                write!(writer, ")\n").unwrap();
-                for stmt in &stmt.then_statements {
-                    write!(writer, "    ").unwrap();
-                    write_statement(writer, &stmt);
-                }
-            }
-            if !else_statements.is_empty() {
-                write!(writer, "else\n").unwrap();
-                for stmt in else_statements {
-                    write!(writer, "    ").unwrap();
-                    write_statement(writer, &stmt);
-                }
-            }
-            write!(writer, "endif\n").unwrap();
-        }
-        Statement::IfDef {
-            checked_var_then_statements,
-            else_statements,
-        } => {
-            for stmt in checked_var_then_statements {
-                let ifclause = if stmt.checked_var.is_not_cond() {
-                    "ifndef"
-                } else {
-                    "ifdef"
-                };
-                write!(writer, "{} {}\n", ifclause, stmt.checked_var.get_var()).unwrap();
+                stmt.cond.write(writer);
                 for stmt in &stmt.then_statements {
                     write!(writer, "    ").unwrap();
                     write_statement(writer, &stmt);

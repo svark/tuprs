@@ -15,9 +15,6 @@ use hashbrown::HashMap;
 use parking_lot::Mutex;
 use tinyset::Fits64;
 
-#[cfg(feature = "serde")]
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
 /// A `TypeHolder` is a container for any sendable type.
 pub struct TypeHolderSend(Vec<AnySend>);
 
@@ -71,10 +68,6 @@ impl<P: Deref + Eq + Hash> HashSet<P> {
     }
     pub fn len(&self) -> usize {
         self.0.len()
-    }
-    #[cfg(feature = "bench")]
-    pub fn clear(&mut self) {
-        self.0.clear()
     }
 }
 
@@ -269,12 +262,6 @@ impl<T: Eq + Hash + Send + Sync + 'static> Intern<T> {
     pub fn is_interned(t: &T) -> bool {
         INTERN_CONTAINERS.with(|m: &mut HashSet<&'static T>| -> bool { m.0.contains_key(&t) })
     }
-
-    /// Only for benchmarking, this will cause problems
-    #[cfg(feature = "bench")]
-    pub fn benchmarking_only_clear_interns() {
-        INTERN_CONTAINERS.with(|m: &mut HashSet<&'static T>| -> () { m.clear() })
-    }
 }
 
 #[cold]
@@ -421,13 +408,5 @@ impl<T: Eq + Hash + Send + Sync + 'static> From<T> for Intern<T> {
 impl<T: Eq + Hash + Send + Sync + Default + 'static> Default for Intern<T> {
     fn default() -> Self {
         Intern::new(Default::default())
-    }
-}
-
-#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
-#[cfg(feature = "serde")]
-impl<'de, T: Eq + Hash + Send + Sync + 'static + Deserialize<'de>> Deserialize<'de> for Intern<T> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        T::deserialize(deserializer).map(|x: T| Self::new(x))
     }
 }

@@ -6,10 +6,11 @@ use std::fmt::{Display, Formatter};
 
 use crate::buffers::{EnvDescriptor, PathDescriptor};
 use crate::paths::MatchingPath;
+use crate::transform::ParseState;
 
 /// TaskTarget encapsulates the target of a task
 #[derive(Debug, Clone, PartialEq)]
-pub enum TaskTarget {
+pub(crate) enum TaskTarget {
     /// TaskTarget::Outputs(Vec<PathExpr>) represents a task target that is a list of outputs
     Outputs(Vec<PathExpr>),
     /// TaskTarget::Id(Ident) represents a task target that is an identifier
@@ -384,29 +385,57 @@ impl Env {
         }
     }
 }
+/// [Condition] is a condition that is checked in if(n)eq statements or if(n)def statements
+#[derive(PartialEq, Debug, Clone)]
+pub(crate) enum Condition {
+    EqCond(EqCond),
+    CheckedVar(CheckedVar),
+}
+impl Condition {
+    pub(crate) fn is_negation(&self) -> bool {
+        match self {
+            Condition::EqCond(eq) => eq.not_cond,
+            Condition::CheckedVar(cv) => cv.not_cond,
+        }
+    }
 
+    pub(crate) fn verify(&self, m: &ParseState) -> bool {
+        let not_cond = self.is_negation();
+        match self {
+            Condition::EqCond(eq) => {
+                let lhs = eq.lhs.cat();
+                let rhs = eq.rhs.cat();
+                (lhs == rhs) == !not_cond
+            }
+            Condition::CheckedVar(cv) => {
+                let var = cv.get_var().as_str();
+                let is_defined = m.is_var_defined(var);
+                is_defined == !not_cond
+            }
+        }
+    }
+}
+impl CleanupPaths for Condition {
+    fn cleanup(&mut self) {
+        match self {
+            Condition::EqCond(eq) => {
+                eq.lhs.cleanup();
+                eq.rhs.cleanup();
+            }
+            _ => {}
+        }
+    }
+}
 #[derive(PartialEq, Debug, Clone)]
 pub(crate) struct CondThenStatements {
-    pub(crate) eq: EqCond,
+    pub(crate) cond: Condition,
     pub(crate) then_statements: Vec<LocatedStatement>,
 }
 
 impl CleanupPaths for CondThenStatements {
     fn cleanup(&mut self) {
-        self.eq.lhs.cleanup();
-        self.eq.rhs.cleanup();
-        self.then_statements.cleanup();
-    }
-}
-
-#[derive(PartialEq, Debug, Clone)]
-pub(crate) struct CheckedVarThenStatements {
-    pub(crate) checked_var: CheckedVar,
-    pub(crate) then_statements: Vec<LocatedStatement>,
-}
-
-impl CleanupPaths for CheckedVarThenStatements {
-    fn cleanup(&mut self) {
+        self.cond.cleanup();
+        self.cond.cleanup();
         self.then_statements.cleanup();
     }
 }
@@ -489,11 +518,6 @@ pub(crate) enum Statement {
     IfElseEndIf {
         then_elif_statements: Vec<CondThenStatements>,
         // many if[n]eq (cond) or else if[n]eq(cond) statements that precede else or endif
-        else_statements: Vec<LocatedStatement>, // final else block
-    },
-    IfDef {
-        checked_var_then_statements: Vec<CheckedVarThenStatements>,
-        // many ifdef or else if statements that precede  else or endif
         else_statements: Vec<LocatedStatement>, // final else block
     },
     IncludeRules,
@@ -628,15 +652,6 @@ impl CleanupPaths for Statement {
                 else_statements,
             } => {
                 then_elif_statements
-                    .iter_mut()
-                    .for_each(CleanupPaths::cleanup);
-                else_statements.cleanup();
-            }
-            Statement::IfDef {
-                checked_var_then_statements,
-                else_statements,
-            } => {
-                checked_var_then_statements
                     .iter_mut()
                     .for_each(CleanupPaths::cleanup);
                 else_statements.cleanup();
