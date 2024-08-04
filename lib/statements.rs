@@ -23,6 +23,7 @@ impl Default for TaskTarget {
     }
 }
 impl TaskTarget {
+    /*
     pub(crate) fn get_outputs(&self) -> Option<&Vec<PathExpr>> {
         match self {
             TaskTarget::Outputs(o) => Some(o),
@@ -34,7 +35,7 @@ impl TaskTarget {
             TaskTarget::Id(i) => Some(i),
             _ => None,
         }
-    }
+    } */
     /// create a new TaskTarget from a list of outputs
     pub(crate) fn new_outputs(o: Vec<PathExpr>) -> Self {
         TaskTarget::Outputs(o)
@@ -238,10 +239,6 @@ impl CheckedVar {
     pub fn new(v: Ident, not_cond: bool) -> Self {
         Self { var: v, not_cond }
     }
-    pub fn is_not_cond(&self) -> bool {
-        self.not_cond
-    }
-
     pub fn get_var(&self) -> &Ident {
         &self.var
     }
