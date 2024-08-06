@@ -344,7 +344,7 @@ impl PathSearcher for DirSearcher {
         for glob_path in glob_path {
             let to_match = glob_path.get_abs_path();
             debug!(
-                "bp:{:?}, to_match:{:?}",
+                "looking at base path:{:?} for pattern:{:?}",
                 glob_path.get_base_abs_path(),
                 to_match
             );
@@ -353,8 +353,11 @@ impl PathSearcher for DirSearcher {
             if !glob_path.has_glob_pattern() {
                 let mut pes = Vec::new();
                 let path_desc = glob_path.get_glob_path_desc();
-                debug!("looking for child {:?}", to_match);
                 let mp_from_root = root.join(to_match.as_path());
+                debug!(
+                    "looking for fixed pattern path {:?} at {:?}",
+                    to_match, mp_from_root
+                );
                 if mp_from_root.is_file() || mp_from_root.is_dir() {
                     pes.push(MatchingPath::new(path_desc));
                     if log_enabled!(log::Level::Debug) {
@@ -363,6 +366,8 @@ impl PathSearcher for DirSearcher {
                         }
                     }
                     return Ok(pes);
+                } else {
+                    log::warn!("Could not find path {:?}", mp_from_root);
                 }
             } else {
                 let base_path = glob_path.get_base_abs_path();
@@ -415,13 +420,6 @@ impl PathSearcher for DirSearcher {
                 if !pes.is_empty() {
                     break;
                 }
-            }
-        }
-        let mut matching_outputs = self.output_holder.discover_paths(path_buffers, glob_path)?;
-        for pe in matching_outputs.drain(..) {
-            debug!("mp_glob:{:?}", pe);
-            if unique_path_descs.insert(pe.path_descriptor().clone()) {
-                pes.push(pe);
             }
         }
         Ok(pes)

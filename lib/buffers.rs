@@ -123,26 +123,93 @@ pub struct DirEntry {
     cached_path: RefCell<Option<NormalPath>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathStep {
+    Backward,
+    Forward(PathDescriptor),
+}
+impl PathStep {
+    fn as_os_str(&self) -> &OsStr {
+        match self {
+            PathStep::Backward => OsStr::new(".."),
+            PathStep::Forward(pd) => pd.get().get_os_str(),
+        }
+    }
+}
+impl Default for PathStep {
+    fn default() -> Self {
+        PathStep::Backward
+    }
+}
 /// ```RelativeDirEntry``` contains a path relative to a base directory
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct RelativeDirEntry {
     basedir: PathDescriptor,
     target: PathDescriptor,
-    common_root: PathSym,
+    steps: Option<Vec<PathStep>>,
+}
+fn first_common_ancestor<I, J>(iter1: I, iter2: J) -> Option<PathDescriptor>
+where
+    I: IntoIterator<Item = PathDescriptor>,
+    J: IntoIterator<Item = PathDescriptor>,
+{
+    let set: HashSet<_> = iter1.into_iter().collect();
+    iter2.into_iter().find(|item| set.contains(&item))
 }
 
 impl RelativeDirEntry {
     /// Construct a new relative dir entry
     pub fn new(basedir: PathDescriptor, target: PathDescriptor) -> Self {
-        let common_root = // get common root for self.basedir and self.target
-            if RelativeDirEntry::is_ancestor(&basedir, &target) { basedir.clone() } else {
-                basedir.components().zip(target.components())
-                    .take_while(|(a, b)| a == b).last().expect("common root not found").0
+        let steps = // get common root for self.basedir and self.target
+            if basedir == target || RelativeDirEntry::is_ancestor(&basedir, &target) {
+                let mut steps = Vec::new();
+                let mut target = target.clone();
+                while target != basedir {
+                    let parent = target.get_parent_descriptor();
+                    steps.push(PathStep::Forward(target));
+                    target = parent;
+                }
+                Some(steps)
+            } else if RelativeDirEntry::is_ancestor(&target, &basedir) {
+                let mut steps = Vec::new();
+                let mut basedir = basedir.clone();
+                while basedir != target {
+                    steps.push(PathStep::Backward);
+                    basedir = basedir.get_parent_descriptor();
+                }
+                steps.reverse();
+                Some(steps)
+            } else {
+                // find the first common ancestor and then find the steps to reach the target from the common ancestor
+                let mut basedir = basedir.clone();
+                let mut target = target.clone();
+                first_common_ancestor(basedir.ancestors(), target.ancestors())
+                    .map(|common_root| {
+                        let mut steps = Vec::new();
+                        while basedir != common_root {
+                            let parent = basedir.get_parent_descriptor();
+                            steps.push(PathStep::Backward);
+                            basedir = parent;
+                        }
+                        let mut fwd_steps = Vec::new();
+                        fwd_steps.push(PathStep::Forward(target.clone()));
+                        while target != common_root {
+                            let parent = target.get_parent_descriptor();
+                            fwd_steps.push(PathStep::Forward(parent.clone()));
+                            target = parent;
+                        }
+                        fwd_steps.reverse();
+                        steps.extend(fwd_steps);
+                        Some(steps)
+                    })
+                    .unwrap_or_else(|| {
+                        None
+                    })
             };
         Self {
             basedir,
             target,
-            common_root: common_root.to_u64(),
+            steps,
         }
     }
     fn is_ancestor(basedir: &PathDescriptor, target: &PathDescriptor) -> bool {
@@ -150,35 +217,28 @@ impl RelativeDirEntry {
     }
     /// Normalized path relative to basedir
     pub fn get_path(&self) -> NormalPath {
-        let path_components: Vec<_> = self
-            .components()
-            .map(|comp| comp.as_ref().get_rc_name())
-            .collect();
-        let path_os_string = OsString::from(path_components.join(OsStr::new("/")));
+        let mut first = true;
+        let mut path_os_string = OsString::new();
+        for step in self.components() {
+            if first {
+                first = false;
+            } else {
+                path_os_string.push("/");
+            }
+            path_os_string.push(match step {
+                PathStep::Backward => OsStr::new(".."),
+                PathStep::Forward(pd) => pd.get().get_os_str(),
+            });
+        }
         let path = NormalPath::new_from_raw(path_os_string);
         path
     }
 
     /// ancestors including self
-    pub fn ancestors(&self) -> impl Iterator<Item = PathDescriptor> + '_ {
-        let mut cur_path = self.target.clone();
-        std::iter::from_fn(move || {
-            if cur_path.is_root() || cur_path.to_u64() == self.common_root {
-                None
-            } else {
-                let last_cur_path = cur_path.clone();
-                cur_path = cur_path.get_parent_descriptor();
-                Some(last_cur_path)
-            }
-        })
-    }
+
     /// directory components of this path including self
-    pub fn components(&self) -> impl Iterator<Item = PathDescriptor> {
-        let mut all_components = Vec::new();
-        for ancestor in self.ancestors() {
-            all_components.push(ancestor);
-        }
-        std::iter::from_fn(move || all_components.pop())
+    pub fn components(&self) -> impl Iterator<Item = &PathStep> {
+        self.steps.iter().flat_map(|steps| steps.iter())
     }
 
     /// check if this path is root
@@ -191,10 +251,7 @@ impl AddAssign<&RelativeDirEntry> for PathDescriptor {
     fn add_assign(&mut self, rhs: &RelativeDirEntry) {
         let mut pathsym = self.to_u64();
         for components in rhs.components() {
-            let nxt = Intern::new(DirEntry::new(
-                pathsym,
-                components.as_ref().get_rc_name().as_ref(),
-            ));
+            let nxt = Intern::new(DirEntry::new(pathsym, components.as_os_str()));
             pathsym = nxt.to_u64();
         }
         *self = PathDescriptor::from_interned(fetch_dir_entry(&pathsym));
@@ -396,9 +453,13 @@ impl DirEntry {
         self.name.to_string_lossy()
     }
 
-    /// internal string representation of the name
+    /// internal string representation of the name of directory entry
     pub fn get_rc_name(&self) -> Arc<OsStr> {
         self.name.clone()
+    }
+    /// get os string reference of the name of directory entry
+    pub fn get_os_str(&self) -> &OsStr {
+        self.name.as_ref()
     }
 }
 
