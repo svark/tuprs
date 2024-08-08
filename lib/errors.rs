@@ -18,15 +18,15 @@ pub enum Error {
     #[error("subst failure at line:{0}")]
     SubstError(u32, Loc),
     /// Error when opening a file
-    #[error("Io Error: {0}")]
-    IoError(IoErr, Loc),
-    /// Macro with given name could not found for expansion
+    #[error("Io Error: {0} for {1}")]
+    IoError(IoErr, String, Loc),
+    /// Macro with given name could not be found
     #[error("Unknown macro reference:{0}")]
     UnknownMacroRef(String, TupLoc),
     /// Dependency cycle  between rules of tupfile because groups refer to one another
     #[error("Dependency cycle between {0}, {1}")]
     DependencyCycle(String, String),
-    /// Tupfile.ini could not be found, hence root directory could not established
+    /// Tupfile.ini could not be found, hence root directory could not be established
     #[error("Root folder not found. Tupfile.ini is expected in the root.")]
     RootNotFound,
     /// Glob looks fishy as per glob rules

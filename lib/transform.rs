@@ -60,6 +60,14 @@ fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     command
 }
 
+fn variable_value_is_non_empty(s: &Vec<String>) -> bool {
+    let len = s.len();
+    match len {
+        len if len > 1 => true,
+        len if len == 1 => !s[0].is_empty(),
+        _ => false,
+    }
+}
 /// Statements to resolve with their current parse state
 pub struct StatementsToResolve {
     /// Statements to resolve
@@ -105,8 +113,6 @@ impl Default for ParseContext {
 pub(crate) struct ParseState {
     /// tupfile variables to be substituted
     pub(crate) expr_map: HashMap<String, Vec<String>>,
-    /// tupfile reference variables to be substituted
-    pub(crate) rexpr_map: HashMap<String, Vec<String>>,
     // defined functions
     pub(crate) func_map: HashMap<String, Vec<PathExpr>>,
     /// configuration values read from tup.config
@@ -396,21 +402,13 @@ impl ParseState {
             .split(|x| matches!(x, PathExpr::Sp1))
             .map(|x| {
                 x.iter()
-                    .filter_map(|x| {
-                        let cow = x.cat_ref();
-                        if cow.is_empty() {
-                            None
-                        } else {
-                            Some(cow.to_string())
-                        }
-                    })
+                    .map(|x| x.cat_ref().trim().to_string())
                     .collect::<Vec<String>>()
                     .join(" ")
             })
-            .filter(|x| !x.is_empty())
-            .collect::<Vec<String>>();
+            .collect::<Vec<String>>(); // $(empty substitution depends on this)
         log::debug!("eval_as_strings: {:?}", vs);
-        vs
+        vs // even if there is single empty string with no spaces we keep it as it is
     }
 
     fn append_assign_eager(
@@ -428,7 +426,8 @@ impl ParseState {
         } else if !val.is_empty() {
             debug!(
                 "eager assign of {:?} to {:?} with not previously set val",
-                v, val
+                v,
+                val.join("_SPA1_")
             );
             self.expr_map.insert(v.to_string(), val);
         }
@@ -509,11 +508,12 @@ impl ParseState {
         self.append_assign_lazy(v, right);
     }
 
+    //https://www.gnu.org/software/make/manual/make.html#Conditional-Syntax
     pub(crate) fn is_var_defined(&self, v: &str) -> bool {
-        self.expr_map.contains_key(v)
-            || self.rexpr_map.contains_key(v)
-            || self.func_map.contains_key(v)
+        self.expr_map.contains_key(v) && variable_value_is_non_empty(self.expr_map.get(v).unwrap())
+            || self.func_map.contains_key(v) && self.func_map.get(v).unwrap().len() > 0
             || self.conf_map.contains_key(v)
+                && variable_value_is_non_empty(self.conf_map.get(v).unwrap())
     }
 }
 
@@ -769,12 +769,9 @@ impl PathExpr {
             PathExpr::AtExpr(ref x) => {
                 if let Some(val) = m.conf_map.get(x.as_str()) {
                     intersperse_sp1(val)
-                } else if m.parse_context != Expression && !x.contains('%') {
-                    log::warn!("atexpr {} not found", x);
-                    vec![PathExpr::Literal("".to_owned())]
                 } else {
-                    debug!("delay subst of atexpr {}", x);
-                    vec![self.clone()]
+                    log::warn!("atexpr {} not found", x);
+                    vec![PathExpr::default()]
                 }
             }
 
@@ -991,12 +988,9 @@ impl DollarExprs {
                     .map(|x| x.1 .0)
                     .unwrap_or(vec![]);
                     pelist.subst_pe(m, path_searcher)
-                } else if m.parse_context == Expression || x.contains('%') {
-                    log::warn!("dollarexpr {} not found", x);
-                    vec![self.clone().into()]
                 } else {
                     log::warn!("No substitution found for {}", x);
-                    vec![PathExpr::from("".to_owned())] // postpone subst until placeholders are fixed
+                    vec![Default::default()]
                 }
             }
             DollarExprs::Subst(ref from, ref to, ref vs) => {
@@ -1340,7 +1334,7 @@ impl DollarExprs {
                     if word.is_empty() {
                         vec![]
                     } else {
-                        vec![PathExpr::from(word.to_string())]
+                        vec![PathExpr::from(word)]
                     }
                 };
                 next(&vs)
@@ -1791,7 +1785,7 @@ impl ExpandMacro for Link {
     }
 }
 /// parent folder path for a given tupfile
-pub(crate) fn get_parent(cur_file: &Path) -> Cow<Path> {
+pub fn get_parent(cur_file: &Path) -> Cow<Path> {
     if cur_file.eq(OsStr::new("/"))
         || cur_file.eq(OsStr::new("."))
         || cur_file.as_os_str().is_empty()
@@ -2232,8 +2226,8 @@ impl LocatedStatement {
         newstats: &mut Vec<LocatedStatement>,
         loc: &Loc,
     ) -> Result<(), Error> {
-        let parent = parse_state.get_cur_file_desc().get_parent_descriptor();
-        debug!("attempting to read tuprules");
+        let parent = parse_state.get_tup_dir_desc();
+        debug!("attempting to read tuprules in dir:{:?}", parent.get_path());
         let mut found = false;
         // locate tupfiles up the heirarchy from the current Tupfile folder
         for f in path_searcher.locate_tuprules(&parent, parse_state.get_path_buffers().deref()) {

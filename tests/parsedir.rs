@@ -98,6 +98,13 @@ mod tests {
         let statements = parse_pathexprs(1);
         let strings = convert_to_str(&statements);
         insta::assert_json_snapshot!(strings);
+        let (_s, v2) = tupparser::transform::testing::subst_statements(
+            std::path::Path::new("Tupfile2"),
+            statements,
+        )
+        .unwrap();
+        assert_eq!(v2.get("F").is_none(), true);
+        insta::assert_snapshot!(v2.get("TARGET_CPU_IS_X86").unwrap().join(" "));
     }
 
     #[test]

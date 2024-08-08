@@ -1,7 +1,7 @@
 //! Module to hold buffers of tupfile paths, bins, groups which can be referenced by their descriptors
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
-use std::collections::{hash_map::Entry, HashMap, HashSet};
+use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
@@ -123,9 +123,13 @@ pub struct DirEntry {
     cached_path: RefCell<Option<NormalPath>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// PathStep represents a step to reach a target directory from source directory
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum PathStep {
+    /// Backward corresponds to a step backward to the parent directory
+    #[default]
     Backward,
+    /// Step forward to directory under current
     Forward(PathDescriptor),
 }
 impl PathStep {
@@ -136,85 +140,64 @@ impl PathStep {
         }
     }
 }
-impl Default for PathStep {
-    fn default() -> Self {
-        PathStep::Backward
-    }
-}
 /// ```RelativeDirEntry``` contains a path relative to a base directory
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct RelativeDirEntry {
     basedir: PathDescriptor,
     target: PathDescriptor,
-    steps: Option<Vec<PathStep>>,
+    steps: Vec<PathStep>,
 }
-fn first_common_ancestor<I, J>(iter1: I, iter2: J) -> Option<PathDescriptor>
-where
-    I: IntoIterator<Item = PathDescriptor>,
-    J: IntoIterator<Item = PathDescriptor>,
-{
-    let set: HashSet<_> = iter1.into_iter().collect();
-    iter2.into_iter().find(|item| set.contains(&item))
+fn first_common_ancestor(base: PathDescriptor, target: PathDescriptor) -> PathDescriptor {
+    if base == target {
+        return base;
+    } else if base.is_root() {
+        return base;
+    } else if target.is_root() {
+        return target;
+    }
+    let set: HashSet<_> = base.ancestors().collect();
+    target
+        .ancestors()
+        .find(|item| set.contains(&item))
+        .unwrap_or_default()
 }
 
 impl RelativeDirEntry {
     /// Construct a new relative dir entry
     pub fn new(basedir: PathDescriptor, target: PathDescriptor) -> Self {
-        let steps = // get common root for self.basedir and self.target
-            if basedir == target || RelativeDirEntry::is_ancestor(&basedir, &target) {
-                let mut steps = Vec::new();
-                let mut target = target.clone();
-                while target != basedir {
-                    let parent = target.get_parent_descriptor();
-                    steps.push(PathStep::Forward(target));
-                    target = parent;
-                }
-                Some(steps)
-            } else if RelativeDirEntry::is_ancestor(&target, &basedir) {
-                let mut steps = Vec::new();
-                let mut basedir = basedir.clone();
-                while basedir != target {
-                    steps.push(PathStep::Backward);
-                    basedir = basedir.get_parent_descriptor();
-                }
-                steps.reverse();
-                Some(steps)
-            } else {
-                // find the first common ancestor and then find the steps to reach the target from the common ancestor
-                let mut basedir = basedir.clone();
-                let mut target = target.clone();
-                first_common_ancestor(basedir.ancestors(), target.ancestors())
-                    .map(|common_root| {
-                        let mut steps = Vec::new();
-                        while basedir != common_root {
-                            let parent = basedir.get_parent_descriptor();
-                            steps.push(PathStep::Backward);
-                            basedir = parent;
-                        }
-                        let mut fwd_steps = Vec::new();
-                        fwd_steps.push(PathStep::Forward(target.clone()));
-                        while target != common_root {
-                            let parent = target.get_parent_descriptor();
-                            fwd_steps.push(PathStep::Forward(parent.clone()));
-                            target = parent;
-                        }
-                        fwd_steps.reverse();
-                        steps.extend(fwd_steps);
-                        Some(steps)
-                    })
-                    .unwrap_or_else(|| {
-                        None
-                    })
-            };
+        // find the first common ancestor and then find the steps to reach the target from the common ancestor
+        let mut basedir = basedir.clone();
+        let mut target = target.clone();
+        log::debug!(
+            "basedir:{:?} target:{:?}",
+            basedir.get_path(),
+            target.get_path()
+        );
+        let common_root = first_common_ancestor(basedir.clone(), target.clone());
+        let mut steps = Vec::new();
+        while basedir != common_root {
+            let parent = basedir.get_parent_descriptor();
+            log::debug!("parent:{:?} ", parent.get().get_name());
+            steps.push(PathStep::Backward);
+            basedir = parent;
+        }
+        let mut fwd_steps = VecDeque::new();
+        while target != common_root {
+            let parent = target.get_parent_descriptor();
+            log::debug!("parent:{:?} ", parent.get().get_name());
+            fwd_steps.push_front(PathStep::Forward(target.clone()));
+            target = parent;
+        }
+        steps.extend(fwd_steps);
         Self {
             basedir,
             target,
             steps,
         }
     }
-    fn is_ancestor(basedir: &PathDescriptor, target: &PathDescriptor) -> bool {
+    /*fn is_ancestor(basedir: &PathDescriptor, target: &PathDescriptor) -> bool {
         target.ancestors().find(|x| x.eq(basedir)).is_some()
-    }
+    }*/
     /// Normalized path relative to basedir
     pub fn get_path(&self) -> NormalPath {
         let mut first = true;
@@ -238,7 +221,7 @@ impl RelativeDirEntry {
 
     /// directory components of this path including self
     pub fn components(&self) -> impl Iterator<Item = &PathStep> {
-        self.steps.iter().flat_map(|steps| steps.iter())
+        self.steps.iter()
     }
 
     /// check if this path is root

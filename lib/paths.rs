@@ -81,7 +81,8 @@ impl NormalPath {
     pub(crate) fn new_from_cow_path(p: Cow<Path>) -> NormalPath {
         NormalPath::new_from_cow_str(Candidate::new(p.as_ref()).to_cow_str())
     }
-    fn new_from_cow_str(p: Cow<str>) -> NormalPath {
+    /// Construct normal path from a string
+    pub fn new_from_cow_str(p: Cow<str>) -> NormalPath {
         NormalPath::new(PathBuf::from(p.as_ref()))
     }
 

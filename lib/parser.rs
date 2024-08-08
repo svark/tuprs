@@ -351,14 +351,14 @@ fn parse_escaped<'a, 'b>(i: Span<'a>, end_tok: &'b str) -> IResult<Span<'a>, Pat
             let (_, r) = peek(take(3_usize))(i)?;
             if r.as_bytes() == b"\\\r\n" {
                 let (s, _) = take(3_usize)(i)?; //consumes \n after \r as well
-                Ok((s, "".to_string().into()))
+                Ok((s, Default::default()))
             } else {
                 Err(Err::Error(error_position!(i, ErrorKind::Eof))) //FIXME: what errorkind should we return?
             }
         }
         b"\\\n" => {
             let (s, _) = take(2_usize)(i)?;
-            Ok((s, "".to_string().into()))
+            Ok((s, Default::default()))
         }
         [b'\\', c] if !end_tok.contains(*c as char) => {
             let (s, r) = take(2_usize)(i)?;
@@ -397,7 +397,7 @@ fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_addsuffix(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(addsuffix")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (suffix, _)) = parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS)?;
+    let (s, (suffix, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (list, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
@@ -409,7 +409,7 @@ fn parse_pathexpr_addsuffix(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_addprefix(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(addprefix")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (prefix, _)) = cut(|s| parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS))(s)?;
+    let (s, (prefix, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (list, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
@@ -461,7 +461,7 @@ fn parse_pathexpr_patsubst(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_findstring(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(findstring")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (find, _)) = parse_pelist_till_delim_no_ws(s, " \t,", &BRKTOKS)?;
+    let (s, (find, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
     let (s, (in_, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
@@ -807,7 +807,7 @@ pub(crate) fn parse_pelist_till_line_end_with_ws(
     input: Span,
 ) -> IResult<Span, (Vec<PathExpr>, char)> {
     alt((
-        complete(map(ws0_line_ending, |_| (Vec::new(), '\0'))),
+        complete(map(ws0_line_ending, |_| (Vec::new(), '\0'))), // trailing ws before line ends are ignored
         complete(|i| parse_pelist_till_delim_with_ws(i, "\r\n", &BRKTOKSWS)),
     ))(input)
 }
@@ -1732,12 +1732,14 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
     use std::fs::File;
     use std::io::prelude::*;
     let filename = filename.as_ref();
-    let mut file = File::open(filename).map_err(|e| Err::IoError(e, Loc::default()))?;
+    let filename_str = filename.to_str().unwrap();
+    let mut file = File::open(filename)
+        .map_err(|e| Err::IoError(e, filename_str.to_string(), Loc::default()))?;
     let mut contents = Vec::new();
     let _res = file
         .read_to_end(&mut contents)
         .inspect_err(|e| log::error!("error reading file: {:?}", e))
-        .map_err(|e| Err::IoError(e, Loc::default()))?;
+        .map_err(|e| Err::IoError(e, filename_str.to_string(), Loc::default()))?;
     if contents.last() != Some(&b'\n') {
         contents.push(b'\n');
     }

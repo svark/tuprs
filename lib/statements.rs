@@ -82,6 +82,11 @@ pub(crate) enum PathExpr {
     /// Task Ref
     TaskRef(Ident),
 }
+impl Default for PathExpr {
+    fn default() -> Self {
+        PathExpr::Literal(String::new())
+    }
+}
 /// level of the message to display when parsing tupfiles
 #[derive(PartialEq, Debug, Clone, Copy, Eq, Hash)]
 pub enum Level {

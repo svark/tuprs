@@ -28,5 +28,11 @@ ifndef USE_SSE2
   CFLAGS += -mno-sse
 endif
 
+FOUND_UNKNOWN := $(wildcard unknownfile)
+
+ifdef FOUND_UNKNOWN
+  F := unknownfile exists
+endif
+
 $(info TARGET_CPU_IS_X86=$(TARGET_CPU_IS_X86))
 
