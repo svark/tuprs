@@ -148,11 +148,18 @@ pub struct RelativeDirEntry {
     steps: Vec<PathStep>,
 }
 fn first_common_ancestor(base: PathDescriptor, target: PathDescriptor) -> PathDescriptor {
+    let is_ancestor = |base: &PathDescriptor, target: &PathDescriptor| {
+        target.ancestors().find(|x| x.eq(base)).is_some()
+    };
     if base == target {
         return base;
     } else if base.is_root() {
         return base;
     } else if target.is_root() {
+        return target;
+    } else if is_ancestor(&base, &target) {
+        return base;
+    } else if is_ancestor(&target, &base) {
         return target;
     }
     let set: HashSet<_> = base.ancestors().collect();
@@ -195,9 +202,6 @@ impl RelativeDirEntry {
             steps,
         }
     }
-    /*fn is_ancestor(basedir: &PathDescriptor, target: &PathDescriptor) -> bool {
-        target.ancestors().find(|x| x.eq(basedir)).is_some()
-    }*/
     /// Normalized path relative to basedir
     pub fn get_path(&self) -> NormalPath {
         let mut first = true;
