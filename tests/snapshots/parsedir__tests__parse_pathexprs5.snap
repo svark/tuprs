@@ -1,0 +1,9 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: strings
+---
+[
+  ":foreach *.cxx *.cpp |>cl %f /Fout:a.o %<grp> %<grp2>  |> %B.o  |  command.pch ",
+  ":**/ib*.txt |>cp %f %o  |> out%h/o%g.txt",
+  ": |>^ touch %o^touch %o  |> out.txt"
+]

@@ -1,0 +1,5 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: "v2.get(\"TARGET_CPU_IS_X86\").unwrap().join(\" \")"
+---
+1
