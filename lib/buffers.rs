@@ -1,6 +1,7 @@
 //! Module to hold buffers of tupfile paths, bins, groups which can be referenced by their descriptors
 use std::borrow::Cow;
 use std::cell::{Ref, RefCell};
+use std::cmp::Ordering;
 use std::collections::{hash_map::Entry, HashMap, HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
@@ -52,7 +53,7 @@ pub trait PathBuffers {
     fn add_tup(&self, p: &Path) -> TupPathDescriptor;
 
     /// add env vars and fetch an id for them
-    fn add_env_var(&self, var: String, cur_env_desc: &EnvDescriptor) -> EnvDescriptor;
+    fn add_env_var(&self, var: String) -> EnvDescriptor;
 
     /// add a task instance to buffer and return a unique id
     fn add_task_path(&self, task: TaskInstance) -> TaskDescriptor;
@@ -87,6 +88,8 @@ pub trait PathBuffers {
 
     /// Try get a bin path entry by its descriptor.
     fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &GroupPathEntry;
+
+    fn get_group_dir(&self, gd: &GroupPathDescriptor) -> PathDescriptor;
 
     /// Return root folder where tup was initialized
     fn get_root_dir(&self) -> &Path;
@@ -132,6 +135,115 @@ pub enum PathStep {
     /// Step forward to directory under current
     Forward(PathDescriptor),
 }
+/// Chain of env descriptors accumulated by the parser until a rule.
+#[derive(Debug, Clone, Default)]
+pub struct EnvList {
+    env: EnvDescriptor,
+    prevs: Option<Box<EnvList>>,
+}
+pub struct EnvListIter {
+    current: Option<Box<EnvList>>,
+}
+impl Iterator for EnvListIter {
+    type Item = EnvDescriptor;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(node) = self.current.take() {
+            self.current = node.prevs;
+            Some(node.env.clone())
+        } else {
+            None
+        }
+    }
+}
+impl Eq for EnvList {}
+
+impl Hash for EnvList {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.env.hash(state);
+        self.prevs.hash(state);
+    }
+}
+
+impl PartialEq<Self> for EnvList {
+    fn eq(&self, other: &Self) -> bool {
+        self.env.eq(&other.env) && self.prevs.eq(&other.prevs)
+    }
+}
+
+impl PartialOrd<Self> for EnvList {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for EnvList {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.env == other.env {
+            self.prevs.cmp(&other.prevs)
+        } else {
+            self.env.cmp(&other.env)
+        }
+    }
+}
+impl EnvList {
+    /// Construct a new env list
+    pub fn new(env: EnvDescriptor) -> Self {
+        EnvList {
+            env,
+            prevs: None,
+        }
+    }
+    /// Clone the chain of env descriptors
+    pub fn clone_(&mut self) -> EnvList {
+        EnvList { env: self.env.clone(), prevs: self.prevs.take() }
+    }
+
+    pub fn get_desc(&self) -> EnvDescriptor {
+        self.env.clone()
+    }
+    pub fn get_prev(&self) -> Option<&EnvList> {
+        self.prevs.as_ref().map(|x| x.as_ref())
+    }
+    pub fn get_key_str(&self) -> &str {
+        self.env.get().get_key_str()
+    }
+    // add a new env descriptor to the chain
+    pub fn add(&mut self, env: EnvDescriptor) {
+        let boxed_self = Box::new(self.clone_());
+        self.env = env;
+        self.prevs = Some(boxed_self);
+    }
+
+    // assign initial values for each tup files
+    pub fn from(vec: Vec<EnvDescriptor>) -> Self {
+        let mut env_list = EnvList::new(EnvDescriptor::default());
+        for e in vec {
+            env_list.add(e);
+        }
+        env_list
+    }
+    pub fn iter(&self) -> EnvListIter {
+        EnvListIter {
+            current: Some(Box::new(self.clone())),
+        }
+    }
+
+    pub fn get_var_keys(&self) -> impl Iterator<Item=String> {
+        self.iter().map(|x| x.get().get_key_str().to_string())
+    }
+
+    pub fn get_key_value_pairs(&self) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        for env in self.get_var_keys() {
+            if let Ok(v) = std::env::var(env.clone()) {
+                map.insert(env, v);
+            }
+        }
+        map
+    }
+}
+
 impl PathStep {
     fn as_os_str(&self) -> &OsStr {
         match self {
@@ -175,7 +287,7 @@ impl RelativeDirEntry {
         // find the first common ancestor and then find the steps to reach the target from the common ancestor
         let mut basedir = basedir.clone();
         let mut target = target.clone();
-        log::debug!(
+        debug!(
             "basedir:{:?} target:{:?}",
             basedir.get_path(),
             target.get_path()
@@ -184,14 +296,14 @@ impl RelativeDirEntry {
         let mut steps = Vec::new();
         while basedir != common_root {
             let parent = basedir.get_parent_descriptor();
-            log::debug!("parent:{:?} ", parent.get().get_name());
+            debug!("parent:{:?} ", parent.get().get_name());
             steps.push(PathStep::Backward);
             basedir = parent;
         }
         let mut fwd_steps = VecDeque::new();
         while target != common_root {
             let parent = target.get_parent_descriptor();
-            log::debug!("parent:{:?} ", parent.get().get_name());
+            debug!("parent:{:?} ", parent.get().get_name());
             fwd_steps.push_front(PathStep::Forward(target.clone()));
             target = parent;
         }
@@ -269,15 +381,15 @@ impl Eq for DirEntry {}
 impl Ord for DirEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         if self.path_sym == other.path_sym {
-            return self.name.as_ref().cmp(other.name.as_ref());
+            self.name.as_ref().cmp(other.name.as_ref())
         } else if self.path_sym == 0 {
-            return std::cmp::Ordering::Less;
+            std::cmp::Ordering::Less
         } else if other.path_sym == 0 {
-            return std::cmp::Ordering::Greater;
+            std::cmp::Ordering::Greater
         } else {
-            return self
+            self
                 .get_parent_descriptor()
-                .cmp(&other.get_parent_descriptor());
+                .cmp(&other.get_parent_descriptor())
         }
     }
 }
@@ -306,6 +418,17 @@ impl Default for DirEntry {
     }
 }
 
+impl RuleDescriptor {
+    pub(crate) fn get_name(&self) -> String {
+        self.get().get_rule_str()
+    }
+}
+impl TaskDescriptor {
+    pub(crate) fn get_name(&self) -> &str {
+        self.get().get_target()
+    }
+}
+
 impl PathDescriptor {
     /// build a new path descriptor by adding path components to the current path
     pub fn join<P: AsRef<Path>>(&self, name: P) -> Option<Self> {
@@ -324,6 +447,11 @@ impl PathDescriptor {
                 } // Component::RootDir is unexpected here.
             }
         })
+    }
+
+    /// get name of the file or folder
+    pub fn get_file_name(&self) -> Cow<'_, str> {
+        (*self).get().get_name()
     }
     /// get parent path descriptor
     pub fn get_parent_descriptor(&self) -> Self {
@@ -487,6 +615,9 @@ impl<T> NamedPathEntry<T> {
     /// get path descriptor of the group or bin
     pub fn get_dir_descriptor(&self) -> &PathDescriptor {
         &self.0
+    }
+    pub fn get_path(&self) -> NormalPath {
+        self.0.get_path().join(self.get_name()).into()
     }
 }
 
@@ -1303,26 +1434,12 @@ impl PathBuffers for BufferObjects {
 
     /// add environment variable to the list of variables active in current tupfile until now
     /// This appends a new env var current list of env vars.
-    fn add_env_var(&self, var: String, cur_env_desc: &EnvDescriptor) -> EnvDescriptor {
+    fn add_env_var(&self, var: String) -> EnvDescriptor {
         debug!(
-            "add env var {} to cur env :{} in ebo ",
+            "add env var {} in ebo ",
             var.as_str(),
-            cur_env_desc
-                .as_ref()
-                .get_keys()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(",")
         );
-        let env = self.get_env(cur_env_desc);
-        if env.contains(&var) {
-            cur_env_desc.clone()
-        } else {
-            let mut env = env.clone();
-            env.add(var);
-            let id = EnvBufferObject::add_ref(env);
-            id
-        }
+        EnvBufferObject::add_ref(Env::new(var))
     }
 
     /// add a task to the buffer and return its descriptor
@@ -1386,13 +1503,17 @@ impl PathBuffers for BufferObjects {
             vec![],
             TupLoc::default(),
             vec![],
-            EnvDescriptor::default(),
+            EnvList::default(),
         );
         TaskBufferObject::fetch_interned(&task)
     }
     /// Try get a bin path entry by its descriptor.
     fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &GroupPathEntry {
         GroupBufferObject::get(gd)
+    }
+
+    fn get_group_dir(&self, gd: &GroupPathDescriptor) -> PathDescriptor {
+        gd.get().get_dir_descriptor().clone()
     }
 
     /// Return root folder where tup was initialized

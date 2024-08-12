@@ -18,7 +18,7 @@ use crate::errors::Error;
 use crate::glob::Candidate;
 use crate::statements::PathExpr;
 use crate::{BinDescriptor, GroupPathDescriptor};
-
+use crate::transform::get_parent;
 //use tap::Pipe;
 
 /// Normal path holds paths wrt root directory of build
@@ -86,11 +86,17 @@ impl NormalPath {
         NormalPath::new(PathBuf::from(p.as_ref()))
     }
 
+    /// Join a path to the current path to build a new path
+    pub fn join<P: AsRef<Path>>(&self, p: P) -> NormalPath {
+        NormalPath::new_from_cow_path(self.inner.join(p).into())
+    }
     /// Inner path reference
     pub fn as_path(&self) -> &Path {
         self.inner.as_path()
     }
-
+    pub fn get_parent(&self) -> NormalPath {
+        NormalPath::new_from_raw(get_parent(self.inner.as_path()).as_os_str().to_os_string())
+    }
     /// Inner path buffer
     pub fn to_path_buf(self) -> PathBuf {
         self.inner

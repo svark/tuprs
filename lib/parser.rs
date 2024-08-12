@@ -24,7 +24,7 @@ use nom::{AsBytes, Offset, Slice};
 use nom::{Err, InputIter};
 use nom_locate::LocatedSpan;
 
-use crate::buffers::{EnvDescriptor, PathDescriptor};
+use crate::buffers::{PathDescriptor};
 use crate::statements::*;
 
 type IResult<I, O, E = error::VerboseError<I>> = nomIResult<I, O, E>;
@@ -1311,7 +1311,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
                     rule_formula,
                     pos: Loc::from(i.slice(..offset)),
                 },
-                EnvDescriptor::default(),
+                crate::buffers::EnvList::default(),
                 Vec::new(),
             ),
             i.slice(..offset),

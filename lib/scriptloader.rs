@@ -346,8 +346,10 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
     }
 
     pub fn export(&mut self, var: String) {
-        self.bo_as_mut()
-            .add_env_var(var, &self.parse_state.cur_env_desc);
+        let id = self.bo_as_mut()
+            .add_env_var(var);
+        self.parse_state.add_env(&id);
+
     }
 
     pub fn for_each_rule(

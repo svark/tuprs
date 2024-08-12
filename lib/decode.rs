@@ -1,4 +1,6 @@
 //! This module handles decoding and de-globbing of rules
+
+use std::cell::Ref;
 use std::cmp::Ordering;
 use std::collections::LinkedList;
 use std::collections::{HashMap, HashSet};
@@ -14,16 +16,10 @@ use parking_lot::MappedRwLockReadGuard;
 use regex::{Captures, Regex};
 use walkdir::{DirEntry, WalkDir};
 
-use crate::buffers::{
-    BinDescriptor, EnvDescriptor, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder,
-    OutputType, PathBuffers, PathDescriptor, RelativeDirEntry, RuleDescriptor, TaskDescriptor,
-    TupPathDescriptor,
-};
+use crate::buffers::{BinDescriptor, EnvList, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder, OutputType, PathBuffers, PathDescriptor, RelativeDirEntry, RuleDescriptor, TaskDescriptor, TupPathDescriptor};
 use crate::errors::Error::PathSearchError;
 use crate::errors::{Error as Err, Error};
-use crate::paths::{
-    ExcludeInputPaths, GlobPath, InputResolvedType, InputsAsPaths, MatchingPath, OutputsAsPaths,
-};
+use crate::paths::{ExcludeInputPaths, GlobPath, InputResolvedType, InputsAsPaths, MatchingPath, NormalPath, OutputsAsPaths};
 use crate::statements::*;
 use crate::transform::{to_regex, ResolvedRules, TupParser};
 use crate::ReadWriteBufferObjects;
@@ -81,7 +77,7 @@ pub struct TaskInstance {
     tup_loc: TupLoc,
     #[allow(dead_code)]
     search_dirs: Vec<PathDescriptor>,
-    env: EnvDescriptor,
+    env: EnvList,
 }
 
 impl Hash for TaskInstance {
@@ -120,6 +116,11 @@ impl RuleFormulaInstance {
     pub fn get_rule_str(&self) -> String {
         self.rule_formula.formula.cat()
     }
+    /// Get parent path descriptor
+    pub fn get_parent_id(&self) -> PathDescriptor {
+        self.get_rule_ref().get_tupfile_desc().get_parent_descriptor()
+    }
+
     /// Display string that appears in the console as the rule is run
     pub fn get_display_str(&self) -> String {
         let description = self.rule_formula.description.cat();
@@ -145,6 +146,10 @@ impl RuleFormulaInstance {
             "".to_string()
         }
     }
+
+    pub fn get_path(&self) -> NormalPath {
+        self.get_rule_ref().get_tupfile_desc().get_path().join(self.get_rule_str().as_str())
+    }
 }
 
 impl TaskInstance {
@@ -156,7 +161,7 @@ impl TaskInstance {
         recipe: Vec<Vec<PathExpr>>,
         tup_loc: TupLoc,
         search_dirs: Vec<PathDescriptor>,
-        env: EnvDescriptor,
+        env: EnvList,
     ) -> TaskInstance {
         let name = format!("{}/{}", tup_cwd.to_string(), name);
         TaskInstance {
@@ -189,8 +194,19 @@ impl TaskInstance {
         &self.tup_loc
     }
     /// env required for the task
-    pub(crate) fn get_env_desc(&self) -> &EnvDescriptor {
+    pub(crate) fn get_env_list(&self) -> &EnvList {
         &self.env
+    }
+    pub fn get_path(&self) -> NormalPath {
+        self.get_parent().join(self.get_target())
+    }
+
+    pub fn get_parent_id(&self) -> PathDescriptor {
+        self.tup_loc.get_tupfile_desc().get_parent_descriptor()
+    }
+
+    pub fn get_parent(&self) -> Ref<'_, NormalPath> {
+        self.get_tup_loc().get_tupfile_desc().get_path()
     }
 }
 
@@ -1063,7 +1079,7 @@ fn get_deglobbed_rule(
     rule_ctx: &RuleContext,
     primary_deglobbed_inps: &[InputResolvedType],
     path_buffers: &impl PathBuffers,
-    env: &EnvDescriptor,
+    env: &EnvList,
 ) -> Result<ResolvedLink, Err> {
     let r = rule_ctx.get_rule_formula();
     let rule_ref = rule_ctx.get_rule_ref();
@@ -1175,7 +1191,7 @@ pub struct ResolvedLink {
     /// Tupfile and location where the rule was found
     tup_loc: TupLoc,
     /// Env(environment) needed by this rule
-    env: EnvDescriptor,
+    env: EnvList,
     /// Vpaths
     search_dirs: Vec<PathDescriptor>,
 }
@@ -1230,7 +1246,7 @@ impl ResolvedLink {
             .chain(self.secondary_targets.iter())
     }
     /// Returns descriptor for the Env vars to be assigned before execution of this rule
-    pub fn get_env_desc(&self) -> &EnvDescriptor {
+    pub fn get_env_list(&self) -> &EnvList {
         &self.env
     }
     /// Unique descriptor for rule formula
@@ -1310,7 +1326,7 @@ pub struct ResolvedTask {
     deps: Vec<InputResolvedType>,
     task_descriptor: TaskDescriptor,
     loc: TupLoc,
-    env: EnvDescriptor,
+    env: EnvList,
 }
 
 impl ResolvedTask {
@@ -1319,7 +1335,7 @@ impl ResolvedTask {
         deps: Vec<InputResolvedType>,
         task_descriptor: TaskDescriptor,
         loc: TupLoc,
-        env: EnvDescriptor,
+        env: EnvList,
     ) -> Self {
         ResolvedTask {
             deps,
@@ -1343,8 +1359,8 @@ impl ResolvedTask {
     }
 
     /// returns environment associated with this task
-    pub fn get_env_desc(&self) -> EnvDescriptor {
-        self.env.clone()
+    pub fn get_env_list(&self) -> &EnvList {
+        &self.env
     }
 
     /// descriptor of the tupfile where this task is defined
@@ -1674,7 +1690,7 @@ impl LocatedStatement {
                 ))?;
             let task_inst = path_buffers.get_task(&task_desc);
             {
-                let env = task_inst.get_env_desc();
+                let env = task_inst.get_env_list();
                 let mut resolved_deps = Vec::new();
                 for dep in deps.iter() {
                     let dep =

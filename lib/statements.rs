@@ -1,10 +1,9 @@
 //! This module has datastructures that capture parsed tupfile expressions
+use crate::buffers::EnvList;
 use std::borrow::Cow;
-use std::collections::BTreeSet;
-use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
-use crate::buffers::{EnvDescriptor, PathDescriptor};
+use crate::buffers::{PathDescriptor};
 use crate::paths::MatchingPath;
 use crate::transform::ParseState;
 
@@ -335,56 +334,28 @@ impl LocatedStatement {
 /// List of env vars that are to be passed for rule execution
 #[derive(PartialEq, Eq, Debug, Clone, Default, Hash, Ord, PartialOrd)]
 pub struct Env {
-    set: BTreeSet<String>,
+    var: String,
 }
 
 impl Display for Env {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let mut s = String::new();
-        for var in self.set.iter() {
-            s.push_str(var);
-            s.push_str(":");
-        }
-        s.pop();
-        write!(f, "{}", s)
+        write!(f, "{}", self.var)
     }
 }
 impl Env {
     /// create list of env vars from a map
-    pub fn new(map: HashMap<String, String>) -> Self {
-        let mut bt = BTreeSet::new();
-        map.into_iter().for_each(|v| {
-            bt.insert(v.0);
-        });
-        Env { set: bt }
+    pub fn new(var: String) -> Self {
+        Env { var: var }
     }
-    /// add an env var (note: we don't keep the values corresponding to keys as it is just a function call away)
-    pub fn add(&mut self, k: String) -> bool {
-        self.set.insert(k)
+
+    /// returns String representation of the env var
+    pub fn get_key(self) -> String {
+        self.var
     }
-    /// check if key is present in the set of env vars
-    pub fn contains(&self, k: &str) -> bool {
-        self.set.contains(k)
-    }
-    /// returns a map of env name and value pairs
-    pub fn getenv(&self) -> HashMap<String, String> {
-        let mut hmap = HashMap::new();
-        for var in self.set.iter() {
-            hmap.insert(var.to_string(), std::env::var(var).unwrap_or_default());
-        }
-        hmap
-    }
-    /// return a set of env vars
-    pub fn get_keys(&self) -> impl Iterator<Item = &String> {
-        self.set.iter()
-    }
-    /// returns value of env var if present
-    pub fn get_env_var(&self, k: &str) -> Option<String> {
-        if self.contains(k) {
-            Some(std::env::var(k).unwrap_or_default())
-        } else {
-            None
-        }
+
+    /// returns str representation of the env var
+    pub fn get_key_str(&self) -> &str {
+        self.var.as_str()
     }
 }
 /// [Condition] is a condition that is checked in if(n)eq statements or if(n)def statements
@@ -524,7 +495,7 @@ pub(crate) enum Statement {
     },
     IncludeRules,
     Include(Vec<PathExpr>),
-    Rule(Link, EnvDescriptor, Vec<PathDescriptor>),
+    Rule(Link, EnvList, Vec<PathDescriptor>),
     Message(Vec<PathExpr>, Level),
     MacroRule(String, Link), /* !macro = [inputs] | [order-only inputs] |> command |> [outputs] */
     Export(String),

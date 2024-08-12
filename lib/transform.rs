@@ -1,7 +1,7 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
 use std::borrow::Cow;
 use std::cell::Ref;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::ops::ControlFlow::Continue;
 use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
@@ -15,12 +15,8 @@ use crossbeam::channel::{Receiver, Sender};
 use log::debug;
 use nom::AsBytes;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-
-use crate::buffers::{
-    BufferObjects, EnvDescriptor, GenBufferObject, GlobPathDescriptor, GroupBufferObject,
-    GroupPathDescriptor, OutputHolder, PathBuffers, PathDescriptor, RelativeDirEntry,
-    RuleDescriptor, TaskDescriptor, TupPathDescriptor,
-};
+use crate::buffers::{BufferObjects, EnvDescriptor, EnvList, GenBufferObject, GlobPathDescriptor, GroupBufferObject, GroupPathDescriptor,
+                     OutputHolder, PathBuffers, PathDescriptor, RelativeDirEntry, RuleDescriptor, TaskDescriptor, TupPathDescriptor};
 use crate::decode::{
     paths_with_pattern, PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask,
     RuleFormulaInstance, TaskInstance, TupLoc,
@@ -58,6 +54,9 @@ fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     command.arg(cmd);
 
     command
+}
+lazy_static! {
+static ref DEF_ENV: EnvDescriptor = EnvDescriptor::default();
 }
 
 fn variable_value_is_non_empty(s: &Vec<String>) -> bool {
@@ -125,10 +124,10 @@ pub(crate) struct ParseState {
     pub(crate) cur_file: PathBuf,
     /// unique descriptor for tupfile
     pub(crate) cur_file_desc: TupPathDescriptor,
-    /// pre-load these dirs
+    /// preload these dirs
     pub(crate) load_dirs: Vec<PathDescriptor>,
     /// current state of env variables to be passed to rules for execution
-    pub(crate) cur_env_desc: EnvDescriptor,
+    pub(crate) cur_env_desc: EnvList,
     /// Cache of statements from previously read Tupfiles
     pub(crate) statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
     /// Buffers to store files, groups, bins, env with its id.
@@ -157,8 +156,8 @@ impl CallArgsMap {
     }
 }
 // Default Env to feed into every tupfile
-fn init_env() -> Env {
-    let mut def_exported = HashMap::new();
+fn init_env() -> Vec<Env> {
+    let mut def_exported = HashSet::new();
     #[cfg(target_os = "windows")]
     let keys: Vec<&str> = vec![
         /* NOTE: Please increment PARSER_VERSION if these are modified */
@@ -194,18 +193,18 @@ fn init_env() -> Env {
             let mut inserted = false;
             if let Ok(rb) = regex::RegexBuilder::new(k).build() {
                 if let Some(needle) = std::env::vars().find(|v| rb.is_match(v.0.as_str())) {
-                    def_exported.insert(needle.0, needle.1);
+                    def_exported.insert(needle.0);
                     inserted = true;
                 }
             }
             if !inserted {
-                def_exported.insert(k.to_string(), std::env::var(k).unwrap_or_default());
+                def_exported.insert(k.to_string());
             }
         } else {
-            def_exported.insert(k.to_string(), std::env::var(k).unwrap_or_default());
+            def_exported.insert(k.to_string());
         }
     }
-    Env::new(def_exported)
+    def_exported.into_iter().map(|x| Env::new(x)).collect()
 }
 
 /// Accessor and constructors of ParseState
@@ -214,7 +213,7 @@ impl ParseState {
     pub fn new(
         conf_map: &HashMap<String, Vec<String>>,
         cur_file_desc: TupPathDescriptor,
-        cur_env_desc: EnvDescriptor,
+        cur_env_desc: Vec<EnvDescriptor>,
         statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
         bo: Arc<BufferObjects>,
     ) -> Self {
@@ -235,12 +234,20 @@ impl ParseState {
             cur_file: cur_file.clone().to_path_buf(),
             tup_base_path: cur_file_desc.clone(),
             cur_file_desc,
-            cur_env_desc,
+            cur_env_desc: EnvList::from(cur_env_desc),
             statement_cache: statement_cache.clone(),
             path_buffers: bo,
             ..ParseState::default()
         }
     }
+    pub(crate) fn add_env(&mut self, p0: &EnvDescriptor) {
+        self.cur_env_desc.add(p0.clone())
+    }
+
+    pub(crate) fn get_envs(&mut self) -> HashMap<String, String> {
+        self.cur_env_desc.get_key_value_pairs()
+    }
+
     pub(crate) fn get_statements_from_cache(
         &self,
         tup_desc: &TupPathDescriptor,
@@ -251,6 +258,9 @@ impl ParseState {
     /// returns the Tupfile being parsed (not the included file)
     pub(crate) fn get_tup_base_dir(&self) -> PathDescriptor {
         self.tup_base_path.get_parent_descriptor()
+    }
+    pub(crate) fn get_tup_base_file(&self) -> PathDescriptor {
+        self.tup_base_path.clone()
     }
 
     pub(crate) fn replace_tup_cwd<S: ToString>(&mut self, dir: S) -> Option<Vec<String>> {
@@ -270,15 +280,15 @@ impl ParseState {
         self.path_buffers.clone()
     }
 
-    pub fn switch_tupfile_and_process(
+    pub fn switch_tupfile_and_process<T>(
         &mut self,
-        tupfile: &Path,
-        process: impl FnOnce(&mut Self) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        let old_cur_file = self.get_cur_file().to_path_buf();
-        self.set_cwd(tupfile)?;
+        tupfile_desc: &PathDescriptor,
+        process: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let old_cur_file = self.get_cur_file_desc().clone();
+        self.set_cwd(tupfile_desc)?;
         let res = process(self);
-        self.set_cwd(old_cur_file.as_path())?;
+        self.set_cwd(&old_cur_file)?;
         res
     }
 
@@ -309,9 +319,13 @@ impl ParseState {
         }
     }
     /// set the current TUP_CWD, TUP_ROOT in expression map in ParseState as we switch to reading an included file
-    pub fn set_cwd(&mut self, tupfile: &Path) -> Result<(), Error> {
+    pub fn set_cwd(&mut self, tupfile: &PathDescriptor) -> Result<(), Error> {
+        if tupfile.eq(&self.cur_file_desc) {
+            return Ok(())
+        }
         let old_tup_dir = self.get_tup_dir_desc();
-        self.cur_file_desc = self.path_buffers.add_tup(tupfile);
+
+        self.cur_file_desc = tupfile.clone();
         //self.cur_file = self.cur_file_desc.get_path().to_path_buf();
         debug!(
             "switching to:{:?} from: {:?}",
@@ -320,7 +334,7 @@ impl ParseState {
         if self.get_tup_dir_desc() != old_tup_dir {
             let diff = RelativeDirEntry::new(self.get_tup_base_dir(), self.get_tup_dir_desc());
             let diff_path = diff.get_path();
-            debug!("new tup_cwd{:?}", diff_path);
+            debug!("new tup_cwd {}", diff_path);
             self.replace_tup_cwd(diff_path);
             let rel_path_to_root = self
                 .cur_file_desc
@@ -335,10 +349,6 @@ impl ParseState {
         Ok(())
     }
 
-    pub(crate) fn set_env(&mut self, ed: EnvDescriptor) {
-        self.cur_env_desc = ed;
-    }
-
     /// return the tupfile being parsed
     pub(crate) fn get_cur_file(&self) -> Ref<'_, Path> {
         self.cur_file_desc.get_path_ref()
@@ -351,10 +361,6 @@ impl ParseState {
     /// Get folder that hosts tup file as a descriptor
     pub(crate) fn get_cur_file_desc(&self) -> &TupPathDescriptor {
         &self.cur_file_desc
-    }
-
-    fn get_env_desc(&self) -> EnvDescriptor {
-        self.cur_env_desc.clone()
     }
 
     /// Add statements to cache.
@@ -375,6 +381,10 @@ impl ParseState {
         self.expr_map.insert("TUP_ROOT".to_owned(), vec![root]);
     }
 
+    /*
+   With Lazy Assignment (=): The appends are added to the unevaluated value, and everything is evaluated only when the variable is expanded.
+With Eager Assignment (:=): The appends are added to the already evaluated value, and each append operation immediately affects the final value of the variable.
+     */
     pub(crate) fn append_assign_lazy(&mut self, v: &str, val: Vec<PathExpr>) {
         if let Some(vals) = self.func_map.get_mut(v) {
             vals.push(PathExpr::Sp1);
@@ -605,13 +615,13 @@ impl Statement {
                             cmd.arg(arg);
                         }
                     }
-                    let env = path_buffers.get_env(&parse_state.cur_env_desc);
+                    let envs = parse_state.get_envs();
                     let tupdir = parse_state.get_tup_dir_desc();
                     let dir = path_buffers
                         .get_root_dir()
                         .join(tupdir.get_path_ref().as_os_str());
                     if cmd.get_args().len() != 0 {
-                        cmd.envs(env.getenv()).current_dir(dir.as_path());
+                        cmd.envs(envs).current_dir(dir.as_path());
 
                         debug!("running {:?} to fetch more rules", cmd);
                         let output = cmd
@@ -972,6 +982,7 @@ impl DollarExprs {
     fn subst(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Vec<PathExpr> {
         match self {
             DollarExprs::DollarExpr(x) => {
+                log::debug!("substituting {}", x.as_str());
                 if let Some(val) = m.expr_map.get(x.as_str()) {
                     let vs = intersperse_sp1(val);
                     vs
@@ -1145,10 +1156,15 @@ impl DollarExprs {
             DollarExprs::WildCard(glob) => {
                 // wild cards are not expanded in the substitution phase
 
-                let gstr = glob.subst_pe(m, path_searcher).cat();
-                log::debug!("wildcard glob:{:?}", gstr);
+                log::debug!("wildcard to expand:{:?}", glob.cat());
+                let gstr = m.switch_tupfile_and_process(&m.get_tup_base_file(), |m| {
+                    // Wildcards are special : set the current directory to the directory of the tupfile being processed and then evaluate the glob
+                    log::debug!("^substing wildcard glob..");
+                    Ok(glob.subst_pe(m, path_searcher).cat())
+                }).unwrap();
+                log::debug!("wildcard glob expanded{:?}", gstr);
                 if !gstr.is_empty() {
-                    let dir = m.get_tup_dir_desc();
+                    let dir = m.get_tup_base_dir(); // wildcards are evaluated w.r.t tup base dir (tupfile being parsed as opposed to one of its includes)
                     log::debug!("relative to {:?}", dir.get_path_ref());
                     let ldirs = m.load_dirs.clone();
                     m.with_path_buffers_do(|path_buffers_mut| {
@@ -1994,10 +2010,9 @@ impl LocatedStatement {
                 Self::add_load_dirs(parse_state, path_searcher, loc, paths)?;
             }
             Statement::Export(var) => {
-                let env_desc = parse_state.get_env_desc();
                 let id =
-                    parse_state.with_path_buffers_do(|bo| bo.add_env_var(var.clone(), &env_desc));
-                parse_state.set_env(id);
+                    parse_state.with_path_buffers_do(|bo| bo.add_env_var(var.clone()));
+                parse_state.add_env(&id);
             }
             Statement::Import(var, envval) => {
                 if let Some(val) = envval.clone().or_else(|| std::env::var(var).ok()) {
@@ -2209,7 +2224,7 @@ impl LocatedStatement {
             )
         })?;
         parse_state.switch_tupfile_and_process(
-            p.get_path_ref().deref(),
+            p.path_descriptor_ref(),
             |parse_state| -> Result<(), Error> {
                 let include_stmts =
                     get_or_insert_parsed_statements(path_searcher.get_root(), parse_state)?;
@@ -2233,7 +2248,7 @@ impl LocatedStatement {
         for f in path_searcher.locate_tuprules(&parent, parse_state.get_path_buffers().deref()) {
             debug!("reading tuprules {:?}", f);
             parse_state.switch_tupfile_and_process(
-                f.get_path_ref().deref(),
+                &f,
                 |parse_state| -> Result<(), Error> {
                     //let cf = switch_to_reading(tup_desc, tup_path, m, bo);
                     let include_stmts =
@@ -2440,6 +2455,7 @@ impl ResolvedRules {
 /// Represents an opens  buffer that is ready to be read for all data that stored with an id during parsing.
 /// such as (rules, paths, groups, bins) stored during parsing.
 /// It is also available for writing some data in the parser's buffers
+#[derive(Clone, Debug)]
 pub struct ReadWriteBufferObjects {
     bo: Arc<BufferObjects>,
 }
@@ -2495,10 +2511,49 @@ impl ReadWriteBufferObjects {
         let r = self.get();
         r.get_path(p0).clone()
     }
+
+    /// Return file name of the path with given descriptor
+    pub fn get_name(&self, p0: &PathDescriptor) -> String {
+        p0.get_file_name().to_string()
+    }
+
+    /// Return the tup file name corresponding to its descriptor
+    pub fn get_tup_file_name(&self, p0: &TupPathDescriptor) -> String {
+        p0.get_file_name().to_string()
+    }
+
+    /// Get the name of the task corresponding to its descriptor
+    pub fn get_task_name(&self, p0: &TaskDescriptor) -> String {
+        p0.get_name().to_string()
+    }
+    /// Return rule string from rule descriptor
+    pub fn get_rule_str(&self, rd: &RuleDescriptor) -> String {
+        rd.get_name()
+    }
+
     /// Return the file path corresponding to its id
     pub fn get_parent_id(&self, pd: &PathDescriptor) -> PathDescriptor {
         let r = self.get();
         r.get_parent_id(pd)
+    }
+
+    /// Full path of the group corresponding to its descriptor
+    pub fn get_group_path(&self, gd: &GroupPathDescriptor) -> NormalPath {
+        let r = self.get();
+        r.get_group_path(gd).get_path()
+    }
+
+
+    /// Name of the group from its descriptor
+    pub fn get_group_name(&self, gd: &GroupPathDescriptor) -> String {
+        let r = self.get();
+        r.get_group_name(gd)
+    }
+
+    /// Return the folder path corresponding to  group descriptor
+    pub fn get_group_parent_id(&self, gd: &GroupPathDescriptor) -> PathDescriptor {
+        let r = self.get();
+        r.get_group_dir(gd)
     }
 
     /// return the path corresponding id of the glob path
@@ -2506,6 +2561,18 @@ impl ReadWriteBufferObjects {
         let r = self.get();
         let np = r.get_path(&gd);
         np.clone()
+    }
+
+    /// get parent to the glob path
+    pub fn get_glob_parent_id(&self, gd: &GlobPathDescriptor) -> PathDescriptor {
+        let r = self.get();
+        r.get_parent_id(gd)
+    }
+
+    /// Return the tup folder corresponding to its id
+    pub fn get_tup_parent_id(&self, td: &TupPathDescriptor) -> PathDescriptor {
+        let r = self.get();
+        r.get_parent_id(td)
     }
 
     /// Returns the tup file path corresponding to its id
@@ -2518,9 +2585,13 @@ impl ReadWriteBufferObjects {
     }
 
     /// Return set of environment variables
-    pub fn get_envs<'a>(&'a self, e: &'a EnvDescriptor) -> &Env {
-        let r = self.get();
-        r.get_env(e)
+    pub fn get_envs<'a>(&'a self, e: &'a EnvList) -> HashMap<String, String> {
+        e.get_key_value_pairs()
+    }
+
+    /// Return the environment variable corresponding to its id
+    pub fn get_env(&self, e: &EnvDescriptor) -> String {
+        e.get().get_key_str().to_string()
     }
 
     /// get a reportable version of error for display
@@ -2646,7 +2717,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         let (tup_desc, env_desc) = self.with_path_buffers_do(|boref| {
             let tup_desc = boref.add_tup(tup_file_path.as_ref());
             let env = init_env();
-            let env_desc = boref.add_env(Cow::Borrowed(&env));
+            let env_desc = env.into_iter().map(|k| boref.add_env_var(k.get_key())).collect();
             (tup_desc, env_desc)
         });
 
@@ -2691,7 +2762,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         let (tup_desc, env_desc) = self.with_path_buffers_do(|path_buffers| {
             let tup_desc = path_buffers.add_tup(tup_file_path.as_ref());
             let env = init_env();
-            let env_desc = path_buffers.add_env(Cow::Borrowed(&env));
+            let env_desc: Vec<_> = env.into_iter().map(|e| path_buffers.add_env(Cow::Owned(e))).collect();
             (tup_desc, env_desc)
         });
 
