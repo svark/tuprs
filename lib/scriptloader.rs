@@ -346,10 +346,8 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
     }
 
     pub fn export(&mut self, var: String) {
-        let id = self.bo_as_mut()
-            .add_env_var(var);
+        let id = self.bo_as_mut().add_env_var(var);
         self.parse_state.add_env(&id);
-
     }
 
     pub fn for_each_rule(
@@ -369,6 +367,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             pos: Loc::new(lineno, 0, 0),
         };
         let env = self.parse_state.cur_env_desc.clone();
+        let tupfiles_read = self.parse_state.get_tupfiles_read();
         let statement = LocatedStatement {
             statement: Rule(l, env, vec![]),
             loc: Loc::new(lineno, 0, 0),
@@ -378,6 +377,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
                 self.parse_state.get_cur_file_desc(),
                 self.get_mut_path_searcher().deref_mut(),
                 self.bo_as_mut(),
+                tupfiles_read,
             )
             .expect("unable to resolve paths");
         //self.resolved_links = rlinks.drain(..).map(|l| (l, env.clone())).collect();
@@ -413,6 +413,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             pos: Loc::new(lineno, 0, 0),
         };
         let env = self.parse_state.cur_env_desc.clone();
+        let tupfiles_read = self.parse_state.get_tupfiles_read();
         //self.links.push((l,env));
         let statement = LocatedStatement {
             statement: Rule(l, env, vec![]),
@@ -423,6 +424,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
                 self.parse_state.get_cur_file_desc(),
                 self.get_mut_path_searcher().deref_mut(),
                 self.bo_as_mut(),
+                tupfiles_read,
             )
             .expect("unable to resolve paths");
         let mut paths = Vec::new();
@@ -911,6 +913,10 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                         let incpath = Path::new(&curdir).join(Path::new(path));
                         debug!("include:{}", incpath.to_string_lossy().to_string());
                         let mut file = File::open(&incpath)?;
+                        let globals = luactx.globals();
+                        let tup_shared: AnyUserData = globals.get("tup")?;
+                        let mut scriptctx: RefMut<TupScriptContext<P, Q>> =
+                            tup_shared.borrow_mut()?;
                         luactx.set_named_registry_value(
                             *CURDIR,
                             incpath
@@ -919,6 +925,12 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                                 .to_string_lossy()
                                 .to_string(),
                         )?;
+                        {
+                            let root = scriptctx.get_path_searcher().get_root().to_path_buf();
+                            scriptctx.parse_state.add_path_to_tupfiles_read(
+                                incpath.strip_prefix(root).unwrap().to_path_buf(),
+                            );
+                        }
                         let mut contents = Vec::new();
                         file.read_to_end(&mut contents)?;
                         luactx.load(contents.as_bytes()).exec()?;

@@ -24,7 +24,7 @@ use nom::{AsBytes, Offset, Slice};
 use nom::{Err, InputIter};
 use nom_locate::LocatedSpan;
 
-use crate::buffers::{PathDescriptor};
+use crate::buffers::PathDescriptor;
 use crate::statements::*;
 
 type IResult<I, O, E = error::VerboseError<I>> = nomIResult<I, O, E>;
@@ -165,6 +165,7 @@ fn parse_pathexpr_raw_macroref(i: Span) -> IResult<Span, String> {
     let (s, _) = tag("!")(s)?;
     let (s, r) = take_while(is_ident)(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).unwrap();
+    log::debug!("parsed macro ref: {:?}", raw);
     Ok((s, raw.to_owned()))
 }
 
@@ -277,7 +278,7 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
             // select among parsers that process dollar exprs with first char 'i'... 'r'
             alt((
                 complete(parse_pathexpr_if),
-                complete(parse_pathexpr_nodir),
+                complete(parse_pathexpr_notdir),
                 complete(parse_pathexpr_patsubst),
                 complete(parse_pathexpr_realpath),
                 complete(parse_pathexpr_fallback),
@@ -397,9 +398,9 @@ fn parse_pathexprbasic(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_addsuffix(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(addsuffix")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (suffix, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
+    let (s, (suffix, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKSWS)?;
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, (list, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, (list, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSWS)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed add suffix: {:?} {:?}", suffix, list);
     Ok((s, PathExpr::from(DollarExprs::AddSuffix(suffix, list))))
@@ -409,9 +410,9 @@ fn parse_pathexpr_addsuffix(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_addprefix(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(addprefix")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (prefix, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS))(s)?;
+    let (s, (prefix, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKSWS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, (list, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
+    let (s, (list, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSWS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed add prefix: {:?} {:?}", prefix, list);
     Ok((s, PathExpr::from(DollarExprs::AddPrefix(prefix, list))))
@@ -422,11 +423,11 @@ fn parse_pathexpr_addprefix(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_subst(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(subst")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (from, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS))(s)?;
+    let (s, (from, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKSWS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, (to, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS))(s)?;
+    let (s, (to, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ",", &BRKTOKSWS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, (text, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS))(s)?;
+    let (s, (text, _)) = cut(|s| parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSWS))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!(
         "parsed subst: from : {:?} to:{:?} on text:{:?}",
@@ -491,9 +492,9 @@ fn parse_pathexpr_foreach(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_filter(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(filter")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (patterns, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
+    let (s, (patterns, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKSWS)?;
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSWS)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed filter: {:?} {:?}", patterns, text);
     Ok((s, PathExpr::from(DollarExprs::Filter(patterns, text))))
@@ -504,9 +505,9 @@ fn parse_pathexpr_filter(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_filter_out(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(filter-out")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (patterns, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
+    let (s, (patterns, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKSWS)?;
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSWS)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed filter-out: {:?} {:?}", patterns, text);
     Ok((s, PathExpr::from(DollarExprs::FilterOut(patterns, text))))
@@ -603,14 +604,14 @@ fn parse_pathexpr_dir(i: Span) -> IResult<Span, PathExpr> {
     Ok((s, PathExpr::from(DollarExprs::Dir(pattern))))
 }
 
-/// parse $(nodir names...)
+/// parse $(notdir names...)
 /// $(nodir names...) is a function that returns the non-directory-part of each file name in names.
-fn parse_pathexpr_nodir(i: Span) -> IResult<Span, PathExpr> {
-    let (s, _) = tag("$(nodir")(i)?;
+fn parse_pathexpr_notdir(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(notdir")(i)?;
     let (s, _) = parse_ws(s)?;
     let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
-    log::debug!("parsed nodir: {:?}", pattern);
+    log::debug!("parsed notdir: {:?}", pattern);
     Ok((s, PathExpr::from(DollarExprs::NotDir(pattern))))
 }
 
@@ -1081,7 +1082,7 @@ fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
     )(s)?;
 
     body.iter_mut().for_each(|x| x.cleanup());
-    // log::debug!("with body: {:?}", body);
+    log::debug!("with body: {:?}", body);
     let body: Vec<_> = body
         .drain(..)
         .filter(|x| !x.is_empty() && x.iter().filter(|x| !x.is_ws()).count() != 0)
@@ -1330,6 +1331,9 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     let (s, _) = tag("=")(s)?;
     let (s, _) = opt(sp1)(s)?;
     log::debug!("reading macro: {:?}", from_utf8(macroname).unwrap());
+    if macroname.eq(&Span::new(b"EXEC")) {
+        log::error!("macro name EXEC is reserved");
+    }
     let (s, for_each) = opt(tag("foreach"))(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, input) = opt(context("rule input", cut(parse_rule_inp)))(s)?;
@@ -1359,6 +1363,10 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     } else {
         (output0.unwrap_or((Vec::new(), false)).0, Vec::new())
     };
+    let (s, _) = opt(sp1)(s)?;
+    let (s, group) = opt(parse_pathexpr_group)(s)?;
+    let (s, _) = opt(sp1)(s)?;
+    let (s, bin) = opt(parse_pathexpr_bin)(s)?;
     let macroname_str = from_utf8(macroname).unwrap_or_default();
     log::debug!("built macro:{}", macroname_str);
     let offset = i.offset(&s);
@@ -1376,7 +1384,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
                             .unwrap_or_else(|| (Vec::new(), default_inp()))
                             .0,
                     ),
-                    target: from_output(output, secondary_output, None, None),
+                    target: from_output(output, secondary_output, group, bin),
                     rule_formula,
                     pos: Loc::from(i.slice(..offset)),
                 },
@@ -1763,13 +1771,13 @@ pub(crate) fn locate_tuprules_from(cur_tupfile: PathDescriptor) -> Vec<PathDescr
         log::debug!("try:{:?}", anc);
         let rulestup = anc.get_path().as_path().join("TupRules.tup");
         if rulestup.is_file() {
-            anc.join("Tuprules.tup")
-                .map(|tupr| v.push_front(tupr.clone()));
+            let tupr = anc.join_leaf("Tuprules.tup");
+            v.push_front(tupr.clone());
         } else {
             rulestup.with_extension("lua");
             if rulestup.is_file() {
-                anc.join("Tuprules.lua")
-                    .map(|tupr| v.push_front(tupr.clone()));
+                let tupr = anc.join_leaf("Tuprules.lua");
+                v.push_front(tupr.clone());
             }
         }
     }

@@ -71,7 +71,7 @@ fn test_parse() {
     file.write_all("-".as_bytes()).expect("file write error");
     let mut dir = DirSearcher::new();
     let (decodedrule1, _outs) = LocatedStatement::new(rule1, Loc::new(0, 0, 0))
-        .resolve_paths(&tup_desc, &mut dir, &mut bo)
+        .resolve_paths(&tup_desc, &mut dir, &mut bo, &vec![])
         .unwrap();
     if let Some(deglobbed_link) = decodedrule1.get_resolved_links().first() {
         let rf = bo.get_rule(&deglobbed_link.get_rule_desc());
@@ -131,7 +131,7 @@ fn test_parse() {
     stmts.subst(&mut m, &path_searcher).expect("subst failure");
     let write_guard = m.path_buffers;
     stmts
-        .resolve_paths(&tup_desc, &mut dir_searcher, write_guard.as_ref())
+        .resolve_paths(&tup_desc, &mut dir_searcher, write_guard.as_ref(), &vec![])
         .expect("resolve failure");
 }
 

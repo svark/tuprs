@@ -123,7 +123,7 @@ impl ErrorContext {
 
 impl Error {
     /// Create an error from outside this library to allow traits of this library
-    /// to have  have fallible implementations outside of this library
+    /// to have fallible implementations outside of this library
     pub fn new_path_search_error(error_str: String) -> Error {
         Error::PathSearchError(error_str.to_string())
     }

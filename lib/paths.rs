@@ -17,8 +17,8 @@ use crate::decode::{GroupInputs, TupLoc};
 use crate::errors::Error;
 use crate::glob::Candidate;
 use crate::statements::PathExpr;
-use crate::{BinDescriptor, GroupPathDescriptor};
 use crate::transform::get_parent;
+use crate::{BinDescriptor, GroupPathDescriptor};
 //use tap::Pipe;
 
 /// Normal path holds paths wrt root directory of build
@@ -94,6 +94,7 @@ impl NormalPath {
     pub fn as_path(&self) -> &Path {
         self.inner.as_path()
     }
+    /// Path to the parent directory
     pub fn get_parent(&self) -> NormalPath {
         NormalPath::new_from_raw(get_parent(self.inner.as_path()).as_os_str().to_os_string())
     }
@@ -210,12 +211,7 @@ pub struct GlobPath {
 impl GlobPath {
     /// tup_cwd should include root (it is not relative to root but includes root)
     pub fn build_from_relative(tup_cwd: &PathDescriptor, glob_path: &Path) -> Result<Self, Error> {
-        let ided_path = tup_cwd
-            .join(glob_path)
-            .ok_or(Error::PathSearchError(format!(
-                "Could not join {:?} with {:?}",
-                tup_cwd, glob_path
-            )))?;
+        let ided_path = tup_cwd.join(glob_path)?;
         Self::build_from(&ided_path)
     }
     /// append a relative path to tup_cwd, to construct a new glob search path
@@ -229,7 +225,11 @@ impl GlobPath {
     }
     pub(crate) fn build_from(glob_path_desc: &PathDescriptor) -> Result<GlobPath, Error> {
         let (base_path_desc, _has_glob) = get_non_pattern_prefix(glob_path_desc);
-        let glob = MyGlob::new_raw(glob_path_desc.get_path().as_path())?;
+        let pattern = glob_path_desc.get_path();
+        if pattern.as_ref().ends_with(")") {
+            log::debug!("unexpected token ')'");
+        }
+        let glob = MyGlob::new_raw(pattern.as_path())?;
         Ok(GlobPath {
             glob_path_desc: glob_path_desc.clone(),
             base_desc: base_path_desc,

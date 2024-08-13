@@ -38,13 +38,16 @@ pub trait PathBuffers {
     fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> GroupPathDescriptor;
 
     /// add a path from root and fetch its unique id
-    fn add_abs<P: AsRef<Path>>(&self, path: P) -> Option<PathDescriptor>;
+    fn add_abs<P: AsRef<Path>>(&self, path: P) -> Result<PathDescriptor, Error>;
     /// add a path relative to tup_cwd and fetch its unique id. It can fail if path is not relative to tup_cwd
     fn add_path_from<P: AsRef<Path>>(
         &self,
         tup_cwd: &PathDescriptor,
         path: P,
-    ) -> Option<PathDescriptor>;
+    ) -> Result<PathDescriptor, Error>;
+
+    /// add a path (with single component) relative to tup_cwd and fetch its unique id
+    fn add_leaf(&self, tup_cwd: &PathDescriptor, path: &str) -> PathDescriptor;
 
     /// add a rule and fetch a unique id
     fn add_rule(&self, rule: RuleFormulaInstance) -> RuleDescriptor;
@@ -89,6 +92,7 @@ pub trait PathBuffers {
     /// Try get a bin path entry by its descriptor.
     fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &GroupPathEntry;
 
+    /// Directory descriptor from a group descriptor
     fn get_group_dir(&self, gd: &GroupPathDescriptor) -> PathDescriptor;
 
     /// Return root folder where tup was initialized
@@ -141,6 +145,7 @@ pub struct EnvList {
     env: EnvDescriptor,
     prevs: Option<Box<EnvList>>,
 }
+/// Iterator for EnvList
 pub struct EnvListIter {
     current: Option<Box<EnvList>>,
 }
@@ -189,33 +194,36 @@ impl Ord for EnvList {
 impl EnvList {
     /// Construct a new env list
     pub fn new(env: EnvDescriptor) -> Self {
-        EnvList {
-            env,
-            prevs: None,
-        }
+        EnvList { env, prevs: None }
     }
     /// Clone the chain of env descriptors
     pub fn clone_(&mut self) -> EnvList {
-        EnvList { env: self.env.clone(), prevs: self.prevs.take() }
+        EnvList {
+            env: self.env.clone(),
+            prevs: self.prevs.take(),
+        }
     }
 
+    /// descriptor of the current env
     pub fn get_desc(&self) -> EnvDescriptor {
         self.env.clone()
     }
+    /// previously defined env descriptors
     pub fn get_prev(&self) -> Option<&EnvList> {
         self.prevs.as_ref().map(|x| x.as_ref())
     }
+    /// get the str rep of the current env descriptor
     pub fn get_key_str(&self) -> &str {
         self.env.get().get_key_str()
     }
-    // add a new env descriptor to the chain
+    /// add a new env descriptor to the chain
     pub fn add(&mut self, env: EnvDescriptor) {
         let boxed_self = Box::new(self.clone_());
         self.env = env;
         self.prevs = Some(boxed_self);
     }
 
-    // assign initial values for each tup files
+    /// assign initial values for each tup files
     pub fn from(vec: Vec<EnvDescriptor>) -> Self {
         let mut env_list = EnvList::new(EnvDescriptor::default());
         for e in vec {
@@ -223,16 +231,19 @@ impl EnvList {
         }
         env_list
     }
+    /// iterator over the env descriptors
     pub fn iter(&self) -> EnvListIter {
         EnvListIter {
             current: Some(Box::new(self.clone())),
         }
     }
 
-    pub fn get_var_keys(&self) -> impl Iterator<Item=String> {
+    /// string representation of the env descriptors
+    pub fn get_var_keys(&self) -> impl Iterator<Item = String> {
         self.iter().map(|x| x.get().get_key_str().to_string())
     }
 
+    /// get key value pairs of the env descriptors
     pub fn get_key_value_pairs(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         for env in self.get_var_keys() {
@@ -387,8 +398,7 @@ impl Ord for DirEntry {
         } else if other.path_sym == 0 {
             std::cmp::Ordering::Greater
         } else {
-            self
-                .get_parent_descriptor()
+            self.get_parent_descriptor()
                 .cmp(&other.get_parent_descriptor())
         }
     }
@@ -431,22 +441,29 @@ impl TaskDescriptor {
 
 impl PathDescriptor {
     /// build a new path descriptor by adding path components to the current path
-    pub fn join<P: AsRef<Path>>(&self, name: P) -> Option<Self> {
+    pub fn join<P: AsRef<Path>>(&self, name: P) -> Result<Self, Error> {
         debug!("join:{:?} to {:?}", name.as_ref(), self);
         name.as_ref().components().try_fold(self.clone(), |acc, x| {
             match x {
                 Component::Normal(name) => {
                     let dir_entry = DirEntry::new(acc.to_u64(), name);
-                    Some(Self::from_interned(Intern::from(dir_entry)))
+                    Ok(Self::from_interned(Intern::from(dir_entry)))
                 }
-                Component::ParentDir => Some(acc.as_ref().get_parent_descriptor()),
-                Component::CurDir => Some(acc),
-                _ => {
-                    log::warn!("unexpected component:{:?}", x);
-                    None
-                } // Component::RootDir is unexpected here.
+                Component::ParentDir => Ok(acc.as_ref().get_parent_descriptor()),
+                Component::CurDir => Ok(acc),
+                Component::RootDir => {
+                    log::debug!("switching to root dir from {:?}", acc.as_ref());
+                    Ok(PathDescriptor::default())
+                },
+                Component::Prefix(_) =>
+                    Err(Error::new_path_search_error(format!("attempting to join unexpected path component:{:?}\n Consider only relative paths for rule building", x)))
             }
         })
+    }
+    /// build a new path descriptor by adding single path component to the current path
+    pub fn join_leaf(&self, name: &str) -> PathDescriptor {
+        let dir_entry = DirEntry::new(self.to_u64(), OsStr::new(name));
+        Self::from_interned(Intern::from(dir_entry))
     }
 
     /// get name of the file or folder
@@ -616,6 +633,7 @@ impl<T> NamedPathEntry<T> {
     pub fn get_dir_descriptor(&self) -> &PathDescriptor {
         &self.0
     }
+    /// get path of the group or bin
     pub fn get_path(&self) -> NormalPath {
         self.0.get_path().join(self.get_name()).into()
     }
@@ -783,19 +801,6 @@ impl PathBufferObject {
         }
     }
 
-    /// add a path to buffer that is absolutized by removing dots as many as we can when joining @tup_cwd with @path
-    pub fn add_relative<P: AsRef<Path>>(
-        &self,
-        tup_cwd: &PathDescriptor,
-        path: P,
-    ) -> Option<PathDescriptor> {
-        let joined_path = tup_cwd.join(path.as_ref());
-        if joined_path.is_none() {
-            log::warn!("could not join path {:?} with {:?}", tup_cwd, path.as_ref());
-        }
-        joined_path
-    }
-
     /// root director of the paths stored in this buffer
     fn get_root_dir(&self) -> &Path {
         self.root.as_path()
@@ -803,7 +808,7 @@ impl PathBufferObject {
 
     /// Store a path relative to rootdir. path is expected not to have dots
     /// descriptor is assigned by finding using size of buffer
-    pub fn add<P: AsRef<Path>>(&self, path: P) -> Option<PathDescriptor> {
+    pub fn add<P: AsRef<Path>>(&self, path: P) -> Result<PathDescriptor, Error> {
         let tup_cwd = PathDescriptor::default();
         tup_cwd.join(path)
     }
@@ -1399,7 +1404,7 @@ impl PathBuffers for BufferObjects {
 
     /// Add a path to buffer and return its unique id in the buffer
     /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
-    fn add_abs<P: AsRef<Path>>(&self, p: P) -> Option<PathDescriptor> {
+    fn add_abs<P: AsRef<Path>>(&self, p: P) -> Result<PathDescriptor, Error> {
         self.path_bo.add(p)
     }
 
@@ -1408,8 +1413,14 @@ impl PathBuffers for BufferObjects {
         &self,
         tup_cwd: &PathDescriptor,
         path: P,
-    ) -> Option<PathDescriptor> {
-        self.path_bo.add_relative(tup_cwd, path.as_ref())
+    ) -> Result<PathDescriptor, Error> {
+        //self.path_bo.add_relative(tup_cwd, path.as_ref())
+        let joined_path = tup_cwd.join(path.as_ref());
+        joined_path
+    }
+
+    fn add_leaf(&self, tup_cwd: &PathDescriptor, path: &str) -> PathDescriptor {
+        tup_cwd.join_leaf(path)
     }
 
     /// Add a rule formula to the buffer and return its descriptor
@@ -1422,23 +1433,23 @@ impl PathBuffers for BufferObjects {
         if p.is_absolute() {
             let num_base_comps = self.path_bo.get_root_dir().components().count();
             let p: PathBuf = p.components().skip(num_base_comps).collect();
-            self.path_bo
-                .add(p.as_path())
-                .expect(format!("unable to add tup path {}", p.display()).as_str())
+            self.path_bo.add(p.as_path())
         } else {
-            self.path_bo
-                .add(p)
-                .expect(format!("unable to add tup path {}", p.display()).as_str())
+            self.path_bo.add(p)
         }
+        .expect(
+            format!(
+                "unable to add tup path {}. Root and Prefix components are not supported",
+                p.display()
+            )
+            .as_str(),
+        )
     }
 
     /// add environment variable to the list of variables active in current tupfile until now
     /// This appends a new env var current list of env vars.
     fn add_env_var(&self, var: String) -> EnvDescriptor {
-        debug!(
-            "add env var {} in ebo ",
-            var.as_str(),
-        );
+        debug!("add env var {} in ebo ", var.as_str(),);
         EnvBufferObject::add_ref(Env::new(var))
     }
 

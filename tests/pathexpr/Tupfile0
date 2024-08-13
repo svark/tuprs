@@ -10,6 +10,9 @@ FILES :=  ./file.c file.o file.h readme.txt
 SOURCES := $(filter %.c, $(FILES))
 SOURCES := $(subst \,/,$(SOURCES))
 CXX_SOURCES := $(filter-out %.c, $(S))
+OBJECT_SUFFIX := .o
+OBJDIR = win32
+OBJS := $(foreach file, $(FILES),$(addprefix $(OBJDIR)/,$(addsuffix $(OBJECT_SUFFIX),$(basename $(notdir $(file))))))
 
 TX = a1.tx a2.tx
 GEN_FILES := $(addsuffix x, $(addprefix ../gen/,$(subst a,g,$(subst tx,cx,$(TX)))))
