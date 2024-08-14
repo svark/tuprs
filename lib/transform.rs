@@ -425,13 +425,8 @@ impl ParseState {
         subst_right_pe.cleanup();
         debug!("rhs:{:?} of size:{}", subst_right_pe, subst_right_pe.len());
         let vs = subst_right_pe
-            .split(|x| matches!(x, PathExpr::Sp1))
-            .map(|x| {
-                x.iter()
-                    .map(|x| x.cat_ref().trim().to_string())
-                    .collect::<Vec<String>>()
-                    .join(" ")
-            })
+            .split(|x| matches!(x, PathExpr::Sp1 | PathExpr::NL))
+            .flat_map(|x| x.iter().map(|x| x.cat_ref().trim().to_string()))
             .collect::<Vec<String>>(); // $(empty substitution depends on this)
         log::debug!("eval_as_strings: {:?}", vs);
         vs // even if there is single empty string with no spaces we keep it as it is
@@ -756,7 +751,7 @@ fn is_ws(rval: &PathExpr) -> bool {
     if let PathExpr::Literal(s) = rval {
         s.trim().len() == 0
     } else {
-        return matches!(rval, PathExpr::Sp1 | PathExpr::NL);
+        matches!(rval, PathExpr::Sp1 | PathExpr::NL)
     }
 }
 
@@ -1055,6 +1050,7 @@ impl DollarExprs {
             }
 
             DollarExprs::Filter(ref filter, ref body) => {
+                debug!("body:{:?}", body);
                 let mut body = body.subst_pe(m, path_searcher);
                 body.cleanup();
                 let mut filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
@@ -1062,6 +1058,9 @@ impl DollarExprs {
                 debug!("body:{:?} on which we filter:{:?}", body, filter);
 
                 body.retain(|target| {
+                    if matches!(target, PathExpr::Sp1 | PathExpr::NL) {
+                        return true;
+                    }
                     let target_tok = target.cat_ref();
                     if target_tok.is_empty() {
                         false
@@ -1096,13 +1095,18 @@ impl DollarExprs {
                         false
                     }
                 });
+                body.cleanup();
+                log::debug!("Filtered body:{:?}", body);
                 body
             }
             DollarExprs::FilterOut(ref filter, ref body) => {
                 let mut body = body.subst_pe(m, path_searcher);
                 let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
-                body.retain(|taget_tok| {
-                    let target_tok = taget_tok.cat_ref();
+                body.retain(|target_tok| {
+                    if matches!(target_tok, PathExpr::Sp1 | PathExpr::NL) {
+                        return true;
+                    }
+                    let target_tok = target_tok.cat_ref();
                     if !target_tok.is_empty() {
                         for f in filter.iter() {
                             if let PathExpr::Literal(ref f) = f {
@@ -1122,6 +1126,8 @@ impl DollarExprs {
                     }
                     true
                 });
+                body.cleanup();
+                log::debug!("filtered out body:{:?}", body);
                 body
             }
             DollarExprs::ForEach(var, list, body) => {
@@ -1167,9 +1173,10 @@ impl DollarExprs {
                         }
                     }
                 }
-                if vs_updated.ends_with(&[PathExpr::Sp1]) {
+                if vs_updated.ends_with(&[PathExpr::Sp1]) || vs_updated.ends_with(&[PathExpr::NL]) {
                     vs_updated.pop();
                 }
+                vs_updated.cleanup();
                 vs_updated
             }
 
@@ -1859,7 +1866,7 @@ pub fn get_parent_with_fsep<P: AsRef<Path>>(cur_file: P) -> NormalPath {
 /// strings in pathexpr that are space separated
 fn tovecstring(right: &[PathExpr]) -> Vec<String> {
     right
-        .split(|x| x == &PathExpr::Sp1)
+        .split(|x| matches!(x, &PathExpr::Sp1 | &PathExpr::NL))
         .map(|x| x.to_vec().cat())
         .collect()
 }

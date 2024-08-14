@@ -3,7 +3,7 @@ use crate::buffers::EnvList;
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
 
-use crate::buffers::{PathDescriptor};
+use crate::buffers::PathDescriptor;
 use crate::paths::MatchingPath;
 use crate::transform::ParseState;
 
@@ -570,9 +570,8 @@ impl CleanupPaths for Vec<PathExpr> {
                         }
                     }
                     PathExpr::Sp1 => {
-                        if matches!(acc.last(), Some(PathExpr::Sp1)) {
+                        if matches!(acc.last(), Some(PathExpr::Sp1) | Some(PathExpr::NL)) {
                             // acc.push(pe.clone());
-                        } else if matches!(acc.last(), Some(PathExpr::NL)) {
                         } else {
                             acc.push(pe.clone());
                         }
