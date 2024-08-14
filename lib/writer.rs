@@ -255,7 +255,7 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
         }
         PathExpr::DeGlob(mp) => {
             //let mp_par = mp.path_descriptor().get_parent_descriptor();
-            write!(writer, "{}", mp.get_path().to_string(),).unwrap();
+            write!(writer, "{}", mp.get_relative_path().to_string(),).unwrap();
         }
         PathExpr::TaskRef(tref) => {
             write!(writer, "&task:/{}", tref.as_str()).unwrap();

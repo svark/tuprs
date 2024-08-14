@@ -908,6 +908,7 @@ impl GeneratedFiles {
         &self,
         path_desc: &PathDescriptor,
         base_path_desc: &PathDescriptor,
+        tup_cwd: &PathDescriptor,
         vs: &mut Vec<MatchingPath>,
     ) {
         let mut hs = HashSet::new();
@@ -915,7 +916,7 @@ impl GeneratedFiles {
         let mut found = false;
         if let Some(children) = self.children.get(base_path_desc) {
             if children.contains(path_desc) {
-                vs.push(MatchingPath::new(path_desc.clone()));
+                vs.push(MatchingPath::new(path_desc.clone(), tup_cwd.clone()));
                 found = true;
             }
         }
@@ -928,7 +929,7 @@ impl GeneratedFiles {
                 .filter(|v| v.contains(path_desc));
             for _ in bins_groups {
                 if hs.insert(path_desc.clone()) {
-                    vs.push(MatchingPath::new(path_desc.clone()));
+                    vs.push(MatchingPath::new(path_desc.clone(), tup_cwd.clone()));
                     found = true;
                     break;
                 }
@@ -953,10 +954,11 @@ impl GeneratedFiles {
         let base_path_desc = glob_path.get_base_desc();
         hs.extend(vs.iter().map(MatchingPath::path_descriptor));
         debug!("looking for globmatches:{:?}", glob_path.get_abs_path());
+        let tup_cwd = glob_path.get_tup_dir_desc();
         debug!(
-            "in dir id {:?}, {:?}",
-            base_path_desc,
-            base_path_desc.get_path_ref().deref()
+            "in dir {} with tup base:{}",
+            base_path_desc.get_path_ref().display(),
+            tup_cwd.get_path_ref().display()
         );
         if let Some(children) = self.children.get(base_path_desc) {
             for pd in children.iter() {
@@ -969,6 +971,7 @@ impl GeneratedFiles {
                         pd.clone(),
                         glob_path.get_glob_desc(),
                         capture_grps,
+                        tup_cwd.clone(),
                     ))
                 }
             }
@@ -991,6 +994,7 @@ impl GeneratedFiles {
                                 pd.clone(),
                                 glob_path.get_glob_desc(),
                                 capture_grps,
+                                tup_cwd.clone(),
                             ))
                         }
                     }
@@ -1198,8 +1202,12 @@ impl OutputHolder {
         for glob_path in glob_paths {
             if !glob_path.has_glob_pattern() {
                 let path_desc: PathDescriptor = glob_path.get_glob_path_desc();
-                self.get()
-                    .outputs_with_desc(&path_desc, glob_path.get_base_desc(), &mut vs);
+                self.get().outputs_with_desc(
+                    &path_desc,
+                    glob_path.get_base_desc(),
+                    glob_path.get_tup_dir_desc(),
+                    &mut vs,
+                );
             } else {
                 self.get()
                     .outputs_matching_glob(path_buffers, &glob_path, &mut vs);

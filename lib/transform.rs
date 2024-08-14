@@ -346,7 +346,6 @@ impl ParseState {
         let old_tup_dir = self.get_tup_dir_desc();
 
         self.cur_file_desc = tupfile.clone();
-        //self.cur_file = self.cur_file_desc.get_path().to_path_buf();
         debug!(
             "switching to:{:?} from: {:?}",
             self.cur_file_desc, old_tup_dir
@@ -356,13 +355,6 @@ impl ParseState {
             let diff_path = diff.get_path();
             debug!("new tup_cwd {}", diff_path);
             self.replace_tup_cwd(diff_path);
-            /*let rel_path_to_root = self
-                .cur_file_desc
-                .get_path_to_root()
-                .to_string_lossy()
-                .to_string();
-            log::debug!("TUP_ROOT:{}", rel_path_to_root);
-            self.replace_tup_root(rel_path_to_root);*/
         } else {
             debug!("no change in cwd!");
         }
@@ -374,11 +366,12 @@ impl ParseState {
         self.cur_file_desc.get_path_ref()
     }
 
+    // get directory of the tupfile being parsed
     pub(crate) fn get_tup_dir_desc(&self) -> PathDescriptor {
         self.get_cur_file_desc().get_parent_descriptor()
     }
 
-    /// Get folder that hosts tup file as a descriptor
+    /// Get descritptor of the tup file being parsed
     pub(crate) fn get_cur_file_desc(&self) -> &TupPathDescriptor {
         &self.cur_file_desc
     }
@@ -397,10 +390,6 @@ impl ParseState {
             .or_insert(vs);
     }
 
-    /*
-       With Lazy Assignment (=): The appends are added to the unevaluated value, and everything is evaluated only when the variable is expanded.
-    With Eager Assignment (:=): The appends are added to the already evaluated value, and each append operation immediately affects the final value of the variable.
-         */
     pub(crate) fn append_assign_lazy(&mut self, v: &str, val: Vec<PathExpr>) {
         if let Some(vals) = self.func_map.get_mut(v) {
             vals.push(PathExpr::Sp1);
@@ -428,7 +417,7 @@ impl ParseState {
             .split(|x| matches!(x, PathExpr::Sp1 | PathExpr::NL))
             .flat_map(|x| x.iter().map(|x| x.cat_ref().trim().to_string()))
             .collect::<Vec<String>>(); // $(empty substitution depends on this)
-        log::debug!("eval_as_strings: {:?}", vs);
+        debug!("eval_as_strings: {:?}", vs);
         vs // even if there is single empty string with no spaces we keep it as it is
     }
 
@@ -840,7 +829,7 @@ fn discover_paths_with_pattern(
     pattern: &str,
 ) -> Result<Vec<MatchingPath>, Error> {
     let paths = psx.discover_paths(path_buffers, glob)?;
-    paths_with_pattern(&pattern, paths)
+    paths_with_pattern(psx.get_root(), &pattern, paths)
 }
 
 fn to_regex_replacement(pat: &str) -> String {
@@ -2258,7 +2247,10 @@ impl LocatedStatement {
         );
         let ps = path_searcher.discover_paths(
             parse_state.path_buffers.deref(),
-            &[GlobPath::build_from(&fullp)?],
+            &[GlobPath::build_from(
+                &parse_state.get_tup_base_dir(),
+                &fullp,
+            )?],
         )?;
         let p = ps.into_iter().next().ok_or_else(|| {
             Error::PathNotFound(
@@ -2316,6 +2308,10 @@ impl LocatedStatement {
     ) {
         let op = assignment_type.to_str();
         debug!("assign: {:?} {} {:?}", left.name, op, right);
+        /*
+           With Lazy Assignment (=): The appends are added to the unevaluated value, and everything is evaluated only when the variable is expanded.
+        With Eager Assignment (:=): The appends are added to the already evaluated value, and each append operation immediately affects the final value of the variable.
+             */
 
         match assignment_type {
             AssignmentType::Immediate => {
@@ -2639,8 +2635,8 @@ impl ReadWriteBufferObjects {
 }
 
 impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
-    /// Fallible constructor that attempts to setup a parser after looking from the current folder,
-    /// a root folder where Tupfile.ini exists. If found, it also attempts to load config vars from
+    /// Fallible constructor that attempts to set up a parser locating the root folder where Tupfile.ini exists.,
+    /// If found, it also attempts to load config vars from
     /// tup.config files it can successfully locate in the root folder.
     pub fn try_new_from<P: AsRef<Path>>(
         cur_folder: P,

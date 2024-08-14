@@ -391,7 +391,10 @@ impl PathSearcher for DirSearcher {
                     to_match, mp_from_root
                 );
                 if mp_from_root.is_file() || mp_from_root.is_dir() {
-                    pes.push(MatchingPath::new(path_desc));
+                    pes.push(MatchingPath::new(
+                        path_desc,
+                        glob_path.get_base_desc().clone(),
+                    ));
                     if log_enabled!(log::Level::Debug) {
                         for pe in pes.iter() {
                             debug!("mp:{:?}", pe);
@@ -435,6 +438,7 @@ impl PathSearcher for DirSearcher {
                             path_desc,
                             glob_path.get_glob_desc(),
                             captured_globs,
+                            glob_path.get_base_desc().clone(),
                         ));
                     }
                 }
@@ -506,7 +510,9 @@ impl DecodeInputPaths for PathExpr {
                 let mut glob_paths = vec![glob_path];
                 let rel_path_desc = RelativeDirEntry::new(tup_cwd.clone(), glob_path_desc.clone());
                 for search_dir in search_dirs {
-                    let glob_path = GlobPath::build_from_relative_desc(search_dir, &rel_path_desc)?;
+                    let mut glob_desc = search_dir.clone();
+                    glob_desc += &rel_path_desc;
+                    let glob_path = GlobPath::build_from(tup_cwd, &glob_desc)?;
                     debug!("glob str: {:?}", glob_path.get_abs_path());
                     glob_paths.push(glob_path);
                 }
@@ -1324,11 +1330,14 @@ impl ResolvedLink {
     ) -> Result<Vec<MatchingPath>, Error> {
         let tup_cwd = path_buffers.get_parent_id(&rule_ref.tup_path_desc);
         let rel_path = path_buffers.get_rel_path(p, &tup_cwd);
-        let glob_path = GlobPath::build_from(p)?;
+        let glob_path = GlobPath::build_from(&tup_cwd, p)?;
         debug!("need to resolve file:{:?}", glob_path.get_abs_path());
         let mut glob_paths = vec![glob_path];
         for dir in search_dirs {
-            glob_paths.push(GlobPath::build_from_relative(dir, rel_path.as_path())?);
+            glob_paths.push(GlobPath::build_from(
+                &tup_cwd,
+                &dir.join(rel_path.as_path())?,
+            )?);
         }
         let pes: Vec<MatchingPath> =
             path_searcher.discover_paths(path_buffers, glob_paths.as_slice())?;
@@ -1694,7 +1703,11 @@ impl LocatedStatement {
             if for_each {
                 for input in inpdec {
                     if input.is_unresolved() {
-                        log::warn!("Unresolved input files found : {:?} for rule:{:?} at  {:?}/Tupfile:{:?}", input, resolver.get_rule_formula(), resolver.get_tup_cwd(), rule_ref);
+                        log::warn!("Unresolved input files found : {:?} for rule:{:?} at  {:?}/Tupfile:{:?}",
+                            input,
+                            resolver.get_rule_formula(),
+                            resolver.get_tup_cwd(),
+                            rule_ref);
                         continue;
                     }
                     let delink = get_deglobbed_rule(
@@ -1813,6 +1826,7 @@ pub fn parse_tupfiles(
 
 /// retain paths that have pattern in its contents
 pub fn paths_with_pattern(
+    root: &Path,
     pattern: &&str,
     mut paths: Vec<MatchingPath>,
 ) -> Result<Vec<MatchingPath>, Error> {
@@ -1826,7 +1840,7 @@ pub fn paths_with_pattern(
 
     paths.retain(|path| {
         let mut has_match = false;
-        if let Ok(f) = File::open(path.get_path().as_path()) {
+        if let Ok(f) = File::open(root.join(path.get_path().as_path())) {
             let mut buf = BufReader::new(f);
             buffer.clear();
             while let Ok(num_read) = buf.read_line(&mut buffer) {

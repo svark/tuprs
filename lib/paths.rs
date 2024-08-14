@@ -135,6 +135,8 @@ pub struct MatchingPath {
     glob_descriptor: Option<GlobPathDescriptor>,
     /// first glob match in the above path
     captured_globs: Vec<String>,
+    /// base folder relative to which paths are resolved
+    parent_descriptor: PathDescriptor,
 }
 
 impl Display for MatchingPath {
@@ -148,11 +150,12 @@ impl Display for MatchingPath {
 
 impl MatchingPath {
     ///Create a bare matching path with no captured groups
-    pub fn new(path_descriptor: PathDescriptor) -> MatchingPath {
+    pub fn new(path_descriptor: PathDescriptor, parent_desc: PathDescriptor) -> MatchingPath {
         MatchingPath {
             path_descriptor,
             glob_descriptor: None,
             captured_globs: vec![],
+            parent_descriptor: parent_desc,
         }
     }
 
@@ -161,11 +164,13 @@ impl MatchingPath {
         path_descriptor: PathDescriptor,
         glob: &GlobPathDescriptor,
         captured_globs: Vec<String>,
+        parent_desc: PathDescriptor,
     ) -> MatchingPath {
         MatchingPath {
             path_descriptor,
             glob_descriptor: Some(glob.clone()),
             captured_globs,
+            parent_descriptor: parent_desc,
         }
     }
     /// Get path descriptor represented by this entry
@@ -180,6 +185,12 @@ impl MatchingPath {
     /// Get Normalized path represented by this entry
     pub fn get_path(&self) -> Ref<'_, NormalPath> {
         self.path_descriptor.get_path()
+    }
+
+    /// Get Normalized path relative to base directory from which parsing started
+    pub fn get_relative_path(&self) -> NormalPath {
+        RelativeDirEntry::new(self.parent_descriptor.clone(), self.path_descriptor.clone())
+            .get_path()
     }
 
     /// Get reference to Normalized path as std::path::Path
@@ -205,6 +216,7 @@ impl MatchingPath {
 pub struct GlobPath {
     glob_path_desc: GlobPathDescriptor,
     base_desc: PathDescriptor,
+    tup_cwd: PathDescriptor,
     glob: MyGlob,
 }
 
@@ -212,7 +224,7 @@ impl GlobPath {
     /// tup_cwd should include root (it is not relative to root but includes root)
     pub fn build_from_relative(tup_cwd: &PathDescriptor, glob_path: &Path) -> Result<Self, Error> {
         let ided_path = tup_cwd.join(glob_path)?;
-        Self::build_from(&ided_path)
+        Self::build_from(tup_cwd, &ided_path)
     }
     /// append a relative path to tup_cwd, to construct a new glob search path
     pub fn build_from_relative_desc(
@@ -221,9 +233,12 @@ impl GlobPath {
     ) -> Result<Self, Error> {
         let mut ided_path = tup_cwd.clone();
         ided_path += glob_path;
-        Self::build_from(&ided_path)
+        Self::build_from(tup_cwd, &ided_path)
     }
-    pub(crate) fn build_from(glob_path_desc: &PathDescriptor) -> Result<GlobPath, Error> {
+    pub(crate) fn build_from(
+        tup_cwd: &PathDescriptor,
+        glob_path_desc: &PathDescriptor,
+    ) -> Result<GlobPath, Error> {
         let (base_path_desc, _has_glob) = get_non_pattern_prefix(glob_path_desc);
         let pattern = glob_path_desc.get_path();
         if pattern.as_ref().ends_with(")") {
@@ -233,6 +248,7 @@ impl GlobPath {
         Ok(GlobPath {
             glob_path_desc: glob_path_desc.clone(),
             base_desc: base_path_desc,
+            tup_cwd: tup_cwd.clone(),
             glob,
         })
     }
@@ -253,6 +269,11 @@ impl GlobPath {
     /// Id of the parent folder corresponding to glob path
     pub fn get_base_desc(&self) -> &PathDescriptor {
         &self.base_desc
+    }
+
+    /// Get Tupfile folder descriptor
+    pub fn get_tup_dir_desc(&self) -> &PathDescriptor {
+        &self.tup_cwd
     }
 
     /// parent folder corresponding to glob path
