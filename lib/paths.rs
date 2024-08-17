@@ -1,7 +1,6 @@
 //! Module for handling paths and glob patterns in tupfile.
 use std::borrow::Cow;
-use std::cell::Ref;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
@@ -183,8 +182,8 @@ impl MatchingPath {
     }
 
     /// Get Normalized path represented by this entry
-    pub fn get_path(&self) -> Ref<'_, NormalPath> {
-        self.path_descriptor.get_path()
+    pub fn get_path(&self) -> &NormalPath {
+        self.path_descriptor.get_path_ref()
     }
 
     /// Get Normalized path relative to base directory from which parsing started
@@ -194,8 +193,8 @@ impl MatchingPath {
     }
 
     /// Get reference to Normalized path as std::path::Path
-    pub fn get_path_ref(&self) -> Ref<'_, Path> {
-        self.path_descriptor.get_path_ref()
+    pub fn get_path_ref(&self) -> &Path {
+        self.path_descriptor.get_path_ref().as_path()
     }
 
     /// Get id of the glob pattern that matched this path
@@ -240,7 +239,7 @@ impl GlobPath {
         glob_path_desc: &PathDescriptor,
     ) -> Result<GlobPath, Error> {
         let (base_path_desc, _has_glob) = get_non_pattern_prefix(glob_path_desc);
-        let pattern = glob_path_desc.get_path();
+        let pattern = glob_path_desc.get_path_ref();
         if pattern.as_ref().ends_with(")") {
             log::debug!("unexpected token ')'");
         }
@@ -262,8 +261,8 @@ impl GlobPath {
         &self.glob_path_desc
     }
     /// Glob path as [Path]
-    pub fn get_abs_path(&self) -> Ref<'_, NormalPath> {
-        self.glob_path_desc.get_path()
+    pub fn get_abs_path(&self) -> &NormalPath {
+        self.glob_path_desc.get_path_ref()
     }
 
     /// Id of the parent folder corresponding to glob path
@@ -277,8 +276,8 @@ impl GlobPath {
     }
 
     /// parent folder corresponding to glob path
-    pub fn get_base_abs_path(&self) -> Ref<'_, NormalPath> {
-        self.base_desc.get_path()
+    pub fn get_base_abs_path(&self) -> &NormalPath {
+        self.base_desc.get_path_ref()
     }
 
     /// Check if the pattern for matching has glob pattern chars such as "*[]"
@@ -339,6 +338,7 @@ impl OutputsAsPaths {
     pub fn get_file_stem(&self) -> Option<String> {
         self.outputs.first().and_then(|x| {
             x.get_path_ref()
+                .as_path()
                 .file_stem()
                 .map(|x| x.to_string_lossy().to_string())
         })
@@ -358,8 +358,8 @@ impl OutputsAsPaths {
 /// Bins are converted to raw paths, groups paths are expanded into a space separated path list
 pub struct InputsAsPaths {
     raw_inputs: Vec<PathDescriptor>,
-    groups_by_name: HashMap<String, Vec<PathDescriptor>>,
-    // space separated paths against group name
+    groups_by_name: BTreeMap<String, Vec<PathDescriptor>>, // space separated paths against group name
+    bins_by_name: BTreeMap<String, Vec<PathDescriptor>>,
     raw_inputs_glob_match: Option<InputResolvedType>,
     rule_ref: TupLoc,
     tup_dir: PathDescriptor,
@@ -381,6 +381,20 @@ impl GroupInputs for InputsAsPaths {
             paths(&*format!("<{}>", group_name))
         }
     }
+
+    fn get_bin_paths(&self, bin_name: &str, _rule_id: i64, _rule_dir: i64) -> Option<String> {
+        let paths = |bin_name| {
+            self.bins_by_name.get(bin_name).cloned().map(|x| {
+                let paths: Vec<_> = x.iter().map(|p| p.to_string()).collect();
+                paths.join(" ")
+            })
+        };
+        if bin_name.starts_with('{') {
+            paths(bin_name)
+        } else {
+            Some("".to_string())
+        }
+    }
 }
 
 impl InputsAsPaths {
@@ -390,6 +404,7 @@ impl InputsAsPaths {
             .iter()
             .filter_map(|x| {
                 x.get_path_ref()
+                    .as_path()
                     .file_name()
                     .and_then(|x| x.to_str())
                     .map(|x| x.to_string())
@@ -398,14 +413,15 @@ impl InputsAsPaths {
     }
 
     /// Returns the first parent folder name
-    pub(crate) fn parent_folder_name(&self) -> Ref<'_, NormalPath> {
-        self.tup_dir.get_path()
+    pub(crate) fn parent_folder_name(&self) -> &NormalPath {
+        self.tup_dir.get_path_ref()
     }
     /// returns all the inputs
     pub(crate) fn get_paths(&self) -> Vec<String> {
         self.raw_inputs
             .iter()
             .chain(self.groups_by_name.values().flatten())
+            .chain(self.bins_by_name.values().flatten())
             .map(|x| {
                 RelativeDirEntry::new(self.tup_dir.clone(), x.clone())
                     .get_path()
@@ -424,6 +440,7 @@ impl InputsAsPaths {
             .chain(self.groups_by_name.values().flatten())
             .filter_map(|x| {
                 x.get_path_ref()
+                    .as_path()
                     .extension()
                     .and_then(|x| x.to_str().map(|x| x.to_string()))
             })
@@ -434,7 +451,7 @@ impl InputsAsPaths {
             .iter()
             .chain(self.groups_by_name.values().flatten())
             .filter_map(|x| {
-                x.get_path()
+                x.get_path_ref()
                     .as_path()
                     .file_stem()
                     .and_then(|x| x.to_str().map(|x| x.to_string()))
@@ -460,7 +477,7 @@ impl InputsAsPaths {
         path_buffers: &impl PathBuffers,
         rule_ref: TupLoc,
     ) -> InputsAsPaths {
-        let isnotgrp = |x: &InputResolvedType| {
+        let isnot_grp = |x: &InputResolvedType| {
             !matches!(x, &InputResolvedType::GroupEntry(_, _))
                 && !matches!(x, &InputResolvedType::UnResolvedGroupEntry(_))
         };
@@ -470,6 +487,16 @@ impl InputsAsPaths {
                 tup_cwd, inp[0]
             );
         }
+        let try_bin = |x: &InputResolvedType| {
+            if let &InputResolvedType::BinEntry(ref grp_desc, _) = x {
+                Some((
+                    path_buffers.get_bin_name(grp_desc).to_string(),
+                    path_buffers.get_path_from(x),
+                ))
+            } else {
+                None
+            }
+        };
         let try_grp = |x: &InputResolvedType| {
             if let &InputResolvedType::GroupEntry(ref grp_desc, _) = x {
                 Some((
@@ -485,13 +512,20 @@ impl InputsAsPaths {
         };
         let allnongroups: Vec<_> = inp
             .iter()
-            .filter(|&x| isnotgrp(x))
+            .filter(|&x| isnot_grp(x))
             .map(|x| path_buffers.get_path_from(x))
             .collect();
-        let mut namedgroupitems: HashMap<_, Vec<PathDescriptor>> = HashMap::new();
+        let mut namedgroupitems: BTreeMap<_, Vec<PathDescriptor>> = BTreeMap::new();
+        let mut named_bin_items: BTreeMap<String, Vec<PathDescriptor>> = BTreeMap::new();
         for x in inp.iter().filter_map(|x| try_grp(x)) {
             namedgroupitems
                 .entry(x.0)
+                .or_insert_with(Default::default)
+                .push(x.1)
+        }
+        for x in inp.iter().filter_map(|x| try_bin(x)) {
+            named_bin_items
+                .entry(x.0.to_string())
                 .or_insert_with(Default::default)
                 .push(x.1)
         }
@@ -500,6 +534,7 @@ impl InputsAsPaths {
         InputsAsPaths {
             raw_inputs: allnongroups,
             groups_by_name: namedgroupitems,
+            bins_by_name: named_bin_items,
             raw_inputs_glob_match,
             rule_ref,
             tup_dir: tup_cwd.clone(),

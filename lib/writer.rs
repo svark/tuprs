@@ -206,12 +206,9 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
             DollarExprs::Call(name, args) => {
                 write!(writer, "$(call ").unwrap();
                 write_pathexprs(writer, name);
-                if !args.is_empty() {
-                    write!(writer, ",").unwrap();
-                }
                 for arg in args {
+                    write!(writer, ",").unwrap();
                     write_pathexprs(writer, arg);
-                    write!(writer, ", ").unwrap();
                 }
                 write!(writer, ")").unwrap();
             }
@@ -262,6 +259,29 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
         }
     }
 }
+
+fn write_else_statements<T: Write>(
+    writer: &mut BufWriter<T>,
+    else_statements: &[LocatedStatement],
+    num_padding: usize,
+) {
+    if !else_statements.is_empty() {
+        for _ in 0..num_padding {
+            write!(writer, "    ").unwrap();
+        }
+        write!(writer, "else\n").unwrap();
+        for stmt in else_statements {
+            write!(writer, "{}", "    ".repeat(num_padding + 1)).unwrap();
+            write_statement(writer, &stmt, num_padding + 1);
+        }
+    }
+    for _ in 0..num_padding {
+        write!(writer, "    ").unwrap();
+    }
+
+    write!(writer, "endif\n").unwrap();
+}
+
 impl Condition {
     pub fn write<T: Write>(&self, buf_writer: &mut BufWriter<T>) {
         match self {
@@ -281,14 +301,18 @@ impl Condition {
                 if self.is_negation() {
                     write!(buf_writer, "ifndef {}\n", cv.get_var()).unwrap();
                 } else {
-                    write!(buf_writer, "ifndef {}\n", cv.get_var()).unwrap();
+                    write!(buf_writer, "ifdef {}\n", cv.get_var()).unwrap();
                 }
             }
         }
     }
 }
 
-pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &LocatedStatement) {
+pub(crate) fn write_statement<T: Write>(
+    writer: &mut BufWriter<T>,
+    stmt: &LocatedStatement,
+    num_padding: usize,
+) {
     match stmt.get_statement() {
         Statement::AssignExpr {
             left,
@@ -304,21 +328,19 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
             then_elif_statements,
             else_statements,
         } => {
+            let mut first = true;
             for stmt in then_elif_statements {
+                if !first {
+                    write!(writer, "{}", "    ".repeat(num_padding)).unwrap();
+                    write!(writer, "else ").unwrap();
+                }
+                log::debug!("writing condition:{:?}", stmt.cond);
                 stmt.cond.write(writer);
-                for stmt in &stmt.then_statements {
-                    write!(writer, "    ").unwrap();
-                    write_statement(writer, &stmt);
-                }
+                let then_stmts = &stmt.then_statements;
+                write_statements(&then_stmts, writer, num_padding + 1);
+                first = false;
             }
-            if !else_statements.is_empty() {
-                write!(writer, "else\n").unwrap();
-                for stmt in else_statements {
-                    write!(writer, "    ").unwrap();
-                    write_statement(writer, &stmt);
-                }
-            }
-            write!(writer, "endif\n").unwrap();
+            write_else_statements(writer, &else_statements, num_padding);
         }
         Statement::Include(f) => {
             write!(writer, "include ").unwrap();
@@ -339,7 +361,19 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
         Statement::Define(d, v) => {
             write!(writer, "define ").unwrap();
             write!(writer, "{}\n", d.name).unwrap();
-            write_pathexprs(writer, v);
+            v.split(|x| matches!(x, PathExpr::NL)).for_each(|v| {
+                if v.cat().is_empty() {
+                } else {
+                    for _ in 0..num_padding + 1 {
+                        write!(writer, "    ").unwrap();
+                    }
+                    write_pathexprs(writer, v);
+                    write!(writer, "\n").unwrap();
+                }
+            });
+            for _ in 0..num_padding {
+                write!(writer, "    ").unwrap();
+            }
             write!(writer, "endef\n").unwrap();
         }
         Statement::Task(t) => {
@@ -349,9 +383,17 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
             write_pathexprs(writer, t.get_deps());
             write!(writer, "\n").unwrap();
             for cmd in t.get_body() {
-                write!(writer, "\t").unwrap();
+                if cmd.is_empty() {
+                    continue;
+                }
+                for _ in 0..num_padding + 1 {
+                    write!(writer, "    ").unwrap();
+                }
                 write_pathexprs(writer, cmd);
                 write!(writer, "\n").unwrap();
+            }
+            for _ in 0..num_padding {
+                write!(writer, "    ").unwrap();
             }
             write!(writer, "endtask\n").unwrap();
         }
@@ -395,6 +437,16 @@ pub(crate) fn write_statement<T: Write>(writer: &mut BufWriter<T>, stmt: &Locate
             }
             write!(writer, "\n").unwrap();
         }
+    }
+}
+fn write_statements<T: Write>(
+    then_stmts: &[LocatedStatement],
+    writer: &mut BufWriter<T>,
+    num_padding: usize,
+) {
+    for stmt in then_stmts {
+        write!(writer, "{}", "    ".repeat(num_padding)).unwrap();
+        write_statement(writer, &stmt, num_padding);
     }
 }
 
@@ -454,7 +506,7 @@ pub fn convert_to_str(statements: &Vec<LocatedStatement>) -> Vec<String> {
     let mut o: Vec<u8> = Vec::new();
     let mut buffered_writer = BufWriter::new(&mut o);
     statements.iter().for_each(|x| {
-        write_statement(&mut buffered_writer, x);
+        write_statement(&mut buffered_writer, x, 0);
     });
     std::str::from_utf8(buffered_writer.buffer())
         .unwrap()

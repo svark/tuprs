@@ -1,6 +1,5 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
 use std::borrow::Cow;
-use std::cell::Ref;
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::ops::ControlFlow::Continue;
@@ -70,6 +69,16 @@ fn variable_value_is_non_empty(s: &Vec<String>) -> bool {
         _ => false,
     }
 }
+fn variable_value_is_non_empty_pe(s: &Vec<PathExpr>) -> bool {
+    let len = s.len();
+    log::debug!("variable_value_is_non_empty_pe:{:?}", s);
+    match len {
+        len if len > 1 => true,
+        len if len == 1 => !s.first().unwrap().is_empty(),
+        _ => false,
+    }
+}
+
 /// Statements to resolve with their current parse state
 pub struct StatementsToResolve {
     /// Statements to resolve
@@ -91,10 +100,7 @@ impl StatementsToResolve {
     }
     /// Get parse state after tupfile parsing.
     pub fn fetch_var(&self, var: &String) -> Option<String> {
-        self.parse_state
-            .expr_map
-            .get(var)
-            .map(|x| intersperse_sp1(&x).cat())
+        self.parse_state.expr_map.get(var).map(|x| x.cat())
     }
 }
 
@@ -114,7 +120,7 @@ impl Default for ParseContext {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ParseState {
     /// tupfile variables to be substituted
-    pub(crate) expr_map: HashMap<String, Vec<String>>,
+    pub(crate) expr_map: HashMap<String, Vec<PathExpr>>,
     // defined functions
     pub(crate) func_map: HashMap<String, Vec<PathExpr>>,
     /// configuration values read from tup.config
@@ -226,15 +232,21 @@ impl ParseState {
     ) -> Self {
         let mut def_vars = HashMap::new();
         let cur_file = bo.get_path(&cur_file_desc).clone();
-        let dir = cur_file_desc.get_parent_descriptor().get_path().to_string();
-        def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
+        let dir = cur_file_desc.get_parent_descriptor();
+        def_vars.insert(
+            "TUP_CWD".to_owned(),
+            vec![MatchingPath::new(dir.clone(), PathDescriptor::default()).into()],
+        );
         log::debug!("TUP_CWD:{}", dir);
         let rel_path_to_root = cur_file_desc
             .get_path_to_root()
             .to_string_lossy()
             .to_string();
         log::debug!("TUP_ROOT:{}", rel_path_to_root);
-        def_vars.insert("TUP_ROOT".to_owned(), vec![rel_path_to_root]);
+        def_vars.insert(
+            "TUP_ROOT".to_owned(),
+            vec![MatchingPath::new(PathDescriptor::default(), dir).into()],
+        );
         ParseState {
             conf_map: conf_map.clone(),
             expr_map: def_vars,
@@ -278,10 +290,10 @@ impl ParseState {
         self.tup_base_path.clone()
     }
 
-    pub(crate) fn replace_tup_cwd<S: ToString>(&mut self, dir: S) -> Option<Vec<String>> {
+    pub(crate) fn replace_tup_cwd(&mut self, dir: MatchingPath) -> Option<Vec<PathExpr>> {
         let v = self.expr_map.remove("TUP_CWD");
         self.expr_map
-            .insert("TUP_CWD".to_string(), vec![dir.to_string()]);
+            .insert("TUP_CWD".to_string(), vec![dir.into()]);
         v
     }
 
@@ -318,15 +330,19 @@ impl ParseState {
         let mut def_vars = HashMap::new();
         let pbuffers = Arc::new(BufferObjects::new(get_parent(cur_file.as_ref())));
         let cur_file_desc = pbuffers.add_tup(cur_file.as_ref());
-        let cur_file = cur_file_desc.get_path().clone().to_path_buf();
-        let dir = get_parent_with_fsep(cur_file.as_path()).to_string();
-        def_vars.insert("TUP_CWD".to_owned(), vec![dir.clone()]);
+        let tup_dir = cur_file_desc.get_parent_descriptor();
+        let cur_file = cur_file_desc.get_path_ref().as_path().to_path_buf();
+        def_vars.insert(
+            "TUP_CWD".to_owned(),
+            vec![MatchingPath::new(tup_dir, PathDescriptor::default()).into()],
+        );
         def_vars.insert(
             "TUP_ROOT".to_owned(),
-            vec![cur_file_desc
-                .get_path_to_root()
-                .to_string_lossy()
-                .to_string()],
+            vec![MatchingPath::new(
+                PathDescriptor::default(),
+                cur_file_desc.get_parent_descriptor(),
+            )
+            .into()],
         );
 
         ParseState {
@@ -354,7 +370,9 @@ impl ParseState {
             let diff = RelativeDirEntry::new(self.get_tup_base_dir(), self.get_tup_dir_desc());
             let diff_path = diff.get_path();
             debug!("new tup_cwd {}", diff_path);
-            self.replace_tup_cwd(diff_path);
+            self.replace_tup_cwd(
+                MatchingPath::new(self.get_tup_dir_desc(), self.get_tup_base_dir()).into(),
+            );
         } else {
             debug!("no change in cwd!");
         }
@@ -362,8 +380,8 @@ impl ParseState {
     }
 
     /// return the tupfile being parsed
-    pub(crate) fn get_cur_file(&self) -> Ref<'_, Path> {
-        self.cur_file_desc.get_path_ref()
+    pub(crate) fn get_cur_file(&self) -> &Path {
+        self.cur_file_desc.get_path_ref().as_path()
     }
 
     // get directory of the tupfile being parsed
@@ -392,18 +410,20 @@ impl ParseState {
 
     pub(crate) fn append_assign_lazy(&mut self, v: &str, val: Vec<PathExpr>) {
         if let Some(vals) = self.func_map.get_mut(v) {
-            vals.push(PathExpr::Sp1);
+            if !vals.is_empty() {
+                vals.push(PathExpr::Sp1);
+            }
             vals.extend(val);
         } else {
             self.func_map.insert(v.to_string(), val);
         }
     }
     /// convert path expression list to a vector of strings after evaluating them
-    fn eval_as_strings(
+    fn eval_right(
         &mut self,
         right: &Vec<PathExpr>,
         path_searcher: &impl PathSearcher,
-    ) -> Vec<String> {
+    ) -> Vec<PathExpr> {
         let mut ps = self.clone();
         ps.parse_context = Expression; // provide a local context where we can evaluate expressions,
                                        // without affecting the parent ParseState
@@ -412,13 +432,8 @@ impl ParseState {
             .flat_map(|x| x.subst(&mut ps, path_searcher))
             .collect();
         subst_right_pe.cleanup();
-        debug!("rhs:{:?} of size:{}", subst_right_pe, subst_right_pe.len());
-        let vs = subst_right_pe
-            .split(|x| matches!(x, PathExpr::Sp1 | PathExpr::NL))
-            .flat_map(|x| x.iter().map(|x| x.cat_ref().trim().to_string()))
-            .collect::<Vec<String>>(); // $(empty substitution depends on this)
-        debug!("eval_as_strings: {:?}", vs);
-        vs // even if there is single empty string with no spaces we keep it as it is
+        debug!("eval_right: {:?}", subst_right_pe);
+        subst_right_pe // even if there is single empty string with no spaces we keep it as it is
     }
 
     fn append_assign_eager(
@@ -427,17 +442,21 @@ impl ParseState {
         right: Vec<PathExpr>,
         path_searcher: &impl PathSearcher,
     ) {
-        let val = self.eval_as_strings(&right, path_searcher);
+        let val = self.eval_right(&right, path_searcher);
         if let Some(vals) = self.expr_map.get_mut(v) {
             if log::log_enabled!(log::Level::Debug) {
                 debug!("append assign of {:?} over existing value:{:?}", v, val);
             }
-            vals.extend(val);
+            if variable_value_is_non_empty_pe(vals) {
+                vals.push(PathExpr::Sp1);
+            }
+            vals.extend(val.into_iter());
+            vals.cleanup();
         } else if !val.is_empty() {
             debug!(
                 "eager assign of {:?} to {:?} with not previously set val",
                 v,
-                val.join("_SPA1_")
+                val.cat()
             );
             self.expr_map.insert(v.to_string(), val);
         }
@@ -449,10 +468,8 @@ impl ParseState {
         right: Vec<PathExpr>,
         path_searcher: &impl PathSearcher,
     ) {
-        let val = self.eval_as_strings(&right, path_searcher);
-        if val.is_empty() {
-            self.expr_map.remove(v);
-        } else if let Some(vals) = self.expr_map.get_mut(v) {
+        let val = self.eval_right(&right, path_searcher);
+        if let Some(vals) = self.expr_map.get_mut(v) {
             if log::log_enabled!(log::Level::Debug) {
                 debug!(
                     "overwrite {:?} having existing value:{:?} with {:?}",
@@ -520,7 +537,8 @@ impl ParseState {
 
     //https://www.gnu.org/software/make/manual/make.html#Conditional-Syntax
     pub(crate) fn is_var_defined(&self, v: &str) -> bool {
-        self.expr_map.contains_key(v) && variable_value_is_non_empty(self.expr_map.get(v).unwrap())
+        self.expr_map.contains_key(v)
+            && variable_value_is_non_empty_pe(self.expr_map.get(v).unwrap())
             || self.func_map.contains_key(v) && self.func_map.get(v).unwrap().len() > 0
             || self.conf_map.contains_key(v)
                 && variable_value_is_non_empty(self.conf_map.get(v).unwrap())
@@ -617,7 +635,7 @@ impl Statement {
                     let tupdir = parse_state.get_tup_dir_desc();
                     let dir = path_buffers
                         .get_root_dir()
-                        .join(tupdir.get_path_ref().as_os_str());
+                        .join(tupdir.get_path_ref().as_path().as_os_str());
                     if cmd.get_args().len() != 0 {
                         cmd.envs(envs).current_dir(dir.as_path());
 
@@ -727,32 +745,7 @@ pub(crate) trait ExpandMacro {
         Self: Sized;
 }
 
-/// Check if a PathExpr is empty
-fn is_empty(rval: &PathExpr) -> bool {
-    if let PathExpr::Literal(s) = rval {
-        s.len() == 0
-    } else {
-        false
-    }
-}
-
-fn is_ws(rval: &PathExpr) -> bool {
-    if let PathExpr::Literal(s) = rval {
-        s.trim().len() == 0
-    } else {
-        matches!(rval, PathExpr::Sp1 | PathExpr::NL)
-    }
-}
-
 impl PathExpr {
-    fn is_literal(&self) -> bool {
-        if let PathExpr::Literal(_) = self {
-            true
-        } else {
-            false
-        }
-    }
-
     fn subst_ca(&self, m: &mut CallArgsMap) -> Vec<PathExpr> {
         match self {
             DExpr(ref x) => x.subst_callargs(m),
@@ -982,14 +975,14 @@ impl DollarExprs {
             DollarExprs::DollarExpr(x) => {
                 log::debug!("substituting {}", x.as_str());
                 let res = {
-                    if let Some(val) = m.expr_map.get(x.as_str()) {
-                        let vs = intersperse_sp1(val);
-                        vs
+                    if let Some(val) = m.expr_map.get(x.as_str()).cloned() {
+                        //  let vs = intersperse_sp1(val);
+                        val
                     } else if let Some(val) = m.func_map.remove(x.as_str()) {
                         let right = val.subst_pe(m, path_searcher);
                         m.assign_eager(x.as_str(), right.clone(), path_searcher);
                         right
-                    } else if let Some(val) = m.conf_map.get(x.as_str()).cloned() {
+                    } else if let Some(val) = m.conf_map.remove(x.as_str()) {
                         let mut val = val.join(" ");
                         if !val.ends_with("\n") {
                             val.push('\n');
@@ -999,7 +992,9 @@ impl DollarExprs {
                         ))
                         .map(|x| x.1 .0)
                         .unwrap_or(vec![]);
-                        pelist.subst_pe(m, path_searcher)
+                        let res = pelist.subst_pe(m, path_searcher);
+                        m.assign_eager(x.as_str(), res.clone(), path_searcher);
+                        res
                     } else {
                         log::warn!("No substitution found for {}", x);
                         vec![Default::default()]
@@ -1045,15 +1040,9 @@ impl DollarExprs {
                 let mut filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
                 filter.cleanup();
                 debug!("body:{:?} on which we filter:{:?}", body, filter);
-
-                body.retain(|target| {
-                    if matches!(target, PathExpr::Sp1 | PathExpr::NL) {
-                        return true;
-                    }
-                    let target_tok = target.cat_ref();
-                    if target_tok.is_empty() {
-                        false
-                    } else {
+                let body_iter = body.split(PathExpr::is_ws).filter_map(|target| {
+                    if let Some(target_tok_pe) = target.first() {
+                        let target_tok = target_tok_pe.cat_ref();
                         for f in filter.iter() {
                             if let PathExpr::Literal(ref f) = f {
                                 let pat = f.as_str();
@@ -1068,53 +1057,81 @@ impl DollarExprs {
                                         .is_match(target_tok.as_ref())
                                     {
                                         debug!("found a match");
-                                        return true;
+                                        return Some(target_tok_pe.clone());
                                     }
-                                } else {
-                                    if target_tok.contains(pat) {
-                                        debug!(
-                                            "found a match for pattern:{:?} in target:{:?}",
-                                            pat, target_tok
-                                        );
-                                        return true;
-                                    }
+                                } else if target_tok.contains(pat) {
+                                    debug!(
+                                        "found a match for pattern:{:?} in target:{:?}",
+                                        pat, target_tok
+                                    );
+                                    return Some(target_tok_pe.clone());
                                 }
                             }
                         }
-                        false
                     }
+                    None
                 });
+                //.collect();
+                let mut body = Vec::new();
+                let mut first = true;
+                for pe in body_iter {
+                    if !first {
+                        body.push(PathExpr::Sp1);
+                    } else {
+                        first = false;
+                    }
+                    body.push(pe);
+                }
+
                 body.cleanup();
                 log::debug!("Filtered body:{:?}", body);
                 body
             }
             DollarExprs::FilterOut(ref filter, ref body) => {
-                let mut body = body.subst_pe(m, path_searcher);
+                let body = body.subst_pe(m, path_searcher);
                 let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
-                body.retain(|target_tok| {
-                    if matches!(target_tok, PathExpr::Sp1 | PathExpr::NL) {
-                        return true;
-                    }
-                    let target_tok = target_tok.cat_ref();
-                    if !target_tok.is_empty() {
+                let body_iter = body.split(PathExpr::is_ws).filter_map(|target| {
+                    if let Some(target_tok_pe) = target.first() {
+                        let target_tok = target_tok_pe.cat_ref();
                         for f in filter.iter() {
                             if let PathExpr::Literal(ref f) = f {
-                                if f.contains("%") {
-                                    let pat = to_regex(f.as_str());
-                                    if regex::Regex::new(pat.as_str())
+                                let pat = f.as_str();
+                                if pat.contains("%") {
+                                    let pat_str: String = to_regex(pat);
+                                    debug!(
+                                        "checking if glob: {:?} not matches target: {:?}",
+                                        pat_str, target_tok
+                                    );
+                                    if !regex::Regex::new(pat_str.as_str())
                                         .unwrap()
                                         .is_match(target_tok.as_ref())
                                     {
-                                        return false;
+                                        debug!("found a match");
+                                        return Some(target_tok_pe.clone());
                                     }
-                                } else if target_tok.contains(f.as_str()) {
-                                    return false;
+                                } else if !target_tok.contains(pat) {
+                                    debug!(
+                                        "found a match for pattern:{:?} in target:{:?}",
+                                        pat, target_tok
+                                    );
+                                    return Some(target_tok_pe.clone());
                                 }
                             }
                         }
                     }
-                    true
+                    None
                 });
+                let mut first = true;
+                let mut body = Vec::new();
+                for pe in body_iter {
+                    if !first {
+                        body.push(PathExpr::Sp1);
+                    } else {
+                        first = false;
+                    }
+                    body.push(pe);
+                }
+
                 body.cleanup();
                 log::debug!("filtered out body:{:?}", body);
                 body
@@ -1128,12 +1145,14 @@ impl DollarExprs {
                 //let body = body.subst_pe(m);
                 let body_str = body.cat() + "\n";
                 debug!("eval foreach body as statements:\n{:?}", body_str);
+
                 let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
                     .expect("failed to parse body of for-each");
+                log::debug!("stmts:{:?}", stmts);
                 let mut vs_updated = Vec::new();
                 for l in list.iter_mut() {
                     if let PathExpr::Literal(ref s) = l {
-                        let oldval = m.expr_map.insert(var.clone(), vec![s.clone()]);
+                        let oldval = m.expr_map.insert(var.clone(), vec![s.clone().into()]);
 
                         let mut vs = Self::subst_as_statements(
                             m,
@@ -1150,10 +1169,7 @@ impl DollarExprs {
                             s.as_str(),
                             vs
                         );
-                        debug!(
-                            "$seen:{}",
-                            m.expr_map.get("seen").unwrap_or(&vec![]).join(" ")
-                        );
+                        debug!("$seen:{}", m.expr_map.get("seen").unwrap_or(&vec![]).cat());
                         vs_updated.extend(vs);
                         if let Some(v) = oldval {
                             m.expr_map.insert(var.clone(), v);
@@ -1250,7 +1266,7 @@ impl DollarExprs {
             DollarExprs::RealPath(ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
                 let tup_dir = m.get_tup_dir_desc();
-                vs.split(is_ws)
+                vs.split(PathExpr::is_ws)
                     .filter_map(|v| {
                         let s = v.cat();
                         if !s.is_empty() {
@@ -1258,7 +1274,7 @@ impl DollarExprs {
                             let real_path = tup_dir.join(p).unwrap_or_else(|e| {
                                 panic!("failed to get real path from path: {:?} due to {}", p, e);
                             });
-                            let x = real_path.get_path().to_string().into();
+                            let x = real_path.get_path_ref().to_string().into();
                             Some(x)
                         } else {
                             None
@@ -1268,7 +1284,7 @@ impl DollarExprs {
             }
             DollarExprs::BaseName(ref vs) => {
                 let vs = vs.subst_pe(m, path_searcher);
-                vs.split(is_ws)
+                vs.split(PathExpr::is_ws)
                     .filter_map(|v| {
                         let s = cat_literals(v);
                         if !s.is_empty() {
@@ -1290,7 +1306,7 @@ impl DollarExprs {
                 log::debug!("evaluating not dir on {:?}", vs);
                 let vs = vs.subst_pe(m, path_searcher);
                 let res = vs
-                    .split(is_ws)
+                    .split(PathExpr::is_ws)
                     .filter_map(|v| {
                         let s = cat_literals(v);
                         if !s.is_empty() {
@@ -1315,7 +1331,7 @@ impl DollarExprs {
                         .map_or(false, |s| s.ends_with('/'))
                 }
                 let vs = vs
-                    .split(is_ws)
+                    .split(PathExpr::is_ws)
                     .filter_map(|v| {
                         let s = cat_literals(v);
                         if !s.is_empty() {
@@ -1578,7 +1594,7 @@ impl DollarExprs {
                 let mut glob_paths = Vec::new();
                 let tup_cwd = m.get_tup_dir_desc();
                 let paths = m.with_path_buffers_do(|path_buffers_mut| {
-                    for dir in dirs.split(is_ws) {
+                    for dir in dirs.split(PathExpr::is_ws) {
                         let dirid = path_buffers_mut
                             .add_path_from(&tup_cwd, dir.cat().as_str())
                             .ok();
@@ -1685,7 +1701,7 @@ impl CallArgs for Vec<PathExpr> {
         let mut newpe: Vec<_> = self
             .iter()
             .flat_map(|x| x.subst_ca(m))
-            .filter(|x| !is_empty(x))
+            .filter(|x| !x.is_empty())
             .collect();
         newpe.cleanup();
         newpe
@@ -1891,10 +1907,10 @@ pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>
         //     @(TUP_ARCH)
         //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
         if !conf_vars.contains_key("TUP_PLATFORM") {
-            conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform()]);
+            conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform().into()]);
         }
         if !conf_vars.contains_key("TUP_ARCH") {
-            conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch()]);
+            conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch().into()]);
         }
     }
     Ok(conf_vars)
@@ -2048,7 +2064,7 @@ impl LocatedStatement {
                         .expr_map
                         .entry(String::from(var.as_str()))
                         .or_default()
-                        .push(val);
+                        .push(val.into());
                 }
                 newstats.push(self.clone());
             }
@@ -2277,7 +2293,10 @@ impl LocatedStatement {
         loc: &Loc,
     ) -> Result<(), Error> {
         let parent = parse_state.get_tup_dir_desc();
-        debug!("attempting to read tuprules in dir:{:?}", parent.get_path());
+        debug!(
+            "attempting to read tuprules in dir:{:?}",
+            parent.get_path_ref()
+        );
         let mut found = false;
         // locate tupfiles up the heirarchy from the current Tupfile folder
         for f in path_searcher.locate_tuprules(&parent, parse_state.get_path_buffers().deref()) {
@@ -2610,8 +2629,9 @@ impl ReadWriteBufferObjects {
     }
 
     /// Returns the tup file path corresponding to its id
-    pub fn get_tup_path<'a, 'b>(&'a self, tup_pd: &'b TupPathDescriptor) -> Ref<'b, NormalPath> {
-        self.get().get_path(tup_pd)
+    pub fn get_tup_path<'a, 'b>(&'a self, tup_pd: &'b TupPathDescriptor) -> &'b NormalPath {
+        //self.get().get_path(tup_pd)
+        tup_pd.get_path_ref()
     }
     /// Return tup id from its path
     pub fn add_tup_file(&self, p: &Path) -> TupPathDescriptor {
@@ -2689,7 +2709,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     }
 
     pub(crate) fn borrow_ref(&self) -> &BufferObjects {
-        return self.path_buffers.deref();
+        self.path_buffers.deref()
     }
 
     pub(crate) fn with_path_buffers_do<F, R>(&self, f: F) -> R
@@ -2917,12 +2937,12 @@ pub mod testing {
 
     use crate::decode::DirSearcher;
     use crate::errors::Error;
-    use crate::statements::{Cat, CleanupPaths, LocatedStatement, PathExpr};
+    use crate::statements::{Cat, CatRef, CleanupPaths, LocatedStatement, PathExpr};
     use crate::transform::{get_parent, ParseState};
 
     /// Holds parse state variables (eager and lazily assigned)
     pub struct Vars {
-        expr_map: HashMap<String, Vec<String>>,
+        expr_map: HashMap<String, Vec<PathExpr>>,
         func_map: HashMap<String, Vec<PathExpr>>,
     }
 
@@ -2934,8 +2954,17 @@ pub mod testing {
             }
         }
         /// get the variable value as a string
-        pub fn get(&self, name: &str) -> Option<&Vec<String>> {
-            self.expr_map.get(name)
+        pub fn get(&self, name: &str) -> Option<Vec<String>> {
+            self.expr_map.get(name).and_then(|p| {
+                log::debug!("get var:{}={:?}", name, p);
+                let vs = p
+                    .split(|x| matches!(x, PathExpr::Sp1 | PathExpr::NL))
+                    .flat_map(|x| x.iter().map(|x| x.cat_ref().trim().to_string()))
+                    .collect::<Vec<String>>(); // $(empty substitution depends on this)
+                log::debug!("get var:{}={:?}", name, vs);
+                Some(vs)
+                //Some(p.into_iter().map(|x| x.cat_ref().to_string()).collect())
+            })
         }
         /// get the function body as a string
         pub fn get_func(&self, name: &str) -> Option<String> {
@@ -2963,7 +2992,7 @@ pub mod testing {
         filename: &Path,
         statements: Vec<LocatedStatement>,
         conf_map: HashMap<String, Vec<String>>,
-    ) -> Result<(Vec<LocatedStatement>, HashMap<String, Vec<String>>), crate::errors::Error> {
+    ) -> Result<(Vec<LocatedStatement>, HashMap<String, Vec<String>>), Error> {
         log::debug!("statements:{:?} in file:{:?}", statements, filename);
         let mut parse_state = ParseState::new_at(filename);
         //parse_state.set_cwd(filename).unwrap();
@@ -2976,6 +3005,6 @@ pub mod testing {
             v.append(&mut vs);
         }
         v.cleanup();
-        Ok((v, parse_state.expr_map))
+        Ok((v, parse_state.conf_map))
     }
 }

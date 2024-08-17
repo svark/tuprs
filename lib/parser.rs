@@ -13,6 +13,7 @@ use nom::error::{context, ErrorKind, VerboseErrorKind};
 use nom::multi::{many0, many1, many_till};
 use nom::number::{complete, Endianness};
 use nom::sequence::{delimited, preceded, terminated};
+use nom::Err;
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_until, take_while},
@@ -21,7 +22,6 @@ use nom::{
 };
 use nom::{error, IResult as nomIResult};
 use nom::{AsBytes, Offset, Slice};
-use nom::{Err, InputIter};
 use nom_locate::LocatedSpan;
 
 use crate::buffers::PathDescriptor;
@@ -42,22 +42,6 @@ pub(crate) enum EndClause {
     Else,
     Endif,
     //EndDef
-}
-
-impl PathExpr {
-    pub(crate) fn is_ws(&self) -> bool {
-        match self {
-            PathExpr::NL | PathExpr::Sp1 => true,
-            PathExpr::Literal(s) => {
-                s.as_str()
-                    .iter_elements()
-                    .filter(|x| !x.is_whitespace())
-                    .count()
-                    == 0
-            }
-            _ => false,
-        }
-    }
 }
 
 lazy_static! {
@@ -1769,7 +1753,7 @@ pub(crate) fn locate_tuprules_from(cur_tupfile: PathDescriptor) -> Vec<PathDescr
     // add the root path '.'
     {
         log::debug!("try:{:?}", anc);
-        let rulestup = anc.get_path().as_path().join("TupRules.tup");
+        let rulestup = anc.get_path_ref().as_path().join("TupRules.tup");
         if rulestup.is_file() {
             let tupr = anc.join_leaf("Tuprules.tup");
             v.push_front(tupr.clone());

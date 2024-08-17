@@ -98,6 +98,7 @@ fn test_parse() {
     let mut m = ParseState::default();
 
     let stmt2 = stmt2.subst(&mut m, &path_searcher).expect("subst falure");
+
     assert_eq!(stmt, stmt2);
     // assert_eq!(deglob(&prog[0]).len(), 18);
 
@@ -109,7 +110,7 @@ fn test_parse() {
     let mut m = ParseState::new_at(Path::new("."));
     stmts.subst(&mut m, &path_searcher).expect("subst failure");
     assert_eq!(
-        m.expr_map.get("CXX_FLAGS").unwrap().join(" "),
+        m.expr_map.get("CXX_FLAGS").unwrap().cat(),
         "-W4 -wd4100 -wd4324 -wd4127 -wd4244 -wd4505"
     );
 

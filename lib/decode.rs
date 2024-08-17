@@ -1,11 +1,11 @@
 //! This module handles decoding and de-globbing of rules
 
-use std::cell::Ref;
 use std::cmp::Ordering;
-use std::collections::LinkedList;
+use std::collections::{BTreeSet, LinkedList};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
+use std::format;
 use std::fs::File;
 use std::hash::Hash;
 use std::io::{BufRead, BufReader};
@@ -160,7 +160,7 @@ impl RuleFormulaInstance {
     pub fn get_path(&self) -> NormalPath {
         self.get_rule_ref()
             .get_tupfile_desc()
-            .get_path()
+            .get_path_ref()
             .join(self.get_rule_str().as_str())
     }
 }
@@ -221,8 +221,8 @@ impl TaskInstance {
     }
 
     /// folder containing the task
-    pub fn get_parent(&self) -> Ref<'_, NormalPath> {
-        self.get_tup_loc().get_tupfile_desc().get_path()
+    pub fn get_parent(&self) -> &NormalPath {
+        self.get_tup_loc().get_tupfile_desc().get_path_ref()
     }
 }
 
@@ -292,15 +292,15 @@ impl Display for RuleFormulaInstance {
 /// Interface to add and read outputs of rules parsed in tupfiles.
 pub trait OutputHandler {
     /// Get all the output files from rules accumulated so far
-    fn get_output_files(&self) -> MappedRwLockReadGuard<'_, HashSet<PathDescriptor>>;
+    fn get_output_files(&self) -> MappedRwLockReadGuard<'_, BTreeSet<PathDescriptor>>;
     /// Get all the groups with collected rule outputs
     fn get_groups(
         &self,
-    ) -> MappedRwLockReadGuard<'_, HashMap<GroupPathDescriptor, HashSet<PathDescriptor>>>;
+    ) -> MappedRwLockReadGuard<'_, HashMap<GroupPathDescriptor, BTreeSet<PathDescriptor>>>;
     /// Get paths stored against a bin
     fn get_bins(
         &self,
-    ) -> MappedRwLockReadGuard<'_, HashMap<BinDescriptor, HashSet<PathDescriptor>>>;
+    ) -> MappedRwLockReadGuard<'_, HashMap<BinDescriptor, BTreeSet<PathDescriptor>>>;
     /// Get parent dir -> children map
     fn get_children(
         &self,
@@ -657,6 +657,9 @@ pub trait GroupInputs {
     fn get_group_paths(&self, group_name: &str, rule_id: i64, rule_dir: i64) -> Option<String>
     where
         Self: Sized;
+
+    /// Returns all paths (space separated) associated with a given bin name for a given rule
+    fn get_bin_paths(&self, bin_name: &str, _rule_id: i64, _rule_dir: i64) -> Option<String>;
 }
 
 lazy_static! {
@@ -664,7 +667,8 @@ lazy_static! {
         Regex::new(r"%([1-9][0-9]*)f").expect("regex compilation error"); // pattern for matching  numberedinputs that appear in command line
     static ref PERC_NUM_B_RE: Regex =
         Regex::new(r"%([1-9][0-9]*)b").expect("regex compilation error"); //< pattern for matching a numbered basename with extension of a input to a rule
-    static ref GRPRE: Regex = Regex::new(r"%<([^>]+)>").expect("regex compilation error"); //< pattern for matching a group
+    static ref BINPRE: Regex = Regex::new(r"%\{([^}]+)\}").expect("regex compilation error for bin"); //< pattern for matching a group
+    static ref GRPRE: Regex = Regex::new(r"%<([^>]+)>").expect("regex compilation error for group"); //< pattern for matching a group
     static ref PER_CAP_B_RE: Regex =
         Regex::new(r"%([1-9][0-9]*)B").expect("regex compilation failure"); //< pattern for matching basename of input to a rule
     static ref PERC_NUM_G_RE: Regex =
@@ -778,6 +782,25 @@ impl DecodeInputPlaceHolders for PathExpr {
                     return Err(Err::StalePerc('B', rule_ref.clone(), d.clone()));
                 }
                 d.replace("%B", stems.join(" ").as_str())
+            } else {
+                d
+            };
+
+            let d = if BINPRE.captures(d.as_str()).is_some() {
+                BINPRE
+                    .captures(d.as_str())
+                    .iter()
+                    .map(|captures| {
+                        let bin_name = captures.get(1).unwrap().as_str();
+                        let bin_paths = inputs.get_bin_paths(bin_name, 0, 0);
+                        if bin_paths.is_none() {
+                            return Err(Err::StaleBinRef(bin_name.to_string(), rule_ref.clone()));
+                        }
+                        let bin_paths = bin_paths.unwrap();
+                        Ok(d.replace(captures.get(0).unwrap().as_str(), bin_paths.as_str()))
+                    })
+                    .collect::<Result<Vec<String>, Err>>()?
+                    .join(" ")
             } else {
                 d
             };
@@ -1424,7 +1447,7 @@ impl GatherOutputs for ResolvedLink {
             debug!(
                 "adding parent for: {:?} to {:?}:{}",
                 path,
-                path_buffers.get_tup_path(rule_ref.get_tupfile_desc()),
+                rule_ref.get_tupfile_desc().get_path_ref(),
                 rule_ref.get_line()
             );
             if path.as_path().is_dir() {
@@ -1657,7 +1680,7 @@ impl LocatedStatement {
 
         debug!(
             "resolving  rule at dir:{:?} rule: {:?}",
-            tup_cwd.get_path(),
+            tup_cwd.get_path_ref(),
             &self
         );
         if let LocatedStatement {

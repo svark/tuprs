@@ -440,7 +440,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         self.parse_state
             .conf_map
             .get(name)
-            .map(|x| x.join(""))
+            .map(|x| x.join(" "))
             .unwrap_or_default()
     }
     pub fn get_cwd(&self) -> String {
@@ -962,7 +962,7 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
             .get_path_searcher()
             .locate_tuprules(&script_dir_desc, pbuffers.deref())
         {
-            rules.push(tup_rules.get_path().clone());
+            rules.push(tup_rules.get_path_ref().clone());
         }
         let root = tup_script_ctx.get_root();
         let tup_shared = scope.create_userdata(tup_script_ctx)?;

@@ -1,7 +1,8 @@
 # A
 SRCS = in*.txt
 
-: $(SRCS) |> echo %f > %o |>  outecho.txt
-: in1.txt |> cat %f & cp %f %o |> out0.txt ^.*FltMgrMsg ../<output0>
-:  ../<output2> |> ^ CP to %o^ cp %<output2> %o |> out3.txt ^.*FltMgrMsg
+: $(SRCS) |> echo %f > %o |>  outecho.txt {out}
+: in1.txt |> cat %f & cp %f %o |> out0.txt ^.*FltMgrMsg ../<output0> {out}
+:  ../<output2>  |> ^ CP to %o^ cp %<output2> %o |> out3.txt ^.*FltMgrMsg
+: {out} |> ^ echo ^ echo %{out} |>
 : foreach **/ib*.txt |> cp %f %o |> out%h/o%g.txt

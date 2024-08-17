@@ -2,4 +2,4 @@
 source: tuprs/tests/parsedir.rs
 expression: "v2.get(\"OBJS\").unwrap().join(\" \")"
 ---
-win32/file.o  win32/file.o  win32/file.o  win32/readme.o
+win32/file.o win32/file.o win32/file.o win32/readme.o

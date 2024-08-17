@@ -104,7 +104,31 @@ impl PathExpr {
             _ => None,
         }
     }
+    pub(crate) fn is_literal(&self) -> bool {
+        if let PathExpr::Literal(_) = self {
+            true
+        } else {
+            false
+        }
+    }
+    /// Check if a PathExpr is empty
+    pub(crate) fn is_empty(&self) -> bool {
+        if let PathExpr::Literal(s) = self {
+            s.len() == 0
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn is_ws(&self) -> bool {
+        if let PathExpr::Literal(s) = self {
+            s.trim().len() == 0
+        } else {
+            matches!(self, PathExpr::Sp1 | PathExpr::NL)
+        }
+    }
 }
+
 impl Default for Level {
     fn default() -> Self {
         Level::Info
@@ -145,6 +169,12 @@ impl From<crate::parser::Span<'_>> for Loc {
             span.get_column() as _,
             span.fragment().len() as _,
         )
+    }
+}
+
+impl From<MatchingPath> for PathExpr {
+    fn from(value: MatchingPath) -> Self {
+        PathExpr::DeGlob(value)
     }
 }
 
@@ -531,7 +561,7 @@ impl CleanupPaths for Vec<PathExpr> {
         if self.is_empty() {
             return;
         }
-        let needs_cleanup = self.iter().zip(self.iter().skip(1)).any(|(cur, next)| {
+        let mut needs_cleanup = self.iter().zip(self.iter().skip(1)).any(|(cur, next)| {
             // Merge adjacent literals, quoted strings and remove spaces, newlines that appear more than once
             match (cur, next) {
                 (PathExpr::Quoted(_), PathExpr::Quoted(_)) => true,
@@ -543,6 +573,15 @@ impl CleanupPaths for Vec<PathExpr> {
                 _ => false,
             }
         });
+        if !needs_cleanup {
+            needs_cleanup = self.iter().find(|pe| {
+                //crate::transform::is_empty(pe)
+                pe.is_empty()
+            }) != None;
+            if needs_cleanup {
+                log::debug!("removing empty string in pelist");
+            }
+        }
         if needs_cleanup {
             let newpesall = self.iter().fold(Vec::new(), |mut acc, pe| {
                 // Merge adjacent literals, quoted strings and remove spaces, newlines that appear more than once
@@ -559,7 +598,7 @@ impl CleanupPaths for Vec<PathExpr> {
                     PathExpr::Literal(s) => {
                         if let Some(PathExpr::Literal(last)) = acc.last_mut() {
                             last.push_str(s);
-                        } else {
+                        } else if !s.is_empty() {
                             acc.push(pe.clone());
                         }
                     }
@@ -583,12 +622,6 @@ impl CleanupPaths for Vec<PathExpr> {
                 acc
             });
             *self = newpesall;
-        }
-
-        if false && self.len() > 1 {
-            if self.ends_with(&[PathExpr::Sp1]) || self.ends_with(&[PathExpr::NL]) {
-                self.pop();
-            }
         }
     }
 }
