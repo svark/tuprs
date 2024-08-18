@@ -57,11 +57,7 @@ fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
 
     command
 }
-lazy_static! {
-    static ref DEF_ENV: EnvDescriptor = EnvDescriptor::default();
-}
-
-fn variable_value_is_non_empty(s: &Vec<String>) -> bool {
+fn value_is_non_empty(s: &Vec<String>) -> bool {
     let len = s.len();
     match len {
         len if len > 1 => true,
@@ -69,7 +65,7 @@ fn variable_value_is_non_empty(s: &Vec<String>) -> bool {
         _ => false,
     }
 }
-fn variable_value_is_non_empty_pe(s: &Vec<PathExpr>) -> bool {
+fn pe_value_is_non_empty(s: &Vec<PathExpr>) -> bool {
     let len = s.len();
     log::debug!("variable_value_is_non_empty_pe:{:?}", s);
     match len {
@@ -147,8 +143,6 @@ pub(crate) struct ParseState {
     pub(crate) tup_files_read: Vec<TupPathDescriptor>,
 }
 
-impl ParseState {}
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CallArgsMap {
     // call args
@@ -206,18 +200,20 @@ fn init_env() -> Vec<Env> {
             let mut inserted = false;
             if let Ok(rb) = regex::RegexBuilder::new(k).build() {
                 if let Some(needle) = std::env::vars().find(|v| rb.is_match(v.0.as_str())) {
-                    def_exported.insert(needle.0);
+                    def_exported.insert(Env::from(needle.0, needle.1));
                     inserted = true;
                 }
             }
-            if !inserted {
-                def_exported.insert(k.to_string());
+            if inserted {
+                if let Some(val) = std::env::var(k).ok() {
+                    def_exported.insert(Env::from(k.to_string(), val));
+                }
             }
-        } else {
-            def_exported.insert(k.to_string());
+        } else if let Some(val) = std::env::var(k).ok() {
+            def_exported.insert(Env::from(k.to_string(), val.clone()));
         }
     }
-    def_exported.into_iter().map(|x| Env::new(x)).collect()
+    def_exported.into_iter().collect()
 }
 
 /// Accessor and constructors of ParseState
@@ -265,6 +261,12 @@ impl ParseState {
 
     pub(crate) fn get_envs(&mut self) -> HashMap<String, String> {
         self.cur_env_desc.get_key_value_pairs()
+    }
+
+    pub(crate) fn get_env_value(&self, key: &str) -> Option<String> {
+        self.cur_env_desc
+            .find_key(key)
+            .map(|env| env.get().get_val_str().to_string())
     }
 
     pub(crate) fn get_tupfiles_read(&self) -> &Vec<PathDescriptor> {
@@ -447,7 +449,7 @@ impl ParseState {
             if log::log_enabled!(log::Level::Debug) {
                 debug!("append assign of {:?} over existing value:{:?}", v, val);
             }
-            if variable_value_is_non_empty_pe(vals) {
+            if pe_value_is_non_empty(vals) {
                 vals.push(PathExpr::Sp1);
             }
             vals.extend(val.into_iter());
@@ -537,11 +539,9 @@ impl ParseState {
 
     //https://www.gnu.org/software/make/manual/make.html#Conditional-Syntax
     pub(crate) fn is_var_defined(&self, v: &str) -> bool {
-        self.expr_map.contains_key(v)
-            && variable_value_is_non_empty_pe(self.expr_map.get(v).unwrap())
+        self.expr_map.contains_key(v) && pe_value_is_non_empty(self.expr_map.get(v).unwrap())
             || self.func_map.contains_key(v) && self.func_map.get(v).unwrap().len() > 0
-            || self.conf_map.contains_key(v)
-                && variable_value_is_non_empty(self.conf_map.get(v).unwrap())
+            || self.conf_map.contains_key(v) && value_is_non_empty(self.conf_map.get(v).unwrap())
     }
 }
 
@@ -995,6 +995,13 @@ impl DollarExprs {
                         let res = pelist.subst_pe(m, path_searcher);
                         m.assign_eager(x.as_str(), res.clone(), path_searcher);
                         res
+                    } else if let Some(val) = m.get_env_value(x) {
+                        let right = val
+                            .split(|c| c == ' ' || c == '\n')
+                            .map(|x| PathExpr::from(x.to_owned()))
+                            .collect();
+                        log::debug!("substituting env var {} with {:?}", x, right);
+                        right
                     } else {
                         log::warn!("No substitution found for {}", x);
                         vec![Default::default()]
@@ -1891,13 +1898,13 @@ pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>
                 }
             } else if let Statement::Import(e, v) = statement {
                 // import the environment variable `e` into the tupfile as `e` with the value `v` if environment variable `e` is not set.
+                // this is not used as  env var but as a variable .
+
                 if let Ok(val) = std::env::var(e) {
                     conf_vars.insert(e.clone(), vec![val]);
-                } else {
-                    if let Some(val) = v.clone() {
-                        if !val.is_empty() {
-                            conf_vars.insert(e.clone(), vec![val]);
-                        }
+                } else if let Some(val) = v.clone() {
+                    if !val.is_empty() {
+                        conf_vars.insert(e.clone(), vec![val]);
                     }
                 }
             }
@@ -2055,16 +2062,17 @@ impl LocatedStatement {
                 Self::add_load_dirs(parse_state, path_searcher, loc, paths)?;
             }
             Statement::Export(var) => {
-                let id = parse_state.with_path_buffers_do(|bo| bo.add_env_var(var.clone()));
+                let id =
+                    parse_state.with_path_buffers_do(|bo| bo.add_env_var(Env::new(var.clone())));
+                // we add this even if env var does not have a value yet.
+                // this is to make sure the tup file is reparsed when the env var is set.
                 parse_state.add_env(&id);
             }
             Statement::Import(var, envval) => {
                 if let Some(val) = envval.clone().or_else(|| std::env::var(var).ok()) {
-                    parse_state
-                        .expr_map
-                        .entry(String::from(var.as_str()))
-                        .or_default()
-                        .push(val.into());
+                    parse_state.with_path_buffers_do(|bo| {
+                        bo.add_env_var(Env::from(var.clone(), val));
+                    })
                 }
                 newstats.push(self.clone());
             }
@@ -2771,10 +2779,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         let (tup_desc, env_desc) = self.with_path_buffers_do(|boref| {
             let tup_desc = boref.add_tup(tup_file_path.as_ref());
             let env = init_env();
-            let env_desc = env
-                .into_iter()
-                .map(|k| boref.add_env_var(k.get_key()))
-                .collect();
+            let env_desc = env.into_iter().map(|k| boref.add_env_var(k)).collect();
             (tup_desc, env_desc)
         });
 

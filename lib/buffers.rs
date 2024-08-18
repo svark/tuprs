@@ -54,7 +54,7 @@ pub trait PathBuffers {
     fn add_tup(&self, p: &Path) -> TupPathDescriptor;
 
     /// add env vars and fetch an id for them
-    fn add_env_var(&self, var: String) -> EnvDescriptor;
+    fn add_env_var(&self, var: Env) -> EnvDescriptor;
 
     /// add a task instance to buffer and return a unique id
     fn add_task_path(&self, task: TaskInstance) -> TaskDescriptor;
@@ -215,9 +215,13 @@ impl EnvList {
     }
     /// add a new env descriptor to the chain
     pub fn add(&mut self, env: EnvDescriptor) {
-        let boxed_self = Box::new(self.clone_());
-        self.env = env;
-        self.prevs = Some(boxed_self);
+        if self.prevs.is_none() && self.env.eq(&EnvDescriptor::default()) {
+            self.env = env;
+        } else {
+            let boxed_self = Box::new(self.clone_());
+            self.env = env;
+            self.prevs = Some(boxed_self);
+        }
     }
 
     /// assign initial values for each tup files
@@ -249,6 +253,10 @@ impl EnvList {
             }
         }
         map
+    }
+    /// find a key in the env descriptors
+    pub fn find_key(&self, key: &str) -> Option<EnvDescriptor> {
+        self.iter().find(|x| x.get().get_key_str().eq(key))
     }
 }
 
@@ -1438,9 +1446,12 @@ impl PathBuffers for BufferObjects {
 
     /// add environment variable to the list of variables active in current tupfile until now
     /// This appends a new env var current list of env vars.
-    fn add_env_var(&self, var: String) -> EnvDescriptor {
-        debug!("add env var {} in ebo ", var.as_str(),);
-        EnvBufferObject::add_ref(Env::new(var))
+    fn add_env_var(&self, var: Env) -> EnvDescriptor {
+        debug!("add env var {} in ebo ", var);
+        if var.get_val_str().is_empty() {
+            log::warn!("empty env var {:?}", var);
+        }
+        EnvBufferObject::add_ref(var)
     }
 
     /// add a task to the buffer and return its descriptor

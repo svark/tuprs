@@ -365,17 +365,26 @@ impl LocatedStatement {
 #[derive(PartialEq, Eq, Debug, Clone, Default, Hash, Ord, PartialOrd)]
 pub struct Env {
     var: String,
+    val: String,
 }
 
 impl Display for Env {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.var)
+        write!(f, "{}={}", self.var, self.val)
     }
 }
 impl Env {
     /// create list of env vars from a map
     pub fn new(var: String) -> Self {
-        Env { var: var }
+        Env {
+            var: var.clone(),
+            val: std::env::var(&var).unwrap_or_default(),
+        }
+    }
+
+    /// create Env from variable (var) and its value(val)
+    pub fn from(var: String, val: String) -> Self {
+        Env { var, val }
     }
 
     /// returns String representation of the env var
@@ -386,6 +395,11 @@ impl Env {
     /// returns str representation of the env var
     pub fn get_key_str(&self) -> &str {
         self.var.as_str()
+    }
+
+    /// returns  env var's stored value
+    pub fn get_val_str(&self) -> &str {
+        self.val.as_str()
     }
 }
 /// [Condition] is a condition that is checked in if(n)eq statements or if(n)def statements
@@ -574,10 +588,7 @@ impl CleanupPaths for Vec<PathExpr> {
             }
         });
         if !needs_cleanup {
-            needs_cleanup = self.iter().find(|pe| {
-                //crate::transform::is_empty(pe)
-                pe.is_empty()
-            }) != None;
+            needs_cleanup = self.iter().find(|x| x.is_empty()) != None;
             if needs_cleanup {
                 log::debug!("removing empty string in pelist");
             }
@@ -587,8 +598,6 @@ impl CleanupPaths for Vec<PathExpr> {
                 // Merge adjacent literals, quoted strings and remove spaces, newlines that appear more than once
                 match pe {
                     PathExpr::Quoted(vs) => {
-                        //let mut vs = vs.clone();
-                        //vs.cleanup();
                         if let Some(PathExpr::Quoted(last)) = acc.last_mut() {
                             last.extend(vs.clone());
                         } else {

@@ -34,9 +34,8 @@ mod tests {
             .collect::<Vec<_>>();
         outs.pop();
 
-        insta::with_settings!({filters => vec![(r"env: Descriptor\(.*\)", "env: Ignored")]}, {
-            insta::assert_json_snapshot!(strings);
-            }
+        insta::with_settings!({filters => vec![(r"env: Descriptor\(([^=]+)=((?:[^()]*\([^()]*\))*[^()]*)\)",r"env: Descriptor($1)")]},
+            {insta::assert_json_snapshot!(strings);}
         );
     }
 
@@ -53,12 +52,13 @@ mod tests {
                 outs.push(r.human_readable());
             }
         }
-
-        if cfg!(target_os = "windows") {
-            insta::assert_json_snapshot!("windows_script", outs);
-        } else {
-            insta::assert_json_snapshot!("linux_script", outs);
-        }
+        insta::with_settings!({filters => vec![(r"env: Descriptor\(([^=]+)=((?:[^()]*\([^()]*\))*[^()]*)\)",r"env: Descriptor($1)")]}, {
+            if cfg!(target_os = "windows") {
+                insta::assert_json_snapshot!("windows_script", outs);
+            } else {
+                insta::assert_json_snapshot!("linux_script", outs);
+            }
+        });
     }
 
     #[cfg(test)]
