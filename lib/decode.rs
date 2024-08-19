@@ -1335,7 +1335,8 @@ impl ResolvedLink {
             .try_for_each(f)
     }
 
-    fn get_tupfiles_read(&self) -> &Vec<PathDescriptor> {
+    /// files read during the preparation of this rule. These become the dependencies of this rule
+    pub fn get_tupfiles_read(&self) -> &Vec<PathDescriptor> {
         &self.tupfiles_read
     }
 

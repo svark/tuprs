@@ -2510,7 +2510,7 @@ impl ResolvedRules {
 
     /// Returns a slice over resolved links that the parser found so far.
     pub fn get_rules(&self) -> &[ResolvedLink] {
-        return self.resolved_links.as_slice();
+        self.resolved_links.as_slice()
     }
 }
 

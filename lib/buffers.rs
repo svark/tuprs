@@ -247,10 +247,9 @@ impl EnvList {
     /// get key value pairs of the env descriptors
     pub fn get_key_value_pairs(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
-        for env in self.get_var_keys() {
-            if let Ok(v) = std::env::var(env.clone()) {
-                map.insert(env, v);
-            }
+        for env in self.iter() {
+            let e = env.get();
+            map.insert(e.get_key_str().to_string(), e.get_val_str().to_string());
         }
         map
     }
@@ -726,7 +725,7 @@ pub type RuleDescriptor = Descriptor<RuleFormulaInstance>;
 /// ```TaskDescriptor``` maintains the id of task based on tasks tracked so far in BufferObjects
 pub type TaskDescriptor = Descriptor<TaskInstance>;
 
-/// ```EnvDescriptor``` maintains the id of env based on envs tracked so far in BufferObjects
+/// ```EnvDescriptor``` maintains the id of an env variable and its value based on envs tracked so far in ParseState
 pub type EnvDescriptor = Descriptor<Env>;
 
 /// path to descriptor(T) `BiMap', path stored is relative to rootdir (.1 in this struct)
