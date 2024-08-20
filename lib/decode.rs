@@ -1218,7 +1218,7 @@ pub struct ResolvedLink {
     primary_sources: Vec<InputResolvedType>,
     /// Other inputs read by a rule not available for %f substitution
     secondary_sources: Vec<InputResolvedType>,
-    /// Rule formula refered to by its descriptor
+    /// Rule formula referred to by its descriptor
     rule_formula_desc: RuleDescriptor,
     /// Outputs that are written to by a rule that can be used for %o substitution
     primary_targets: Vec<PathDescriptor>,
@@ -1239,7 +1239,7 @@ pub struct ResolvedLink {
     env: EnvList,
     /// Vpaths
     search_dirs: Vec<PathDescriptor>,
-    /// all the tupfiles parsed to build this
+    /// all the tupfiles parsed to build this rule
     tupfiles_read: Vec<PathDescriptor>,
 }
 

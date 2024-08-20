@@ -243,6 +243,13 @@ impl ParseState {
             "TUP_ROOT".to_owned(),
             vec![MatchingPath::new(PathDescriptor::default(), dir).into()],
         );
+        let mut tup_files_read = Vec::new();
+        tup_files_read.push(cur_file_desc.clone());
+        if !conf_map.is_empty() {
+            let tupconfig = PathDescriptor::default();
+            let tupconfig = tupconfig.join_leaf("tup.config");
+            tup_files_read.push(tupconfig);
+        }
         ParseState {
             conf_map: conf_map.clone(),
             expr_map: def_vars,
@@ -2742,22 +2749,17 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         tup_file_path: P,
         sender: Sender<StatementsToResolve>,
     ) -> Result<(), Error> {
-        // create a parser state
         let p = tup_file_path.as_ref();
+        // create a parser state
         let parse_state = self.prepare_to_parse(p);
-        // now we ready to parse the tupfile or tupfile.lua
-        {
-            let stmts = parse_tupfile(tup_file_path)?;
-            sender
-                .send(StatementsToResolve::new(stmts, parse_state))
-                .map_err(|e| {
-                    Error::new_path_search_error(format!(
-                        "Error sending statements to resolver: {}",
-                        e
-                    ))
-                })?; // send the statements to the resolver
-            Ok(())
-        }
+        // now we are ready to parse the tupfile or tupfile.lua
+        let stmts = parse_tupfile(tup_file_path)?;
+        sender
+            .send(StatementsToResolve::new(stmts, parse_state))
+            .map_err(|e| {
+                Error::new_path_search_error(format!("Error sending statements to resolver: {}", e))
+            })?; // send the statements to the resolver
+        Ok(())
     }
     /// return all parsed statements along with the parse state at the end of parsing of a tupfile
     pub fn parse_tupfile_immediate<P: AsRef<Path>>(
@@ -2781,7 +2783,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         });
 
         // create a parser state
-        let parse_state = ParseState::new(
+        let mut parse_state = ParseState::new(
             &self.config_vars,
             tup_desc,
             env_desc,
