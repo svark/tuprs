@@ -1041,53 +1041,30 @@ impl DollarExprs {
             }
 
             DollarExprs::Filter(ref filter, ref body) => {
-                debug!("body:{:?}", body);
-                let mut body = body.subst_pe(m, path_searcher);
-                body.cleanup();
-                let mut filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
-                filter.cleanup();
+                let body = body.subst_pe(m, path_searcher);
+                let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
                 debug!("body:{:?} on which we filter:{:?}", body, filter);
-                let body_iter = body.split(PathExpr::is_ws).filter_map(|target| {
-                    if let Some(target_tok_pe) = target.first() {
-                        let target_tok = target_tok_pe.cat_ref();
-                        for f in filter.iter() {
-                            if let PathExpr::Literal(ref f) = f {
-                                let pat = f.as_str();
-                                if pat.contains("%") {
-                                    let pat_str: String = to_regex(pat);
-                                    debug!(
-                                        "checking if glob: {:?} matches target: {:?}",
-                                        pat_str, target_tok
-                                    );
-                                    if regex::Regex::new(pat_str.as_str())
-                                        .unwrap()
-                                        .is_match(target_tok.as_ref())
-                                    {
-                                        debug!("found a match");
-                                        return Some(target_tok_pe.clone());
-                                    }
-                                } else if target_tok.contains(pat) {
-                                    debug!(
-                                        "found a match for pattern:{:?} in target:{:?}",
-                                        pat, target_tok
-                                    );
-                                    return Some(target_tok_pe.clone());
-                                }
-                            }
-                        }
+                let filtered_tokens = body.split(PathExpr::is_ws).filter(|&target| {
+                    if filter
+                        .iter()
+                        .any(|f| Self::pelist_check_is_match(target, f))
+                    {
+                        true
+                    } else {
+                        false
                     }
-                    None
                 });
+
                 //.collect();
                 let mut body = Vec::new();
                 let mut first = true;
-                for pe in body_iter {
+                for pe in filtered_tokens {
                     if !first {
                         body.push(PathExpr::Sp1);
                     } else {
                         first = false;
                     }
-                    body.push(pe);
+                    body.extend(pe.iter().cloned());
                 }
 
                 body.cleanup();
@@ -1097,50 +1074,30 @@ impl DollarExprs {
             DollarExprs::FilterOut(ref filter, ref body) => {
                 let body = body.subst_pe(m, path_searcher);
                 let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
-                let body_iter = body.split(PathExpr::is_ws).filter_map(|target| {
-                    if let Some(target_tok_pe) = target.first() {
-                        let target_tok = target_tok_pe.cat_ref();
-                        for f in filter.iter() {
-                            if let PathExpr::Literal(ref f) = f {
-                                let pat = f.as_str();
-                                if pat.contains("%") {
-                                    let pat_str: String = to_regex(pat);
-                                    debug!(
-                                        "checking if glob: {:?} not matches target: {:?}",
-                                        pat_str, target_tok
-                                    );
-                                    if !regex::Regex::new(pat_str.as_str())
-                                        .unwrap()
-                                        .is_match(target_tok.as_ref())
-                                    {
-                                        debug!("found a match");
-                                        return Some(target_tok_pe.clone());
-                                    }
-                                } else if !target_tok.contains(pat) {
-                                    debug!(
-                                        "found a match for pattern:{:?} in target:{:?}",
-                                        pat, target_tok
-                                    );
-                                    return Some(target_tok_pe.clone());
-                                }
-                            }
-                        }
+                debug!("body to filter-out:{:?} using pattern:{:?}", body, filter);
+                let filtered_tokens = body.split(PathExpr::is_ws).filter(|&target| {
+                    if !filter
+                        .iter()
+                        .any(|f| Self::pelist_check_is_match(target, f))
+                    {
+                        true
+                    } else {
+                        false
                     }
-                    None
                 });
                 let mut first = true;
                 let mut body = Vec::new();
-                for pe in body_iter {
+                for pe in filtered_tokens {
                     if !first {
                         body.push(PathExpr::Sp1);
                     } else {
                         first = false;
                     }
-                    body.push(pe);
+                    body.extend(pe.iter().cloned());
                 }
 
                 body.cleanup();
-                log::debug!("filtered out body:{:?}", body);
+                log::debug!("Filtered out body:{:?}", body);
                 body
             }
             DollarExprs::ForEach(var, list, body) => {
@@ -1226,7 +1183,14 @@ impl DollarExprs {
                                 log::warn!("Error while globbing {:?}: {}", glob_paths, e);
                                 vec![]
                             });
-                        paths.into_iter().map(|x| PathExpr::DeGlob(x)).collect()
+                        let mut res: Vec<_> = paths
+                            .into_iter()
+                            .flat_map(|x| vec![PathExpr::DeGlob(x), PathExpr::Sp1])
+                            .collect();
+                        if let Some(PathExpr::Sp1) = res.last() {
+                            res.pop();
+                        }
+                        res
                     })
                 } else {
                     vec![]
@@ -1563,6 +1527,7 @@ impl DollarExprs {
             DollarExprs::Shell(cmd) => {
                 let subst_val = cmd.subst_pe(m, path_searcher);
                 let args = subst_val.cat();
+                eprintln!("Running shell command:{}", args);
                 eprintln!("consider rewriting in lua");
                 // run sh -c over the args and process stdout
                 let child = shell(args).stdout(Stdio::piped()).spawn();
@@ -1642,6 +1607,45 @@ impl DollarExprs {
                     .collect::<Vec<_>>()
             }
         }
+    }
+
+    fn pelist_check_is_match(target: &[PathExpr], pattern: &PathExpr) -> bool {
+        let target_as_str = target.cat_ref();
+        debug!(
+            "finding a match for pattern:{:?} in target:{:?}",
+            pattern, target_as_str
+        );
+        Self::check_is_match(&target_as_str, pattern)
+    }
+    fn check_is_match(target_tok: &Cow<str>, pattern: &PathExpr) -> bool {
+        if let PathExpr::Literal(ref f) = pattern {
+            let pat = f.as_str();
+            if pat.contains("%") {
+                let pat_str: String = to_regex(pat);
+                debug!(
+                    "checking if glob: {:?} not matches target: {:?}",
+                    pat_str, target_tok
+                );
+                if regex::Regex::new(pat_str.as_str())
+                    .unwrap()
+                    .is_match(target_tok.as_ref())
+                {
+                    debug!(
+                        "found a match for {} in {:?}",
+                        pat_str.as_str(),
+                        target_tok.as_ref()
+                    );
+                    return true;
+                }
+            } else if target_tok.contains(pat) {
+                debug!(
+                    "found a match for pattern:{:?} in target:{:?}",
+                    pat, target_tok
+                );
+                return true;
+            }
+        }
+        false
     }
 
     fn subst_as_statements(
@@ -1925,22 +1929,11 @@ pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>
 
 /// load the conf variables in tup.config in the root directory
 /// TUP_PLATFORM and TUP_ARCH are automatically assigned based on how this program is built
-pub fn load_conf_vars_relative_to(filename: &Path) -> Result<HashMap<String, Vec<String>>, Error> {
-    let mut conf_vars = HashMap::new();
-    debug!(
-        "attempting loading conf vars from tup.config at {:?}",
-        filename
-    );
-    if let Some(conf_file) = Path::new(filename).parent().map(|x| x.join("tup.config")) {
-        debug!("loading conf vars from tup.config at {:?}", filename);
-        conf_vars = load_conf_vars(conf_file)?;
-    } else {
-        debug!(
-            "no tup.config file found at folder corresponding to {:?}",
-            filename
-        );
-    }
-
+pub fn load_conf_vars_relative_to(root: &Path) -> Result<HashMap<String, Vec<String>>, Error> {
+    debug!("attempting loading conf vars from tup.config at {:?}", root);
+    let conf_file = root.join("tup.config");
+    //debug!("loading conf vars from tup.config at {:?}", root);
+    let conf_vars = load_conf_vars(conf_file)?;
     Ok(conf_vars)
 }
 
@@ -2652,8 +2645,12 @@ impl ReadWriteBufferObjects {
     }
 
     /// Return the environment variable corresponding to its id
-    pub fn get_env(&self, e: &EnvDescriptor) -> String {
+    pub fn get_env_name(&self, e: &EnvDescriptor) -> String {
         e.get().get_key_str().to_string()
+    }
+    /// Return the value of the environment variable corresponding to its id
+    pub fn get_env_value(&self, e: &EnvDescriptor) -> String {
+        e.get().get_val_str().to_string()
     }
 
     /// get a reportable version of error for display
@@ -2670,11 +2667,11 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         cur_folder: P,
         path_searcher: Q,
     ) -> Result<TupParser<Q>, Error> {
-        let tup_ini = locate_file(cur_folder, "Tupfile.ini", "").ok_or(RootNotFound)?;
+        let (_, parent) = locate_file(cur_folder, ".tup/db", "").ok_or(RootNotFound)?;
 
-        let root = tup_ini.parent().ok_or(RootNotFound)?;
+        let root = parent.as_path();
         debug!("root folder: {:?}", root);
-        let conf_vars = load_conf_vars_relative_to(tup_ini.as_path())?;
+        let conf_vars = load_conf_vars_relative_to(root)?;
         Ok(TupParser::new_from(
             root,
             conf_vars,
@@ -2902,11 +2899,13 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
 }
 
 /// locate a file by its name relative to current tup file path by recursively going up the directory tree
+/// cur_tupfile mayb be a file or a directory, if it is a directory, it is assumed to be a tupfile directory
+///
 pub fn locate_file<P: AsRef<Path>>(
     cur_tupfile: P,
     file_to_loc: &str,
     alt_ext: &str,
-) -> Option<PathBuf> {
+) -> Option<(PathBuf, PathBuf)> {
     let mut cwd = cur_tupfile.as_ref();
     let pb: PathBuf;
     if cwd.is_dir() || cwd.as_os_str().is_empty() {
@@ -2916,13 +2915,13 @@ pub fn locate_file<P: AsRef<Path>>(
     while let Some(parent) = cwd.parent() {
         let p = parent.join(file_to_loc);
         if p.is_file() {
-            return Some(p);
+            return Some((p, parent.to_path_buf()));
         }
 
         if !alt_ext.is_empty() {
             let p = p.with_extension(alt_ext);
             if p.is_file() {
-                return Some(p);
+                return Some((p, parent.to_path_buf()));
             }
         }
         debug!(

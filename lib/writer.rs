@@ -491,6 +491,18 @@ impl CatRef for PathExpr {
     }
 }
 
+impl CatRef for &[PathExpr] {
+    fn cat_ref(&self) -> Cow<str> {
+        if self.is_empty() {
+            Cow::Borrowed("")
+        } else if self.len() == 1 {
+            self.first().unwrap().cat_ref()
+        } else {
+            Cow::Owned(self.cat())
+        }
+    }
+}
+
 impl Cat for &RuleFormula {
     fn cat(self) -> String {
         if self.description.is_empty() {
