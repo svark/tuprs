@@ -75,3 +75,13 @@ pub(crate) fn get_arch() -> String {
 pub(crate) fn get_arch() -> String {
     "sparc".to_string()
 }
+
+pub(crate) fn get_uname() -> String {
+    match get_platform().as_str() {
+        "win32" => "NT",
+        "macos" => "Darwin",
+        "linux" => "Linux",
+        _ => "Unknown",
+    }
+    .to_string()
+}

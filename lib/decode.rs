@@ -1482,7 +1482,7 @@ impl GatherOutputs for ResolvedLink {
             if let Some(r) = slice[1..]
                 .iter()
                 .enumerate()
-                .find(|x| !x.1.parent_pd.eq(&pp.parent_pd))
+                .find(|x| x.1.parent_pd.ne(&pp.parent_pd))
             {
                 (prev, slice) = slice.split_at(r.0 + 1);
             } else {

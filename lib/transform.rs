@@ -245,11 +245,10 @@ impl ParseState {
         );
         let mut tup_files_read = Vec::new();
         tup_files_read.push(cur_file_desc.clone());
-        if !conf_map.is_empty() {
-            let tupconfig = PathDescriptor::default();
-            let tupconfig = tupconfig.join_leaf("tup.config");
-            tup_files_read.push(tupconfig);
-        }
+        let tupconfig = PathDescriptor::default();
+        let tupconfig = tupconfig.join_leaf("tup.config");
+        tup_files_read.push(tupconfig); // tup.config is always a dependency whether it exists or not
+
         ParseState {
             conf_map: conf_map.clone(),
             expr_map: def_vars,
@@ -1895,6 +1894,8 @@ fn tovecstring(right: &[PathExpr]) -> Vec<String> {
 }
 
 /// load config vars from tup.config file
+/// Also sets TUP_PLATFORM and TUP_ARCH if they are not set in the config file
+/// File format is similar to tupfile, but it may not exist
 pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>, Error> {
     let mut conf_vars = HashMap::new();
     if conf_file.is_file() {
@@ -1920,17 +1921,21 @@ pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>
                 }
             }
         }
-        // @(TUP_PLATFORM)
-        //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
-        //     @(TUP_ARCH)
-        //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
-        if !conf_vars.contains_key("TUP_PLATFORM") {
-            conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform().into()]);
-        }
-        if !conf_vars.contains_key("TUP_ARCH") {
-            conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch().into()]);
-        }
     }
+    // @(TUP_PLATFORM)
+    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
+    //     @(TUP_ARCH)
+    //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
+    if !conf_vars.contains_key("TUP_PLATFORM") {
+        conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform().into()]);
+    }
+    if !conf_vars.contains_key("TUP_ARCH") {
+        conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch().into()]);
+    }
+    if !conf_vars.contains_key("TUP_UNAME") {
+        conf_vars.insert("TUP_UNAME".to_owned(), vec![get_uname().into()]);
+    }
+
     Ok(conf_vars)
 }
 
@@ -2783,7 +2788,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         });
 
         // create a parser state
-        let mut parse_state = ParseState::new(
+        let parse_state = ParseState::new(
             &self.config_vars,
             tup_desc,
             env_desc,
