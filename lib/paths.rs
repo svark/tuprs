@@ -15,7 +15,7 @@ use crate::buffers::{
 use crate::decode::{GroupInputs, TupLoc};
 use crate::errors::Error;
 use crate::glob::Candidate;
-use crate::statements::PathExpr;
+use crate::statements::{CatRef, PathExpr};
 use crate::transform::get_parent;
 use crate::{BinDescriptor, GroupPathDescriptor};
 //use tap::Pipe;
@@ -356,6 +356,7 @@ impl OutputsAsPaths {
 
 /// `InputsAsPaths' represents resolved inputs to pass to a rule.
 /// Bins are converted to raw paths, groups paths are expanded into a space separated path list
+#[derive(Debug, Clone, Default)]
 pub struct InputsAsPaths {
     raw_inputs: Vec<PathDescriptor>,
     groups_by_name: BTreeMap<String, Vec<PathDescriptor>>, // space separated paths against group name
@@ -412,6 +413,7 @@ impl InputsAsPaths {
             .collect()
     }
 
+    #[allow(dead_code)]
     /// Returns the first parent folder name
     pub(crate) fn parent_folder_name(&self) -> &NormalPath {
         self.tup_dir.get_path_ref()
@@ -429,12 +431,25 @@ impl InputsAsPaths {
             })
             .collect()
     }
+    pub(crate) fn get_parent_paths(&self) -> Vec<String> {
+        self.raw_inputs
+            .iter()
+            .chain(self.groups_by_name.values().flatten())
+            .chain(self.bins_by_name.values().flatten())
+            .map(|x| x.get_parent_descriptor())
+            .map(|x| {
+                RelativeDirEntry::new(self.tup_dir.clone(), x.clone())
+                    .get_path()
+                    .to_string()
+            })
+            .collect()
+    }
 
     pub(crate) fn get_rule_ref(&self) -> &TupLoc {
         &self.rule_ref
     }
 
-    pub(crate) fn get_extension(&self) -> Option<String> {
+    pub(crate) fn get_extension(&self) -> Vec<String> {
         self.raw_inputs
             .iter()
             .chain(self.groups_by_name.values().flatten())
@@ -444,7 +459,7 @@ impl InputsAsPaths {
                     .extension()
                     .and_then(|x| x.to_str().map(|x| x.to_string()))
             })
-            .next()
+            .collect()
     }
     pub(crate) fn get_file_stem(&self) -> Vec<String> {
         self.raw_inputs
@@ -471,6 +486,22 @@ impl InputsAsPaths {
 }
 
 impl InputsAsPaths {
+    pub(crate) fn new_from_raw(
+        tup_cwd: &PathDescriptor,
+        inp: &Vec<PathExpr>,
+        path_buffers: &impl PathBuffers,
+    ) -> InputsAsPaths {
+        let inp_resolved: Vec<_> = inp
+            .split(PathExpr::is_ws)
+            .filter_map(|p| {
+                let np = NormalPath::new_from_cow_str(p.cat_ref());
+                let path = path_buffers.add_path_from(tup_cwd, np.as_path());
+                path.ok()
+            })
+            .map(|inp_desc| InputResolvedType::Deglob(MatchingPath::new(inp_desc, tup_cwd.clone())))
+            .collect();
+        InputsAsPaths::new(tup_cwd, &inp_resolved, path_buffers, TupLoc::default())
+    }
     pub(crate) fn new(
         tup_cwd: &PathDescriptor,
         inp: &[InputResolvedType],

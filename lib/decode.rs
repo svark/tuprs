@@ -634,12 +634,16 @@ trait GatherOutputs {
     ) -> Result<(), Err>;
 }
 
-trait DecodeInputPlaceHolders {
+/// Decode input placeholders in a command string or in the output string
+pub trait DecodeInputPlaceHolders {
+    /// Ouput of decoding input placeholders
+    type Output;
+    /// Decode input placeholders in a command string or in the output string
     fn decode_input_place_holders(
         &self,
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
-    ) -> Result<Self, Err>
+    ) -> Result<Self::Output, Err>
     where
         Self: Sized;
 }
@@ -691,10 +695,8 @@ pub fn decode_group_captures(
     let replacer = |caps: &Captures| {
         let c = caps
             .get(1)
-            .ok_or_else(|| Err::StaleGroupRef("unknown".to_string(), rule_ref.clone()))?;
-        inputs
-            .get_group_paths(c.as_str(), rule_id, dirid)
-            .ok_or_else(|| Err::StaleGroupRef(c.as_str().to_string(), rule_ref.clone()))
+            .and_then(|c| inputs.get_group_paths(c.as_str(), rule_id, dirid));
+        c
     };
     let reps: Result<Vec<_>, _> = GRPRE
         .captures(rule_str)
@@ -726,6 +728,7 @@ pub fn decode_group_captures(
 }
 
 impl DecodeInputPlaceHolders for PathExpr {
+    type Output = Self;
     fn decode_input_place_holders(
         &self,
         inputs: &InputsAsPaths,
@@ -738,9 +741,12 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if input_raw_paths.is_empty() {
                     return Err(Err::StalePerc('f', rule_ref.clone(), d.to_string()));
                 }
-                let x1 = input_raw_paths.join(" ");
-                debug!("replacing %f with {:?}", x1.as_str());
-                d.replace("%f", x1.as_str())
+                let mut replacement: Vec<String> = Vec::new();
+                for s in input_raw_paths {
+                    debug!("replacing %B with {s:?} in {d}");
+                    replacement.push(d.replace("%f", s.as_str()));
+                }
+                replacement.join(" ")
             } else {
                 d.to_string()
             };
@@ -761,7 +767,13 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if fnames.is_empty() {
                     return Err(Err::StalePerc('b', rule_ref.clone(), d.clone()));
                 }
-                d.replace("%b", fnames.join(" ").as_str())
+                //d.replace("%b", fnames.join(" ").as_str())
+                let mut replacement: Vec<String> = Vec::new();
+                for s in fnames {
+                    debug!("replacing %B with {s:?} in {d}");
+                    replacement.push(d.replace("%b", s.as_str()));
+                }
+                replacement.join(" ")
             } else {
                 d
             };
@@ -781,7 +793,12 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if stems.is_empty() {
                     return Err(Err::StalePerc('B', rule_ref.clone(), d.clone()));
                 }
-                d.replace("%B", stems.join(" ").as_str())
+                let mut replacement: Vec<String> = Vec::new();
+                for s in stems {
+                    debug!("replacing %B with {s:?} in {d}");
+                    replacement.push(d.replace("%B", s.as_str()));
+                }
+                replacement.join(" ")
             } else {
                 d
             };
@@ -790,16 +807,13 @@ impl DecodeInputPlaceHolders for PathExpr {
                 BINPRE
                     .captures(d.as_str())
                     .iter()
-                    .map(|captures| {
+                    .filter_map(|captures| {
                         let bin_name = captures.get(1).unwrap().as_str();
                         let bin_paths = inputs.get_bin_paths(bin_name, 0, 0);
-                        if bin_paths.is_none() {
-                            return Err(Err::StaleBinRef(bin_name.to_string(), rule_ref.clone()));
-                        }
-                        let bin_paths = bin_paths.unwrap();
-                        Ok(d.replace(captures.get(0).unwrap().as_str(), bin_paths.as_str()))
+                        bin_paths
+                            .map(|bp| (d.replace(captures.get(0).unwrap().as_str(), bp.as_str())))
                     })
-                    .collect::<Result<Vec<String>, Err>>()?
+                    .collect::<Vec<String>>()
                     .join(" ")
             } else {
                 d
@@ -816,16 +830,25 @@ impl DecodeInputPlaceHolders for PathExpr {
             };
 
             let d = if d.contains("%e") {
-                let ext = inp
-                    .get_extension()
-                    .ok_or_else(|| Err::StalePerc('e', rule_ref.clone(), d.clone()))?;
-                d.replace("%e", ext.as_str())
+                let ext = inp.get_extension();
+                //d.replace("%e", ext.as_str())
+                let mut replacement: Vec<String> = Vec::new();
+                for s in ext {
+                    debug!("replacing %e with {s:?} in {d}");
+                    replacement.push(d.replace("%e", s.as_str()));
+                }
+                replacement.join(" ")
             } else {
                 d
             };
             let d = if d.contains("%d") {
-                let parent_name = inp.parent_folder_name().to_string();
-                d.replace("%d", parent_name.as_str())
+                let parent_name = inp.get_parent_paths();
+                let mut replacement: Vec<String> = Vec::new();
+                for s in parent_name {
+                    debug!("replacing %d with {s:?} in {d}");
+                    replacement.push(d.replace("%d", s.as_str()));
+                }
+                replacement.join(" ")
             } else {
                 d
             };
@@ -841,10 +864,15 @@ impl DecodeInputPlaceHolders for PathExpr {
                 d
             };
             let d = if d.contains("%g") {
-                let g = inp.get_glob().and_then(|x| x.last());
+                let g = inp.get_glob();
                 let g = g.ok_or_else(|| Err::StalePerc('g', rule_ref.clone(), d.clone()))?;
-                debug!("replacing %g with {:?}", g.as_str());
-                d.replace("%g", g.as_str())
+                let mut replacement: Vec<String> = Vec::new();
+                for s in g {
+                    debug!("replacing %g with {s:?} in {d}");
+                    replacement.push(d.replace("%g", s.as_str()));
+                }
+                // d.replace("%g", g.as_str())
+                replacement.join(" ")
             } else {
                 d
             };
@@ -855,7 +883,12 @@ impl DecodeInputPlaceHolders for PathExpr {
                 if sinp.is_empty() {
                     return Err(Err::StalePerc('i', sinp.get_rule_ref().clone(), d));
                 }
-                d.replace("%i", sinputsflat.join(" ").as_str())
+                let mut replacements: Vec<String> = Vec::new();
+                for s in sinputsflat {
+                    debug!("replacing %i with {s:?} in {d}");
+                    replacements.push(d.replace("%i", s.as_str()));
+                }
+                replacements.join(" ")
             } else {
                 d
             };
@@ -900,6 +933,9 @@ impl DecodeInputPlaceHolders for PathExpr {
         };
         let pe = if let PathExpr::Literal(s) = self {
             PathExpr::from(frep(inputs, secondary_inputs, s)?)
+        } else if let PathExpr::Quoted(s) = self {
+            let s = s.cat();
+            PathExpr::from(frep(inputs, secondary_inputs, &s)?)
         } else {
             self.clone()
         };
@@ -935,11 +971,24 @@ fn replace_decoded_str(
 }
 
 impl DecodeInputPlaceHolders for Vec<PathExpr> {
+    type Output = Self;
     fn decode_input_place_holders(
         &self,
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
     ) -> Result<Self, Err> {
+        self.iter()
+            .map(|x| x.decode_input_place_holders(inputs, secondary_inputs))
+            .collect()
+    }
+}
+impl DecodeInputPlaceHolders for &[PathExpr] {
+    type Output = Vec<PathExpr>;
+    fn decode_input_place_holders(
+        &self,
+        inputs: &InputsAsPaths,
+        secondary_inputs: &InputsAsPaths,
+    ) -> Result<Self::Output, Err> {
         self.iter()
             .map(|x| x.decode_input_place_holders(inputs, secondary_inputs))
             .collect()
@@ -1068,6 +1117,7 @@ fn paths_from_exprs(
 // replace % specifiers in a target of rule statement which has already been
 // deglobbed
 impl DecodeInputPlaceHolders for Target {
+    type Output = Self;
     fn decode_input_place_holders(
         &self,
         inputs: &InputsAsPaths,
@@ -1089,6 +1139,7 @@ impl DecodeInputPlaceHolders for Target {
 }
 
 impl DecodeInputPlaceHolders for RuleFormula {
+    type Output = Self;
     /// rebuild a rule formula with input placeholders filled up
     fn decode_input_place_holders(
         &self,

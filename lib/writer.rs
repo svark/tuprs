@@ -149,6 +149,13 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
                 write_pathexprs(writer, text);
                 write!(writer, ")").unwrap();
             }
+            DollarExprs::Format(spec, args) => {
+                write!(writer, "$(format ").unwrap();
+                write_pathexpr(writer, spec);
+                write!(writer, ",").unwrap();
+                write_pathexprs(writer, args);
+                write!(writer, ")").unwrap();
+            }
             DollarExprs::WildCard(a) => {
                 write!(writer, "$(wildcard ").unwrap();
                 write_pathexprs(writer, a);

@@ -16,13 +16,13 @@ use crate::buffers::{
     RuleDescriptor, TaskDescriptor, TupPathDescriptor,
 };
 use crate::decode::{
-    paths_with_pattern, PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask,
-    RuleFormulaInstance, TaskInstance, TupLoc,
+    paths_with_pattern, DecodeInputPlaceHolders, PathSearcher, ResolvePaths, ResolvedLink,
+    ResolvedTask, RuleFormulaInstance, TaskInstance, TupLoc,
 };
 use crate::errors::Error::RootNotFound;
 use crate::errors::{Error as Err, Error};
 use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
-use crate::paths::{GlobPath, InputResolvedType};
+use crate::paths::{GlobPath, InputResolvedType, InputsAsPaths};
 use crate::paths::{MatchingPath, NormalPath};
 use crate::platform::*;
 use crate::scriptloader::parse_script;
@@ -752,19 +752,17 @@ pub(crate) trait ExpandMacro {
 }
 
 impl PathExpr {
-    fn subst_ca(&self, m: &mut CallArgsMap) -> Vec<PathExpr> {
+    fn subst_ca(&self, m: &mut CallArgsMap) -> PathExpr {
         match self {
             DExpr(ref x) => x.subst_callargs(m),
-            PathExpr::Quoted(ref x) => {
-                vec![PathExpr::Quoted(x.subst_callargs(m))]
-            }
+            PathExpr::Quoted(ref x) => PathExpr::Quoted(x.subst_callargs(m)),
             PathExpr::Group(ref xs, ref ys) => {
                 let newxs = xs.subst_callargs(m);
                 let newys = ys.subst_callargs(m);
                 debug!("grpdir:{:?} grpname:{:?}", newxs, newys);
-                vec![PathExpr::Group(newxs, newys)]
+                PathExpr::Group(newxs, newys)
             }
-            _ => vec![self.clone()],
+            _ => self.clone(),
         }
     }
     /// substitute a single pathexpr into an array of literal pathexpr
@@ -847,93 +845,93 @@ fn to_regex_replacement(pat: &str) -> String {
 }
 
 impl DollarExprs {
-    fn subst_callargs(&self, m: &mut CallArgsMap) -> Vec<PathExpr> {
+    fn subst_callargs(&self, m: &mut CallArgsMap) -> PathExpr {
         match self {
             DollarExprs::DollarExpr(x) => {
                 if let Some(val) = m.get(x.as_str()) {
-                    vec![PathExpr::from(val.clone())]
+                    PathExpr::from(val.clone())
                 } else {
-                    vec![PathExpr::DollarExprs(DollarExprs::DollarExpr(x.clone()))]
+                    PathExpr::DollarExprs(DollarExprs::DollarExpr(x.clone()))
                 }
             }
             DollarExprs::AddPrefix(ref vs, ref prefix) => {
                 let vs = vs.subst_callargs(m);
                 let prefix = prefix.subst_callargs(m);
-                vec![DExpr(DollarExprs::AddPrefix(vs, prefix))]
+                DExpr(DollarExprs::AddPrefix(vs, prefix))
             }
             DollarExprs::AddSuffix(ref vs, ref suffix) => {
                 let vs = vs.subst_callargs(m);
                 let suffix = suffix.subst_callargs(m);
-                vec![DExpr(DollarExprs::AddSuffix(vs, suffix))]
+                DExpr(DollarExprs::AddSuffix(vs, suffix))
             }
             DollarExprs::Filter(ref filter, ref vs) => {
                 let vs = vs.subst_callargs(m);
                 let filter = filter.subst_callargs(m);
-                vec![DExpr(DollarExprs::Filter(filter, vs))]
+                DExpr(DollarExprs::Filter(filter, vs))
             }
             DollarExprs::Subst(ref from, ref to, ref vs) => {
                 let vs = vs.subst_callargs(m);
                 let to = to.subst_callargs(m);
                 let from = from.subst_callargs(m);
-                vec![DExpr(DollarExprs::Subst(from, to, vs))]
+                DExpr(DollarExprs::Subst(from, to, vs))
             }
             DollarExprs::PatSubst(ref from, ref to, ref vs) => {
                 let vs = vs.subst_callargs(m);
                 let to = to.subst_callargs(m);
                 let from = from.subst_callargs(m);
-                vec![DExpr(DollarExprs::PatSubst(from, to, vs))]
+                DExpr(DollarExprs::PatSubst(from, to, vs))
             }
             DollarExprs::FilterOut(ref filter, ref vs) => {
                 let vs = vs.subst_callargs(m);
                 let filter = filter.subst_callargs(m);
-                vec![DExpr(DollarExprs::FilterOut(filter, vs))]
+                DExpr(DollarExprs::FilterOut(filter, vs))
             }
             DollarExprs::ForEach(s, ref vs, ref body) => {
                 let vs = vs.subst_callargs(m);
                 let body = body.subst_callargs(m);
-                vec![DExpr(DollarExprs::ForEach(s.clone(), vs, body))]
+                DExpr(DollarExprs::ForEach(s.clone(), vs, body))
             }
             DollarExprs::FindString(ref needle, ref text) => {
                 let needle = needle.subst_callargs(m);
                 let text = text.subst_callargs(m);
-                vec![DExpr(DollarExprs::FindString(needle, text))]
+                DExpr(DollarExprs::FindString(needle, text))
             }
             DollarExprs::WildCard(ref glob) => {
                 let glob = glob.subst_callargs(m);
-                vec![DExpr(DollarExprs::WildCard(glob))]
+                DExpr(DollarExprs::WildCard(glob))
             }
             DollarExprs::Strip(ref vs) => {
                 let vs = vs.subst_callargs(m);
-                vec![DExpr(DollarExprs::Strip(vs))]
+                DExpr(DollarExprs::Strip(vs))
             }
             DollarExprs::NotDir(ref vs) => {
                 let vs = vs.subst_callargs(m);
-                vec![DExpr(DollarExprs::NotDir(vs))]
+                DExpr(DollarExprs::NotDir(vs))
             }
             DollarExprs::Dir(ref vs) => {
                 let vs = vs.subst_callargs(m);
-                vec![DExpr(DollarExprs::Dir(vs))]
+                DExpr(DollarExprs::Dir(vs))
             }
             DollarExprs::AbsPath(ref vs) => {
                 let vs = vs.subst_callargs(m);
-                vec![DExpr(DollarExprs::AbsPath(vs))]
+                DExpr(DollarExprs::AbsPath(vs))
             }
             DollarExprs::BaseName(ref vs) => {
                 let vs = vs.subst_callargs(m);
-                vec![DExpr(DollarExprs::BaseName(vs))]
+                DExpr(DollarExprs::BaseName(vs))
             }
             DollarExprs::RealPath(ref vs) => {
                 let vs = vs.subst_callargs(m);
-                vec![DExpr(DollarExprs::RealPath(vs))]
+                DExpr(DollarExprs::RealPath(vs))
             }
             DollarExprs::Word(ref n, ref vs) => {
                 let vs = vs.subst_callargs(m);
-                vec![DExpr(DollarExprs::Word(*n, vs))]
+                DExpr(DollarExprs::Word(*n, vs))
             }
 
             DollarExprs::FirstWord(ref vs) => {
                 let vs = vs.subst_callargs(m);
-                vec![DExpr(DollarExprs::FirstWord(vs))]
+                DExpr(DollarExprs::FirstWord(vs))
             }
             DollarExprs::If(ref cond, ref if_part, ref else_part) => {
                 debug!(
@@ -947,20 +945,20 @@ impl DollarExprs {
                     "if cond:{:?} if_part:{:?} else_part:{:?}",
                     cond, if_part, else_part
                 );
-                vec![DExpr(DollarExprs::If(cond, if_part, else_part))]
+                DExpr(DollarExprs::If(cond, if_part, else_part))
             }
             DollarExprs::Call(ref name, ref args) => {
                 let args: Vec<_> = args.iter().map(|x| x.subst_callargs(m)).collect();
-                vec![DExpr(DollarExprs::Call(name.clone(), args))]
+                DExpr(DollarExprs::Call(name.clone(), args))
             }
             DollarExprs::Shell(ref vs) => {
                 let vs = vs.subst_callargs(m);
-                vec![DExpr(DollarExprs::Shell(vs))]
+                DExpr(DollarExprs::Shell(vs))
             }
 
             DollarExprs::Eval(ref e) => {
                 let vs = e.subst_callargs(m);
-                vec![DExpr(DollarExprs::Eval(vs))]
+                DExpr(DollarExprs::Eval(vs))
             }
             DollarExprs::GrepFiles(ref pattern, ref glob, ref dirs) => {
                 let pattern = pattern.subst_callargs(m);
@@ -972,14 +970,19 @@ impl DollarExprs {
                     glob,
                     dirs
                 );
-                vec![DExpr(DollarExprs::GrepFiles(pattern, glob, dirs))]
+                DExpr(DollarExprs::GrepFiles(pattern, glob, dirs))
+            }
+            DollarExprs::Format(spec, body) => {
+                let spec = spec.subst_ca(m);
+                let body = body.subst_callargs(m);
+                DExpr(DollarExprs::Format(Box::new(spec), body))
             }
         }
     }
     fn subst(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Vec<PathExpr> {
         match self {
             DollarExprs::DollarExpr(x) => {
-                log::debug!("substituting {}", x.as_str());
+                debug!("substituting {}", x.as_str());
                 let res = {
                     if let Some(val) = m.expr_map.get(x.as_str()).cloned() {
                         //  let vs = intersperse_sp1(val);
@@ -1046,6 +1049,23 @@ impl DollarExprs {
                 }
             }
 
+            DollarExprs::Format(ref spec, ref body) => {
+                let body = body.subst_pe(m, path_searcher);
+                let spec = spec.subst(m, path_searcher);
+                let inputs = InputsAsPaths::new_from_raw(
+                    &m.get_tup_dir_desc(),
+                    &body,
+                    m.get_path_buffers().as_ref(),
+                );
+                let mut result = Vec::new();
+                {
+                    let v = spec
+                        .decode_input_place_holders(&inputs, &Default::default())
+                        .unwrap_or_default();
+                    result.extend(v);
+                }
+                result
+            }
             DollarExprs::Filter(ref filter, ref body) => {
                 let body = body.subst_pe(m, path_searcher);
                 let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
@@ -1074,7 +1094,7 @@ impl DollarExprs {
                 }
 
                 body.cleanup();
-                log::debug!("Filtered body:{:?}", body);
+                debug!("Filtered body:{:?}", body);
                 body
             }
             DollarExprs::FilterOut(ref filter, ref body) => {
@@ -1103,7 +1123,7 @@ impl DollarExprs {
                 }
 
                 body.cleanup();
-                log::debug!("Filtered out body:{:?}", body);
+                debug!("Filtered out body:{:?}", body);
                 body
             }
             DollarExprs::ForEach(var, list, body) => {
@@ -1118,7 +1138,7 @@ impl DollarExprs {
 
                 let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
                     .expect("failed to parse body of for-each");
-                log::debug!("stmts:{:?}", stmts);
+                debug!("stmts:{:?}", stmts);
                 let mut vs_updated = Vec::new();
                 for l in list.iter_mut() {
                     if let PathExpr::Literal(ref s) = l {
@@ -1158,18 +1178,18 @@ impl DollarExprs {
             DollarExprs::WildCard(glob) => {
                 // wild cards are not expanded in the substitution phase
 
-                log::debug!("wildcard to expand:{:?}", glob.cat());
+                debug!("wildcard to expand:{:?}", glob.cat());
                 let gstr = m
                     .switch_tupfile_and_process(&m.get_tup_base_file(), |m| {
                         // Wildcards are special : set the current directory to the directory of the tupfile being processed and then evaluate the glob
-                        log::debug!("^substing wildcard glob..");
+                        debug!("^substing wildcard glob..");
                         Ok(glob.subst_pe(m, path_searcher).cat())
                     })
                     .unwrap();
-                log::debug!("wildcard glob expanded{:?}", gstr);
+                debug!("wildcard glob expanded{:?}", gstr);
                 if !gstr.is_empty() {
                     let dir = m.get_tup_base_dir(); // wildcards are evaluated w.r.t tup base dir (tupfile being parsed as opposed to one of its includes)
-                    log::debug!("relative to {:?}", dir.get_path_ref());
+                    debug!("relative to {:?}", dir.get_path_ref());
                     let ldirs = m.load_dirs.clone();
                     m.with_path_buffers_do(|path_buffers_mut| {
                         let glob_path =
@@ -1280,7 +1300,7 @@ impl DollarExprs {
                 DollarExprs::RealPath(vs.clone()).subst(m, path_searcher)
             }
             DollarExprs::NotDir(ref vs) => {
-                log::debug!("evaluating not dir on {:?}", vs);
+                debug!("evaluating not dir on {:?}", vs);
                 let vs = vs.subst_pe(m, path_searcher);
                 let res = vs
                     .split(PathExpr::is_ws)
@@ -1297,7 +1317,7 @@ impl DollarExprs {
                         }
                     })
                     .collect();
-                log::debug!("result of notdir:{:?}", res);
+                debug!("result of notdir:{:?}", res);
                 res
             }
             DollarExprs::Dir(ref vs) => {
@@ -1475,7 +1495,6 @@ impl DollarExprs {
                         .iter()
                         .chain(lines.into_iter())
                         .map(|l| l.subst_ca(&mut call_args_map))
-                        .flatten()
                         .collect();
 
                     substed_lines
@@ -1717,7 +1736,7 @@ impl CallArgs for Vec<PathExpr> {
     fn subst_callargs(&self, m: &mut CallArgsMap) -> Self {
         let mut newpe: Vec<_> = self
             .iter()
-            .flat_map(|x| x.subst_ca(m))
+            .map(|x| x.subst_ca(m))
             .filter(|x| !x.is_empty())
             .collect();
         newpe.cleanup();
@@ -1874,7 +1893,7 @@ pub fn get_parent(cur_file: &Path) -> Cow<Path> {
         .parent()
         .unwrap_or_else(|| panic!("unable to find parent folder for tup file:{:?}", cur_file));
     if p.as_os_str().is_empty() {
-        return Cow::Owned(PathBuf::from("."));
+        Cow::Owned(PathBuf::from("."))
     } else {
         Cow::Borrowed(p)
     }
@@ -2009,7 +2028,7 @@ impl LocatedStatement {
     ) -> Result<Vec<LocatedStatement>, Error> {
         let mut newstats = Vec::new();
         let loc = self.get_loc();
-        //debug!("subst statement: {:?}", &self);
+        debug!("subst statement: {:?}", &self);
         match self.get_statement() {
             Statement::AssignExpr {
                 left,
@@ -2679,7 +2698,9 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         cur_folder: P,
         path_searcher: Q,
     ) -> Result<TupParser<Q>, Error> {
-        let (_, parent) = locate_file(cur_folder, ".tup/db", "").ok_or(RootNotFound)?;
+        let (_, parent) = locate_file(cur_folder.as_ref(), ".tup/db", "")
+            .or(locate_file(cur_folder.as_ref(), "Tupfile.ini", ""))
+            .ok_or(RootNotFound)?;
 
         let root = parent.as_path();
         debug!("root folder: {:?}", root);

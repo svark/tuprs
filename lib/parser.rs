@@ -250,6 +250,7 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
             alt((
                 complete(parse_pathexpr_filter),
                 complete(parse_pathexpr_filter_out),
+                complete(parse_pathexpr_format),
                 complete(parse_pathexpr_findstring),
                 complete(parse_pathexpr_foreach),
                 complete(parse_pathexpr_firstword),
@@ -655,6 +656,22 @@ fn parse_pathexpr_if(i: Span) -> IResult<Span, PathExpr> {
     Ok((
         s,
         PathExpr::from(DollarExprs::If(condition, then_part, else_part)),
+    ))
+}
+
+/// parse $(format quoted_str, ...)
+/// $(format quoted_str...) is a function that returns the string str with the format specifiers replaced by the corresponding arguments for each word in the list.
+fn parse_pathexpr_format(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(format ")(i)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, format_spec) = parse_quote(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, _) = tag(",")(s)?;
+    let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    Ok((
+        s,
+        PathExpr::from(DollarExprs::Format(Box::new(format_spec), pattern)),
     ))
 }
 
