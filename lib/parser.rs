@@ -6,7 +6,7 @@ use bstr::io::BufReadExt;
 use combinator::eof;
 use log::log_enabled;
 use nom::bytes::complete::{is_a, is_not};
-use nom::character::complete::{line_ending, multispace0, space0, space1};
+use nom::character::complete::{anychar, line_ending, multispace0, space0, space1};
 use nom::character::complete::{multispace1, newline, not_line_ending};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind, VerboseErrorKind};
@@ -616,12 +616,19 @@ fn parse_pathexpr_abspath(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_grep_files(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(grep-files")(i)?;
     let (s, _) = parse_ws(s)?;
+    let (s, _) = many0(delimited(tag("-"), anychar, sp1))(s)?;
     let (s, pattern) = parse_quote(s)?;
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, (glob, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
+    let (s, (glob, end)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
     //let (s, bytes) = take_until(")")(s)?;
-    let (s, (paths, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, paths) = if end == ',' {
+        let (s, (paths, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+        (s, paths)
+    } else {
+        (s, vec![])
+    };
+
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!(
         "parsed grep-files: pattern: {:?} glob: {:?} paths: {:?}",
@@ -914,6 +921,23 @@ fn parse_import(i: Span) -> IResult<Span, LocatedStatement> {
             .into(),
     ))
 }
+
+// parse source search dir
+// vpath %.cxx ../srcs
+/*fn parse_search_dir(i: Span) -> IResult<Span, LocatedStatement > {
+    let s = i;
+    let (s, _) = tag("vpath")(s)?;
+    let (s, _) = sp1(s)?;
+    let (s, pattern) = parse_pelist_till_delim_no_ws(s, " ", &BRKTOKSWS)?;
+    let (s, _) = sp1(s)?;
+    let (s, _) = tag(":")(s)?;
+    let (s, _) = sp1(s)?;
+
+    let (s, r) = context("search source path", cut(parse_pelist_till_line_end_with_ws))(s)?;
+    let offset = i.offset(&s);
+    let (s, _) = multispace0(s)?;
+    Ok((s, (Statement::SearchDir(pattern.0, r.0), i.slice(..offset)).into()))
+}*/
 
 // parse preload expression
 // preload directory
@@ -1415,6 +1439,7 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_export),
         complete(parse_run),
         complete(parse_preload),
+        //complete(parse_search_dir),
         complete(parse_import),
         complete(parse_pathexpr_define),
         complete(parse_task_statement),

@@ -28,6 +28,8 @@ pub struct NormalPath {
     inner: PathBuf,
 }
 
+impl NormalPath {}
+
 const GLOB_PATTERN_CHARACTERS: &str = "*?[";
 
 /// return the parent directory
@@ -283,7 +285,7 @@ impl GlobPath {
     /// Check if the pattern for matching has glob pattern chars such as "*[]"
     pub fn has_glob_pattern(&self) -> bool {
         let gb = self.glob_path_desc.clone();
-        debug!("has_glob_pattern: {:?}", gb);
+        //debug!("has_glob_pattern: {:?}", gb);
         std::iter::once(gb)
             .chain(self.glob_path_desc.ancestors())
             .any(|x| {

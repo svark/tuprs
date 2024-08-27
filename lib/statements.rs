@@ -547,6 +547,7 @@ pub(crate) enum Statement {
     Export(String),
     Import(String, Option<String>),
     Preload(Vec<PathExpr>),
+    //SearchDir(Vec<PathExpr>, Vec<PathExpr>),
     Run(Vec<PathExpr>),
     Comment,
     /// Define a multi-line variable

@@ -302,23 +302,23 @@ impl RelativeDirEntry {
         // find the first common ancestor and then find the steps to reach the target from the common ancestor
         let mut basedir = basedir.clone();
         let mut target = target.clone();
-        debug!(
+        /*debug!(
             "basedir:{:?} target:{:?}",
             basedir.get_path_ref(),
             target.get_path_ref()
-        );
+        );*/
         let common_root = first_common_ancestor(basedir.clone(), target.clone());
         let mut steps = Vec::new();
         while basedir != common_root {
             let parent = basedir.get_parent_descriptor();
-            debug!("parent:{:?} ", parent.get().get_name());
+            //debug!("parent:{:?} ", parent.get().get_name());
             steps.push(PathStep::Backward);
             basedir = parent;
         }
         let mut fwd_steps = VecDeque::new();
         while target != common_root {
             let parent = target.get_parent_descriptor();
-            debug!("parent:{:?} ", parent.get().get_name());
+            //debug!("parent:{:?} ", parent.get().get_name());
             fwd_steps.push_front(PathStep::Forward(target.clone()));
             target = parent;
         }
@@ -460,7 +460,7 @@ impl PathDescriptor {
                     Ok(PathDescriptor::default())
                 },
                 Component::Prefix(_) =>
-                    Err(Error::new_path_search_error(format!("attempting to join unexpected path component:{:?}\n Consider only relative paths for rule building", x)))
+                    Err(Error::new_path_search_error(format!("attempting to join unexpected path component:{:?}\n Consider only relative paths or paths from tup root for rule building", x)))
             }
         })
     }

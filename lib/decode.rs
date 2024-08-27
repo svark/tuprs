@@ -513,7 +513,7 @@ impl DecodeInputPaths for PathExpr {
                     let mut glob_desc = search_dir.clone();
                     glob_desc += &rel_path_desc;
                     let glob_path = GlobPath::build_from(tup_cwd, &glob_desc)?;
-                    debug!("glob str: {:?}", glob_path.get_abs_path());
+                    //debug!("glob str: {:?}", glob_path.get_abs_path());
                     glob_paths.push(glob_path);
                 }
 
@@ -687,7 +687,7 @@ lazy_static! {
 /// replace all occurrences of <{}> in rule strings with the paths that are associated with corresponding group input for that that rule.
 pub fn decode_group_captures(
     inputs: &impl GroupInputs,
-    rule_ref: &TupLoc,
+    _rule_ref: &TupLoc,
     rule_id: i64,
     dirid: i64,
     rule_str: &str,
@@ -698,7 +698,7 @@ pub fn decode_group_captures(
             .and_then(|c| inputs.get_group_paths(c.as_str(), rule_id, dirid));
         c
     };
-    let reps: Result<Vec<_>, _> = GRPRE
+    let reps: Vec<_> = GRPRE
         .captures(rule_str)
         .iter()
         .inspect(|x| {
@@ -707,14 +707,11 @@ pub fn decode_group_captures(
                 x.get(0).unwrap().as_str()
             )
         })
-        .map(|x| replacer(x))
+        .filter_map(replacer)
         .inspect(|x| {
-            if let Ok(ref x) = x {
-                debug!("group capture after replace :{}", x.as_str());
-            }
+            debug!("group capture after replace :{}", x.as_str());
         })
         .collect();
-    let reps = reps?;
     let mut i = 0;
 
     let d = GRPRE
@@ -1902,39 +1899,37 @@ pub fn parse_tupfiles(
 /// retain paths that have pattern in its contents
 pub fn paths_with_pattern(
     root: &Path,
-    pattern: &&str,
+    pattern: &str,
     mut paths: Vec<MatchingPath>,
 ) -> Result<Vec<MatchingPath>, Error> {
     let mut buffer = String::new();
-    let mut use_regex: Option<Regex> = None;
-    if pattern.contains("%") {
-        use_regex = Regex::new(&to_regex(pattern))
-            .expect("Failed to convert pattern to regex")
-            .into();
-    }
+    let pattern = pattern
+        .strip_suffix("\"")
+        .unwrap_or(pattern)
+        .strip_prefix("\"")
+        .unwrap_or(pattern);
+    let regex = if pattern.contains('%') {
+        Some(Regex::new(&to_regex(pattern)).expect("Failed to convert pattern to regex"))
+    } else {
+        None
+    };
 
-    paths.retain(|path| {
-        let mut has_match = false;
+    paths.retain(move |path| {
         if let Ok(f) = File::open(root.join(path.get_path().as_path())) {
-            let mut buf = BufReader::new(f);
+            let buf = BufReader::new(f);
             buffer.clear();
-            while let Ok(num_read) = buf.read_line(&mut buffer) {
-                if num_read == 0 {
-                    break;
+            buf.lines().any(|line| {
+                if let Ok(ref line) = line {
+                    regex
+                        .as_ref()
+                        .map_or_else(|| line.contains(pattern), |re| re.is_match(&line))
+                } else {
+                    false
                 }
-                if use_regex.is_none() && buffer.contains(pattern) {
-                    //paths[j] = path;
-                    has_match = true;
-                    break;
-                } else if use_regex.clone().unwrap().is_match(buffer.as_str()) {
-                    //    paths[j] = path;
-                    has_match = true;
-                    break;
-                }
-            }
+            })
+        } else {
+            false
         }
-        has_match
     });
-    //paths.resize(j, Default::default());
     Ok(paths)
 }

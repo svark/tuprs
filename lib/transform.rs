@@ -815,6 +815,7 @@ pub(crate) fn to_regex(pat: &str) -> String {
         }
     }
     regex_pattern.push('$');
+    log::debug!("formed regex: {} from {}", regex_pattern, pat);
     regex_pattern
 }
 
@@ -2118,7 +2119,20 @@ impl LocatedStatement {
             }
             Statement::Task(t) => {
                 Self::subst_task(parse_state, path_searcher, loc, t);
-            }
+            } /*Statement::SearchDir(pattern, dirs) => {
+                  let dirs = dirs.subst_pe(parse_state, path_searcher);
+                  let pattern = pattern.subst_pe(parse_state, path_searcher);
+                  let tup_cwd = parse_state.get_tup_dir_desc();
+                  for dir in dirs.split(PathExpr::is_ws) {
+                      let dirid = parse_state
+                          .path_buffers
+                          .add_path_from(&tup_cwd, dir.cat().as_str())
+                          .ok();
+                      if let Some(dirid) = dirid {
+                          parse_state.load_dirs.push(dirid.join_leaf(&pattern.as_slice().cat_ref().replace("%", "*")));
+                      }
+                  }
+              }*/
         }
         Ok(newstats)
     }
@@ -2765,7 +2779,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         let mut bo = self.get_mut_searcher();
         f(&mut bo)
     }
-    /// `parse` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
+    /// `parse_tupfile` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
     /// These are all referenced by their ids that are generated  on the fly.
     /// Upon success the parser returns `ResolvedRules` that holds  references to all the resolved outputs by their ids
     /// The parser currently also allows you to read its buffers (id-object pairs) and even update it based on externally saved data via `ReadBufferObjects` and `WriteBufObjects`
