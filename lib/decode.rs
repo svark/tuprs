@@ -1,5 +1,6 @@
 //! This module handles decoding and de-globbing of rules
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, LinkedList};
 use std::collections::{HashMap, HashSet};
@@ -21,15 +22,33 @@ use crate::buffers::{
     OutputType, PathBuffers, PathDescriptor, RelativeDirEntry, RuleDescriptor, TaskDescriptor,
     TupPathDescriptor,
 };
+use crate::decode::Index::All;
 use crate::errors::Error::PathSearchError;
 use crate::errors::{Error as Err, Error};
 use crate::paths::{
-    ExcludeInputPaths, GlobPath, InputResolvedType, InputsAsPaths, MatchingPath, NormalPath,
-    OutputsAsPaths,
+    ExcludeInputPaths, FormatReplacements, GlobPath, InputResolvedType, InputsAsPaths,
+    MatchingPath, NormalPath, OutputsAsPaths,
 };
 use crate::statements::*;
 use crate::transform::{to_regex, ResolvedRules, TupParser};
 use crate::ReadWriteBufferObjects;
+use std::sync::OnceLock;
+
+static PERC_INP_REGEX: OnceLock<Regex> = OnceLock::new();
+static PERC_BIN_REGEX: OnceLock<Regex> = OnceLock::new();
+static PERC_GRP_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn perc_io_regex() -> &'static Regex {
+    PERC_INP_REGEX
+        .get_or_init(|| Regex::new(r"%(\d+)?[fbBoOgieh%]").expect("Failed to create regex"))
+}
+fn perc_bin_regex() -> &'static Regex {
+    PERC_BIN_REGEX.get_or_init(|| Regex::new(r"%\{([^}]+)\}").expect("Failed to create regex"))
+}
+
+fn perc_group_regex() -> &'static Regex {
+    PERC_GRP_REGEX.get_or_init(|| Regex::new(r"%<([^>]+)>").expect("Failed to create regex"))
+}
 
 /// Trait to discover paths from a source (such as a database or directory tree)
 /// Outputs from rules can be added to list of paths searched using `merge` method
@@ -132,28 +151,18 @@ impl RuleFormulaInstance {
 
     /// Display string that appears in the console as the rule is run
     pub fn get_display_str(&self) -> String {
-        let description = self.rule_formula.description.cat();
-        let r = Regex::new("^\\^([bcjot]+)").unwrap();
-        let display_str = if let Some(s) = r.captures(description.as_str()) {
-            //formula.strip_prefix("^o ").unwrap()
-            description
-                .strip_prefix(s.get(0).unwrap().as_str())
-                .unwrap()
-        } else {
-            description.as_str()
-        };
-        display_str.trim_start().to_string()
+        let description = self.rule_formula.get_description_str();
+        description.trim_start().to_string()
+    }
+    #[allow(dead_code)]
+    pub(crate) fn get_rule_description(&self) -> Option<&Vec<PathExpr>> {
+        self.rule_formula
+            .get_description()
+            .map(|x| x.get_display_str())
     }
     /// additional flags "bcjot" that alter the way rule is run
-    pub fn get_flags(&self) -> String {
-        let description = self.rule_formula.description.cat();
-        let r = Regex::new("^\\^([bcjot]+)").unwrap();
-        if r.is_match(description.as_str()) {
-            let s = r.captures(description.as_str()).unwrap();
-            s.get(0).unwrap().as_str().to_string()
-        } else {
-            "".to_string()
-        }
+    pub fn get_flags(&self) -> &str {
+        self.get_formula().get_flags()
     }
 
     /// Path for a rule constructed by prefixing parent path to the rule name
@@ -305,7 +314,7 @@ pub trait OutputHandler {
     fn get_children(
         &self,
     ) -> MappedRwLockReadGuard<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>>;
-    /// the parent rule that generates a output file
+    /// the parent rule that generates an output file
     fn get_parent_rule(&self, o: &PathDescriptor) -> Option<TupLoc>;
     /// parent rule of each output path
     fn with_parent_rules<R, F>(&self, f: F) -> R
@@ -643,13 +652,14 @@ pub trait DecodeInputPlaceHolders {
         &self,
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
-    ) -> Result<Self::Output, Err>
+    ) -> Self::Output
     where
         Self: Sized;
 }
 
 trait DecodeOutputPlaceHolders {
-    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Result<Self, Err>
+    type Output;
+    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Self::Output
     where
         Self: Sized;
 }
@@ -661,27 +671,6 @@ pub trait GroupInputs {
     fn get_group_paths(&self, group_name: &str, rule_id: i64, rule_dir: i64) -> Option<String>
     where
         Self: Sized;
-
-    /// Returns all paths (space separated) associated with a given bin name for a given rule
-    fn get_bin_paths(&self, bin_name: &str, _rule_id: i64, _rule_dir: i64) -> Option<String>;
-}
-
-lazy_static! {
-    static ref PERC_NUM_F_RE: Regex =
-        Regex::new(r"%([1-9][0-9]*)f").expect("regex compilation error"); // pattern for matching  numberedinputs that appear in command line
-    static ref PERC_NUM_B_RE: Regex =
-        Regex::new(r"%([1-9][0-9]*)b").expect("regex compilation error"); //< pattern for matching a numbered basename with extension of a input to a rule
-    static ref BINPRE: Regex = Regex::new(r"%\{([^}]+)\}").expect("regex compilation error for bin"); //< pattern for matching a group
-    static ref GRPRE: Regex = Regex::new(r"%<([^>]+)>").expect("regex compilation error for group"); //< pattern for matching a group
-    static ref PER_CAP_B_RE: Regex =
-        Regex::new(r"%([1-9][0-9]*)B").expect("regex compilation failure"); //< pattern for matching basename of input to a rule
-    static ref PERC_NUM_G_RE: Regex =
-        Regex::new(r"%([1-9][0-9]*)g").expect("regex compilation error"); //< pattern for matching outputs that appear on command line
-    static ref PERC_NUM_O_RE: Regex =
-        Regex::new(r"%([1-9][0-9]*)o").expect("regex compilation error"); //< pattern for matching outputs that appear on command line
-    static ref PERC_NUM_CAP_O_RE: Regex =
-        Regex::new(r"%([1-9][0-9]*)O").expect("regex compilation error");
-    static ref PERC_NUM_I : Regex = Regex::new(r"%([1-9][0-9]*)i").expect("regex compilation error"); //< pattern for matching numbered order only inputs (that dont appear in command line)
 }
 
 /// replace all occurrences of <{}> in rule strings with the paths that are associated with corresponding group input for that that rule.
@@ -691,14 +680,14 @@ pub fn decode_group_captures(
     rule_id: i64,
     dirid: i64,
     rule_str: &str,
-) -> Result<String, Error> {
+) -> String {
     let replacer = |caps: &Captures| {
         let c = caps
             .get(1)
             .and_then(|c| inputs.get_group_paths(c.as_str(), rule_id, dirid));
         c
     };
-    let reps: Vec<_> = GRPRE
+    let reps: Vec<_> = perc_group_regex()
         .captures(rule_str)
         .iter()
         .inspect(|x| {
@@ -713,270 +702,219 @@ pub fn decode_group_captures(
         })
         .collect();
     let mut i = 0;
-
-    let d = GRPRE
+    let d = perc_group_regex()
         .replace(rule_str, |_: &Captures| {
             let r = &reps[i];
             i += 1;
             r.as_str()
         })
         .to_string();
-    Ok(d)
+    d
+}
+fn replace_io_patterns<'a, F>(input: &str, replacer: F) -> String
+where
+    F: Fn(&char, &str) -> String,
+{
+    // Define the regex pattern to match the required patterns
+    let re = perc_io_regex();
+    let binre = perc_bin_regex();
+    let res = binre.replace_all(input, |caps: &Captures| {
+        let tok = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        replacer(&'}', tok)
+    });
+
+    // Replace all matches with the output of the replacer function
+    let res = re.replace_all(res.as_ref(), |caps: &Captures| {
+        // Extract the matched pattern
+        let matched_pattern = caps.get(0).unwrap().as_str();
+        let ref end_char = matched_pattern
+            .chars()
+            .last()
+            .expect("Unexpected missing last char in pattern");
+        let num: &str = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        // Call the replacer function with the matched pattern
+        replacer(end_char, num)
+    });
+    if matches!(res, Cow::Owned(_)) {
+        debug!("replaced io patterns in {} to {}", input, res);
+    }
+    res.into_owned()
+}
+
+fn to_index(capture: &str, def: Index) -> Index {
+    let c: Option<usize> = capture.parse().ok();
+    if c.is_none() {
+        def
+    } else {
+        Index::Ith(c.unwrap() - 1)
+    }
+}
+fn replacer_outputs(pattern: &char, outputs: &impl FormatReplacements, capture: &str) -> String {
+    let output_raw_paths = outputs.get_paths_str_from_tok(pattern);
+    let idx = to_index(capture, All);
+    replace_fmt_char(&output_raw_paths, pattern, idx)
+}
+fn replacer_inputs(
+    pattern: &char,
+    inputs: &impl FormatReplacements,
+    order_only_inputs: &impl FormatReplacements,
+    capture: &str,
+) -> String {
+    match pattern {
+        'f' | 'b' | 'B' | 'e' => {
+            let input_raw_paths = inputs.get_paths_str_from_tok(pattern);
+            let idx = to_index(capture, All);
+            replace_fmt_char(&input_raw_paths, pattern, idx)
+        }
+        'g' => {
+            log::debug!("replacing %g");
+            let input_raw_paths = inputs.get_paths_str_from_tok(pattern);
+            let idx = to_index(capture, Index::Ith(0));
+            replace_fmt_char(&input_raw_paths, pattern, idx)
+        }
+        'h' => {
+            log::debug!("replacing %h");
+            let input_raw_paths = inputs.get_paths_str_from_tok(pattern);
+            let idx = to_index(capture, Index::Last);
+            replace_fmt_char(&input_raw_paths, pattern, idx)
+        }
+        'i' => {
+            let input_raw_paths = order_only_inputs.get_paths_str_from_tok(pattern);
+            let idx = to_index(capture, Index::All);
+            replace_fmt_char(&input_raw_paths, pattern, idx)
+        }
+        '%' => {
+            if capture.is_empty() {
+                "%".to_string()
+            } else {
+                format!("%{}%", capture.to_string())
+            }
+        }
+        '}' => {
+            let input_raw_paths = inputs.get_bin_paths(capture);
+            replace_fmt_char(&input_raw_paths, pattern, Index::All)
+        }
+        _ => {
+            format!("%{}{}", capture.to_string(), pattern)
+        }
+    }
+}
+
+fn formatted_pe<F: Fn(&str) -> String>(replacer: F, pe: &PathExpr) -> Vec<PathExpr> {
+    let pe = if let PathExpr::Literal(s) = pe {
+        let mut result = Vec::new();
+        for s in replacer(s).split(" \t") {
+            result.push(s.to_string().into());
+            result.push(PathExpr::Sp1);
+        }
+        result.pop();
+        result
+    } else if let PathExpr::Quoted(s) = pe {
+        let mut result: Vec<PathExpr> = Vec::new();
+        if s.is_empty() {
+            result
+        } else {
+            let s = s.as_slice();
+            for s in replacer(&*s.cat_ref()).split(" \t") {
+                result.push(s.to_string().into());
+                result.push(PathExpr::Sp1);
+            }
+            result.pop();
+            result
+        }
+    } else {
+        vec![pe.clone()]
+    };
+    pe
 }
 
 impl DecodeInputPlaceHolders for PathExpr {
+    type Output = Vec<PathExpr>;
+    fn decode_input_place_holders(
+        &self,
+        inputs: &InputsAsPaths,
+        secondary_inputs: &InputsAsPaths,
+    ) -> Self::Output {
+        let frep = move |d: &str| -> String {
+            replace_io_patterns(d, |pattern, capture| {
+                replacer_inputs(pattern, inputs, secondary_inputs, capture)
+            })
+        };
+        let pe = self;
+        let pe = formatted_pe(frep, pe);
+        pe
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+enum Index {
+    #[default]
+    All,
+    Last,
+    Ith(usize),
+}
+/// replace %[i]c specifiers
+fn replace_fmt_char(input_raw_paths: &Vec<String>, c: &char, i: Index) -> String {
+    match i {
+        All => {
+            let joined_paths = input_raw_paths.join(" ");
+            debug!("replacing %{c} with {joined_paths} ");
+            joined_paths
+        }
+        Index::Last => {
+            let str = input_raw_paths
+                .last()
+                .unwrap_or(&"".to_string())
+                .to_string();
+            debug!("replacing %{c} with {str} ");
+            str
+        }
+        Index::Ith(i) => {
+            let str = input_raw_paths
+                .get(i)
+                .map(AsRef::as_ref)
+                .unwrap_or("")
+                .to_string();
+            debug!("replacing %{c} with {str} ");
+            str
+        }
+    }
+}
+
+impl DecodeOutputPlaceHolders for RuleDescription {
+    type Output = Self;
+    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Self::Output {
+        let new_display = self.get_display_str().decode_output_place_holders(outputs);
+        RuleDescription::new(self.get_flags().clone(), new_display)
+    }
+}
+impl DecodeInputPlaceHolders for RuleDescription {
     type Output = Self;
     fn decode_input_place_holders(
         &self,
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
-    ) -> Result<Self, Err> {
-        let frep = |inp: &InputsAsPaths, sinp: &InputsAsPaths, d: &str| -> Result<String, Err> {
-            let rule_ref = inp.get_rule_ref();
-            let d = if d.contains("%f") {
-                let input_raw_paths = inp.get_paths();
-                if input_raw_paths.is_empty() {
-                    return Err(Err::StalePerc('f', rule_ref.clone(), d.to_string()));
-                }
-                let mut replacement: Vec<String> = Vec::new();
-                for s in input_raw_paths {
-                    debug!("replacing %B with {s:?} in {d}");
-                    replacement.push(d.replace("%f", s.as_str()));
-                }
-                replacement.join(" ")
-            } else {
-                d.to_string()
-            };
-
-            let d = if PERC_NUM_F_RE.captures(d.as_str()).is_some() {
-                // numbered inputs will be replaced here
-                let inputs = inp.get_paths();
-                if inputs.is_empty() {
-                    return Err(Err::StalePerc('f', rule_ref.clone(), d.clone()));
-                }
-                replace_decoded_str(d.as_str(), &inputs, &PERC_NUM_F_RE, rule_ref, 'f')?
-            } else {
-                d
-            };
-
-            let d = if d.contains("%b") {
-                let fnames = inputs.get_file_names();
-                if fnames.is_empty() {
-                    return Err(Err::StalePerc('b', rule_ref.clone(), d.clone()));
-                }
-                //d.replace("%b", fnames.join(" ").as_str())
-                let mut replacement: Vec<String> = Vec::new();
-                for s in fnames {
-                    debug!("replacing %B with {s:?} in {d}");
-                    replacement.push(d.replace("%b", s.as_str()));
-                }
-                replacement.join(" ")
-            } else {
-                d
-            };
-
-            let d = if PERC_NUM_B_RE.captures(d.as_str()).is_some() {
-                let fnames = inputs.get_file_names();
-                if fnames.is_empty() {
-                    return Err(Err::StalePercNumberedRef('b', rule_ref.clone(), d.clone()));
-                }
-                replace_decoded_str(d.as_str(), &fnames, &PERC_NUM_B_RE, rule_ref, 'b')?
-            } else {
-                d
-            };
-
-            let d = if d.contains("%B") {
-                let stems = inp.get_file_stem();
-                if stems.is_empty() {
-                    return Err(Err::StalePerc('B', rule_ref.clone(), d.clone()));
-                }
-                let mut replacement: Vec<String> = Vec::new();
-                for s in stems {
-                    debug!("replacing %B with {s:?} in {d}");
-                    replacement.push(d.replace("%B", s.as_str()));
-                }
-                replacement.join(" ")
-            } else {
-                d
-            };
-
-            let d = if BINPRE.captures(d.as_str()).is_some() {
-                BINPRE
-                    .captures(d.as_str())
-                    .iter()
-                    .filter_map(|captures| {
-                        let bin_name = captures.get(1).unwrap().as_str();
-                        let bin_paths = inputs.get_bin_paths(bin_name, 0, 0);
-                        bin_paths
-                            .map(|bp| (d.replace(captures.get(0).unwrap().as_str(), bp.as_str())))
-                    })
-                    .collect::<Vec<String>>()
-                    .join(" ")
-            } else {
-                d
-            };
-
-            let d = if PER_CAP_B_RE.captures(d.as_str()).is_some() {
-                let stems = inp.get_file_stem();
-                if stems.is_empty() {
-                    return Err(Err::StalePercNumberedRef('B', rule_ref.clone(), d.clone()));
-                }
-                replace_decoded_str(d.as_ref(), &stems, &PER_CAP_B_RE, rule_ref, 'B')?
-            } else {
-                d
-            };
-
-            let d = if d.contains("%e") {
-                let ext = inp.get_extension();
-                //d.replace("%e", ext.as_str())
-                let mut replacement: Vec<String> = Vec::new();
-                for s in ext {
-                    debug!("replacing %e with {s:?} in {d}");
-                    replacement.push(d.replace("%e", s.as_str()));
-                }
-                replacement.join(" ")
-            } else {
-                d
-            };
-            let d = if d.contains("%d") {
-                let parent_name = inp.get_parent_paths();
-                let mut replacement: Vec<String> = Vec::new();
-                for s in parent_name {
-                    debug!("replacing %d with {s:?} in {d}");
-                    replacement.push(d.replace("%d", s.as_str()));
-                }
-                replacement.join(" ")
-            } else {
-                d
-            };
-            let d = if d.contains("%h") {
-                let g = inp
-                    .get_glob()
-                    .and_then(|x| if x.len() > 1 { x.first() } else { None })
-                    .cloned();
-                let g = g.ok_or_else(|| Err::StalePerc('h', rule_ref.clone(), d.clone()))?;
-                debug!("replacing %h with {:?}", g);
-                d.replace("%h", g.as_str())
-            } else {
-                d
-            };
-            let d = if d.contains("%g") {
-                let g = inp.get_glob();
-                let g = g.ok_or_else(|| Err::StalePerc('g', rule_ref.clone(), d.clone()))?;
-                let mut replacement: Vec<String> = Vec::new();
-                for s in g {
-                    debug!("replacing %g with {s:?} in {d}");
-                    replacement.push(d.replace("%g", s.as_str()));
-                }
-                // d.replace("%g", g.as_str())
-                replacement.join(" ")
-            } else {
-                d
-            };
-
-            let d = if d.contains("%i") {
-                // replace with secondary inputs (order only inputs)
-                let sinputsflat = sinp.get_paths();
-                if sinp.is_empty() {
-                    return Err(Err::StalePerc('i', sinp.get_rule_ref().clone(), d));
-                }
-                let mut replacements: Vec<String> = Vec::new();
-                for s in sinputsflat {
-                    debug!("replacing %i with {s:?} in {d}");
-                    replacements.push(d.replace("%i", s.as_str()));
-                }
-                replacements.join(" ")
-            } else {
-                d
-            };
-            let d = if PERC_NUM_I.captures(d.as_str()).is_some() {
-                // replaced with numbered captures of order only inputs
-                if sinp.is_empty() {
-                    return Err(Err::StalePercNumberedRef(
-                        'i',
-                        sinp.get_rule_ref().clone(),
-                        d,
-                    ));
-                }
-                let sinputsflat = sinp.get_paths();
-                replace_decoded_str(
-                    d.as_str(),
-                    &sinputsflat,
-                    &PERC_NUM_I,
-                    &sinp.get_rule_ref(),
-                    'i',
-                )?
-            } else {
-                d
-            };
-
-            let d = if PERC_NUM_G_RE.captures(d.as_str()).is_some() {
-                let captures = inp.get_glob().ok_or(Err::StalePercNumberedRef(
-                    'g',
-                    inp.get_rule_ref().clone(),
-                    d.clone(),
-                ))?;
-                replace_decoded_str(
-                    d.as_str(),
-                    captures,
-                    &PERC_NUM_G_RE,
-                    &inp.get_rule_ref(),
-                    'g',
-                )?
-            } else {
-                d
-            };
-            Ok(d)
-        };
-        let pe = if let PathExpr::Literal(s) = self {
-            PathExpr::from(frep(inputs, secondary_inputs, s)?)
-        } else if let PathExpr::Quoted(s) = self {
-            let s = s.cat();
-            PathExpr::from(frep(inputs, secondary_inputs, &s)?)
-        } else {
-            self.clone()
-        };
-        Ok(pe)
+    ) -> Self::Output {
+        let new_display = self
+            .get_display_str()
+            .decode_input_place_holders(inputs, secondary_inputs);
+        RuleDescription::new(self.get_flags().clone(), new_display)
     }
 }
-
-fn replace_decoded_str(
-    decoded_str: &str,
-    file_names: &[String],
-    perc_b_re: &'static Regex,
-    rule_ref: &TupLoc,
-    c: char,
-) -> Result<String, Err> {
-    let reps: Result<Vec<&String>, Err> = perc_b_re
-        .captures(decoded_str)
-        .iter()
-        .map(|caps: &Captures| {
-            let i = caps[1].parse::<usize>().unwrap();
-            file_names.get(i - 1).ok_or_else(|| {
-                Err::StalePercNumberedRef(c, rule_ref.clone(), decoded_str.to_string())
-            })
-        })
-        .collect();
-    let reps = reps?;
-    let mut i: usize = 0;
-    let s = perc_b_re.replace(decoded_str, |_: &Captures| {
-        let r = reps[i];
-        i += 1;
-        r
-    });
-    Ok(s.to_string())
-}
-
 impl DecodeInputPlaceHolders for Vec<PathExpr> {
     type Output = Self;
     fn decode_input_place_holders(
         &self,
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
-    ) -> Result<Self, Err> {
-        self.iter()
-            .map(|x| x.decode_input_place_holders(inputs, secondary_inputs))
-            .collect()
+    ) -> Self::Output {
+        let mut result = Vec::new();
+        self.iter().fold(&mut result, |acc, x| {
+            acc.extend(x.decode_input_place_holders(inputs, secondary_inputs));
+            acc
+        });
+        result.cleanup();
+        result
     }
 }
 impl DecodeInputPlaceHolders for &[PathExpr] {
@@ -985,82 +923,39 @@ impl DecodeInputPlaceHolders for &[PathExpr] {
         &self,
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
-    ) -> Result<Self::Output, Err> {
-        self.iter()
-            .map(|x| x.decode_input_place_holders(inputs, secondary_inputs))
-            .collect()
+    ) -> Self::Output {
+        let mut result = Vec::new();
+        self.iter().fold(&mut result, |acc, x| {
+            acc.extend(x.decode_input_place_holders(inputs, secondary_inputs));
+            acc
+        });
+        result
     }
 }
 
 impl DecodeOutputPlaceHolders for Vec<PathExpr> {
-    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Result<Self, Err> {
-        self.iter()
-            .map(|x| x.decode_output_place_holders(outputs))
-            .collect()
+    type Output = Self;
+    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Self::Output {
+        let mut result = Vec::new();
+        for x in self.iter() {
+            result.extend(x.decode_output_place_holders(outputs));
+        }
+        result
     }
 }
 
 impl DecodeOutputPlaceHolders for PathExpr {
-    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Result<Self, Err> {
-        let frep = |d: &str| -> Result<String, Err> {
+    type Output = Vec<PathExpr>;
+    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Self::Output {
+        let frep = |d: &str| -> String {
             debug!("replacing %o's from rule string :{}", d);
-            let d = if d.contains("%o") {
-                let space_separated_outputs = outputs.get_paths().join(" ");
-                if outputs.is_empty() {
-                    debug!("no output found for %o replacement");
-                    return Err(Err::StalePerc(
-                        'o',
-                        outputs.get_rule_ref().clone(),
-                        d.to_string(),
-                    ));
-                }
-                d.replace("%o", space_separated_outputs.as_str())
-            } else {
-                d.to_string()
-            };
-            let d = if d.contains("%O") {
-                if outputs.is_empty() {
-                    return Err(Err::StalePerc('O', outputs.get_rule_ref().clone(), d));
-                }
-                let stem = outputs.get_file_stem().ok_or_else(|| {
-                    Err::StalePerc('O', outputs.get_rule_ref().clone(), d.clone())
-                })?;
-                d.replace("%O", stem.as_str())
-            } else {
-                d
-            };
-
-            let d = if PERC_NUM_O_RE.captures(d.as_str()).is_some() {
-                replace_decoded_str(
-                    d.as_str(),
-                    &outputs.get_paths(),
-                    &PERC_NUM_O_RE,
-                    &outputs.get_rule_ref(),
-                    'o',
-                )?
-            } else {
-                d
-            };
-            let d = if PERC_NUM_CAP_O_RE.captures(d.as_str()).is_some() {
-                replace_decoded_str(
-                    d.as_str(),
-                    &outputs.get_paths(),
-                    &PERC_NUM_CAP_O_RE,
-                    &outputs.get_rule_ref(),
-                    'O',
-                )?
-            } else {
-                d
-            };
-            Ok(d)
+            replace_io_patterns(d, |pattern, capture| {
+                replacer_outputs(pattern, outputs, capture)
+            })
         };
-        Ok(if let PathExpr::Literal(s) = self {
-            PathExpr::from(frep(s)?)
-        } else if let PathExpr::Quoted(q) = self {
-            PathExpr::Quoted(q.decode_output_place_holders(outputs)?)
-        } else {
-            self.clone()
-        })
+        let pe = formatted_pe(frep, self);
+        debug!("decoded output paths {:?}", pe);
+        pe
     }
 }
 
@@ -1106,7 +1001,10 @@ fn paths_from_exprs(
                 )
             })
             .ok()
-            .map(|pid| OutputType::new(pid))
+            .map(|pid| {
+                debug!("constructed path {pid:?} from {x:?}");
+                OutputType::new(pid)
+            })
     })
     .collect()
 }
@@ -1119,19 +1017,19 @@ impl DecodeInputPlaceHolders for Target {
         &self,
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
-    ) -> Result<Self, Err> {
+    ) -> Self::Output {
         let newprimary = self
             .primary
-            .decode_input_place_holders(inputs, secondary_inputs)?;
+            .decode_input_place_holders(inputs, secondary_inputs);
         let newsecondary = self
             .secondary
-            .decode_input_place_holders(inputs, secondary_inputs)?;
-        Ok(Target {
+            .decode_input_place_holders(inputs, secondary_inputs);
+        Target {
             primary: newprimary,
             secondary: newsecondary,
             bin: self.bin.clone(),
             group: self.group.clone(),
-        })
+        }
     }
 }
 
@@ -1142,27 +1040,29 @@ impl DecodeInputPlaceHolders for RuleFormula {
         &self,
         inputs: &InputsAsPaths,
         secondary_inputs: &InputsAsPaths,
-    ) -> Result<Self, Err> {
+    ) -> Self::Output {
         debug!(
             "decoding format strings to replace with inputs in Ruleformula:{:?}",
             self
         );
-        Ok(RuleFormula::new_from_parts(
-            self.description
-                .decode_input_place_holders(inputs, secondary_inputs)?,
-            self.formula
-                .decode_input_place_holders(inputs, secondary_inputs)?,
-        ))
+        let new_desc = self
+            .get_description()
+            .map(|x| x.decode_input_place_holders(inputs, secondary_inputs));
+        let new_formula = self
+            .get_formula()
+            .decode_input_place_holders(inputs, secondary_inputs);
+        RuleFormula::new_from_parts(new_desc, new_formula)
     }
 }
 
 impl DecodeOutputPlaceHolders for RuleFormula {
+    type Output = Self;
     /// rebuild rule by replacing output placeholders such as %o
-    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Result<Self, Err> {
-        Ok(RuleFormula {
-            description: self.description.decode_output_place_holders(outputs)?,
-            formula: self.formula.decode_output_place_holders(outputs)?,
-        })
+    fn decode_output_place_holders(&self, outputs: &OutputsAsPaths) -> Self::Output {
+        let new_desc = self
+            .get_description()
+            .map(|x| x.decode_output_place_holders(outputs));
+        RuleFormula::new(new_desc, self.formula.decode_output_place_holders(outputs))
     }
 }
 
@@ -1182,23 +1082,11 @@ fn get_deglobbed_rule(
     let secondary_deglobbed_inps = rule_ctx.get_secondary_inp();
     debug!("deglobbing tup at dir:{:?}, rule:{:?}", tup_cwd, r.cat());
 
-    let input_as_paths = InputsAsPaths::new(
-        tup_cwd,
-        primary_deglobbed_inps,
-        path_buffers,
-        rule_ref.clone(),
-    );
-    let secondary_inputs_as_paths = InputsAsPaths::new(
-        tup_cwd,
-        secondary_deglobbed_inps,
-        path_buffers,
-        rule_ref.clone(),
-    );
-    let decoded_target = t.decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths);
-    if decoded_target.is_err() {
-        debug!("Failed to decode {:?}", t);
-    }
-    let mut decoded_target = decoded_target?;
+    let input_as_paths = InputsAsPaths::new(tup_cwd, primary_deglobbed_inps, path_buffers);
+    let secondary_inputs_as_paths =
+        InputsAsPaths::new(tup_cwd, secondary_deglobbed_inps, path_buffers);
+    let mut decoded_target =
+        t.decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths);
     let excluded_targets = excluded_patterns(tup_cwd, &decoded_target.primary, path_buffers);
     let pp = paths_from_exprs(tup_cwd, &decoded_target.primary, path_buffers);
 
@@ -1206,11 +1094,11 @@ fn get_deglobbed_rule(
     let output_as_paths = OutputsAsPaths::new(pp.iter().map(df).collect(), rule_ref.clone());
     decoded_target.secondary = decoded_target
         .secondary
-        .decode_output_place_holders(&output_as_paths)?;
+        .decode_output_place_holders(&output_as_paths);
     let sec_pp = paths_from_exprs(tup_cwd, &decoded_target.secondary, path_buffers);
     let resolved_rule: RuleFormula = r
-        .decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths)?
-        .decode_output_place_holders(&output_as_paths)?;
+        .decode_input_place_holders(&input_as_paths, &secondary_inputs_as_paths)
+        .decode_output_place_holders(&output_as_paths);
 
     let bin_desc = t.bin.as_ref().map(|x| {
         if let PathExpr::Bin(x) = x {
@@ -1794,6 +1682,7 @@ impl LocatedStatement {
             } else if !inpdec.is_empty() || !secondinpdec.is_empty() {
                 debug!("Resolving rule {:?} at {:?}", rule_ref, tup_cwd);
                 let delink = get_deglobbed_rule(&resolver, inpdec.as_slice(), path_buffers, env)?;
+                debug!("Resolved link: {:?}", delink.get_rule_desc().get_name());
                 delink.gather_outputs(&mut output, path_buffers)?;
                 deglobbed.push(delink);
             }

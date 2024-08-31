@@ -6,28 +6,29 @@ use bstr::io::BufReadExt;
 use combinator::eof;
 use log::log_enabled;
 use nom::bytes::complete::{is_a, is_not};
+use nom::character::complete;
 use nom::character::complete::{anychar, line_ending, multispace0, space0, space1};
 use nom::character::complete::{multispace1, newline, not_line_ending};
 use nom::combinator::{complete, cut, map, map_res, opt, peek, value};
 use nom::error::{context, ErrorKind, VerboseErrorKind};
 use nom::multi::{many0, many1, many_till};
-use nom::number::{complete, Endianness};
+use nom::number::Endianness;
 use nom::sequence::{delimited, preceded, terminated};
-use nom::Err;
+use nom::IResult as nomIResult;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take, take_until, take_while},
-    character::complete::{char, one_of},
+    bytes::complete::{tag, take, take_while},
+    character::complete::one_of,
     combinator,
 };
-use nom::{error, IResult as nomIResult};
+use nom::{character, Err};
 use nom::{AsBytes, Offset, Slice};
 use nom_locate::LocatedSpan;
 
 use crate::buffers::PathDescriptor;
 use crate::statements::*;
 
-type IResult<I, O, E = error::VerboseError<I>> = nomIResult<I, O, E>;
+type IResult<I, O, E = nom::error::VerboseError<I>> = nomIResult<I, O, E>;
 
 /// Span is an alias for LocatedSpan
 pub(crate) type Span<'a> = LocatedSpan<&'a [u8]>;
@@ -60,7 +61,7 @@ fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
 }
 /// check if char is part of an identifier (lhs of var assignment)
 fn is_ident(c: u8) -> bool {
-    nom::character::is_alphanumeric(c)
+    character::is_alphanumeric(c)
         || c == b'_'
         || c == b'-'
         || c == b'.'
@@ -115,9 +116,9 @@ fn close_bracket(s: char) -> char {
 
 fn parse_pathexpr_ref_raw(schar: char, input: Span) -> IResult<Span, String> {
     let (s, _) = alt((tag("$"), tag("@")))(input)?;
-    let (s, _) = char(schar)(s)?;
+    let (s, _) = complete::char(schar)(s)?;
     let (s, r) = context("dollar expression name", cut(take_while(is_ident_perc)))(s)?;
-    let (s, _) = char(close_bracket(schar))(s)?;
+    let (s, _) = complete::char(close_bracket(schar))(s)?;
     let raw = std::str::from_utf8(r.as_bytes()).expect("failed to decode name as utf8");
     log::debug!("parsed $({})", raw);
     Ok((s, raw.to_owned()))
@@ -326,7 +327,7 @@ fn parse_pathexpr_bin(i: Span) -> IResult<Span, PathExpr> {
     context("bin", map(parse_pathexpr_raw_bin, PathExpr::Bin))(i)
 }
 
-// there isnt much escaping in tupfiles,(similar to makefile),
+// there isn't much escaping in tupfiles,(similar to makefile),
 // only $ and newline are escaped
 // if you have problems use variables to escape special characters that
 // clash with break_toks and end_toks.
@@ -443,7 +444,7 @@ fn parse_pathexpr_patsubst(i: Span) -> IResult<Span, PathExpr> {
 }
 
 /// parse $(finstring find, in)
-/// $(findstring find, in) is a function that searches for find in in and returns `find` if it is found, otherwise it returns the empty string.
+/// $(findstring find, in) is a function that searches for find in and returns `find` if it is found, otherwise it returns the empty string.
 fn parse_pathexpr_findstring(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(findstring")(i)?;
     let (s, _) = parse_ws(s)?;
@@ -509,7 +510,7 @@ fn parse_pathexpr_shell(i: Span) -> IResult<Span, PathExpr> {
 }
 
 fn be_32(s: Span) -> IResult<Span, i32> {
-    complete::i32(Endianness::Big)(s)
+    nom::number::complete::i32(Endianness::Big)(s)
 }
 
 /// parse $(word n,text)
@@ -619,6 +620,7 @@ fn parse_pathexpr_grep_files(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = many0(delimited(tag("-"), anychar, sp1))(s)?;
     let (s, pattern) = parse_quote(s)?;
     let (s, _) = opt(parse_ws)(s)?;
+    let (s, _) = tag(",")(s)?;
     let (s, (glob, end)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
     //let (s, bytes) = take_until(")")(s)?;
@@ -666,10 +668,10 @@ fn parse_pathexpr_if(i: Span) -> IResult<Span, PathExpr> {
     ))
 }
 
-/// parse $(format quoted_str, ...)
-/// $(format quoted_str...) is a function that returns the string str with the format specifiers replaced by the corresponding arguments for each word in the list.
+/// parse $(formatpath quoted_str, ...)
+/// $(formatpath quoted_str...) is a function that returns the string str with the format specifiers replaced by the corresponding arguments for each word in the list.
 fn parse_pathexpr_format(i: Span) -> IResult<Span, PathExpr> {
-    let (s, _) = tag("$(format ")(i)?;
+    let (s, _) = tag("$(formatpath ")(i)?;
     let (s, _) = opt(parse_ws)(s)?;
     let (s, format_spec) = parse_quote(s)?;
     let (s, _) = opt(parse_ws)(s)?;
@@ -735,7 +737,7 @@ fn parse_delim(i: Span) -> IResult<Span, Span> {
 }
 
 /// eats up \\n
-/// consume dollar's etc that where left out during previous parsing
+/// consume dollar's etc. that where left out during previous parsing
 /// consume a literal that is not a pathexpr token
 fn parse_misc_bits<'a, 'b>(input: Span<'a>, end_toks: &'b str) -> IResult<Span<'a>, Span<'a>> {
     let islit = |ref i| !end_toks.as_bytes().contains(i);
@@ -1162,13 +1164,20 @@ fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
 
 // parse an assignment expression
 // parse description insude a rule (between ^^)
-fn parse_rule_flags_or_description(i: Span) -> IResult<Span, String> {
+fn parse_rule_flags_or_description(i: Span) -> IResult<Span, RuleDescription> {
     let s = i;
     let (s, _) = tag("^")(s)?;
-    let (s, r) = cut(map_res(take_until("^"), from_utf8))(s)?;
-    let (s, _) = tag("^")(s)?;
+    let (s, c) = alt((
+        value(vec![' '], complete::char(' ')),
+        many1(one_of("bcjot")),
+    ))(s)?;
+
+    let rule_flags: String = c.iter().skip_while(|c| c.is_whitespace()).collect();
+    let (s, (r, _)) = cut(context("parsing rule description", |s| {
+        parse_pelist_till_delim_with_ws(s, "^", &BRKTOKSIO)
+    }))(s)?;
     let (s, _) = multispace0(s)?;
-    Ok((s, r))
+    Ok((s, RuleDescription::new(rule_flags, r)))
 }
 
 // parse the insides of a rule, which includes a description and rule formula
@@ -1182,7 +1191,7 @@ pub(crate) fn parse_rule_gut(i: Span) -> IResult<Span, RuleFormula> {
     Ok((
         s,
         RuleFormula {
-            description: desc.into_iter().map(PathExpr::from).collect(),
+            description: desc,
             formula: me.into_iter().chain(formula.0.into_iter()).collect(),
         },
     ))
@@ -1448,7 +1457,7 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
 }
 
 fn log_line(s: Span) -> IResult<Span, ()> {
-    if log::log_enabled!(log::Level::Debug) {
+    if log_enabled!(log::Level::Debug) {
         let (s, c) = opt(peek(many_till(not_line_ending, alt((line_ending, eof)))))(s)?;
         if let Some(c) = c {
             let l =
@@ -1656,7 +1665,7 @@ pub(crate) fn parse_eq(i: Span) -> IResult<Span, EqCond> {
 
 fn parse_eq_inner(s: Span) -> IResult<Span, (Vec<PathExpr>, Vec<PathExpr>)> {
     let (s, _) = opt(sp1)(s)?;
-    let (s, _) = char('(')(s)?;
+    let (s, _) = complete::char('(')(s)?;
     let (s, (e1, _)) = parse_pelist_till_delim_no_ws(s, ",", &BRKTOKS)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, (e2, _)) = parse_pelist_till_delim_no_ws(s, ")", &BRKTOKS)?;
@@ -1816,6 +1825,6 @@ pub mod testing {
     pub fn parse_tupfile<P: AsRef<std::path::Path>>(
         filename: P,
     ) -> Result<Vec<crate::statements::LocatedStatement>, crate::errors::Error> {
-        return crate::parser::parse_tupfile(filename);
+        crate::parser::parse_tupfile(filename)
     }
 }

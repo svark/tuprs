@@ -33,9 +33,9 @@ impl Target {
 
 impl RuleFormula {
     fn write_fmt<W: Write>(&self, f: &mut BufWriter<W>) {
-        if self.description.len() > 0 {
-            write!(f, "^").unwrap();
-            write_pathexprs(f, &self.description);
+        if self.description.is_some() {
+            write!(f, "^{} ", self.get_flags()).unwrap();
+            write_pathexprs(f, self.get_formula());
             write!(f, "^").unwrap();
         }
         write_pathexprs(f, &self.formula);
@@ -150,7 +150,7 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
                 write!(writer, ")").unwrap();
             }
             DollarExprs::Format(spec, args) => {
-                write!(writer, "$(format ").unwrap();
+                write!(writer, "$(formatpath ").unwrap();
                 write_pathexpr(writer, spec);
                 write!(writer, ",").unwrap();
                 write_pathexprs(writer, args);
@@ -518,11 +518,10 @@ impl CatRef for &[PathExpr] {
 
 impl Cat for &RuleFormula {
     fn cat(self) -> String {
-        if self.description.is_empty() {
-            self.formula.cat()
-        } else {
-            format!("^{}^ {}", self.description.cat(), self.formula.cat())
-        }
+        let buf: Vec<u8> = Vec::new();
+        let mut writer = BufWriter::new(buf);
+        self.write_fmt(&mut writer);
+        std::str::from_utf8(writer.buffer()).unwrap().to_string()
     }
 }
 

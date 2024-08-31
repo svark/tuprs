@@ -337,26 +337,20 @@ impl OutputsAsPaths {
             .collect()
     }
     ///  returns the stem portion of each output file. See [Path::file_stem]
-    pub fn get_file_stem(&self) -> Option<String> {
-        self.outputs.first().and_then(|x| {
-            x.get_path_ref()
-                .as_path()
-                .file_stem()
-                .map(|x| x.to_string_lossy().to_string())
-        })
-    }
-    /// Checks if there are no outputs
-    pub fn is_empty(&self) -> bool {
-        self.outputs.is_empty()
-    }
-
-    /// returns the location of the rule that generated these outputs
-    pub(crate) fn get_rule_ref(&self) -> &TupLoc {
-        &self.rule_ref
+    pub fn get_file_stem(&self) -> Vec<String> {
+        self.outputs
+            .iter()
+            .flat_map(|x| {
+                x.get_path_ref()
+                    .as_path()
+                    .file_stem()
+                    .map(|x| x.to_string_lossy().to_string())
+            })
+            .collect()
     }
 }
 
-/// `InputsAsPaths' represents resolved inputs to pass to a rule.
+/// `InputsAsPaths' represents resolved inputs to pass to a rule, classified according to bin or group or rawth
 /// Bins are converted to raw paths, groups paths are expanded into a space separated path list
 #[derive(Debug, Clone, Default)]
 pub struct InputsAsPaths {
@@ -364,10 +358,15 @@ pub struct InputsAsPaths {
     groups_by_name: BTreeMap<String, Vec<PathDescriptor>>, // space separated paths against group name
     bins_by_name: BTreeMap<String, Vec<PathDescriptor>>,
     raw_inputs_glob_match: Option<InputResolvedType>,
-    rule_ref: TupLoc,
     tup_dir: PathDescriptor,
 }
 
+/// A trait to provide methods for formatting replacements in rule formulas and outputs
+pub(crate) trait FormatReplacements {
+    fn get_paths_str_from_tok(&self, tok: &char) -> Vec<String>;
+    //fn get_group_paths(&self, group_name: &str) -> Vec<String>;
+    fn get_bin_paths(&self, bin_name: &str) -> Vec<String>;
+}
 impl GroupInputs for InputsAsPaths {
     /// Returns all paths  (space separated) associated with a given group name
     /// This is used for group name substitutions in rule formulas that appear as %<group_name>
@@ -384,23 +383,12 @@ impl GroupInputs for InputsAsPaths {
             paths(&*format!("<{}>", group_name))
         }
     }
-
-    fn get_bin_paths(&self, bin_name: &str, _rule_id: i64, _rule_dir: i64) -> Option<String> {
-        let paths = |bin_name| {
-            self.bins_by_name.get(bin_name).cloned().map(|x| {
-                let paths: Vec<_> = x.iter().map(|p| p.to_string()).collect();
-                paths.join(" ")
-            })
-        };
-        if bin_name.starts_with('{') {
-            paths(bin_name)
-        } else {
-            Some("".to_string())
-        }
-    }
 }
 
 impl InputsAsPaths {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.raw_inputs.is_empty() && self.groups_by_name.is_empty() && self.bins_by_name.is_empty()
+    }
     /// Returns all paths as strings in a vector
     pub(crate) fn get_file_names(&self) -> Vec<String> {
         self.raw_inputs
@@ -425,7 +413,7 @@ impl InputsAsPaths {
         self.raw_inputs
             .iter()
             .chain(self.groups_by_name.values().flatten())
-            .chain(self.bins_by_name.values().flatten())
+            //.chain(self.bins_by_name.values().flatten())
             .map(|x| {
                 RelativeDirEntry::new(self.tup_dir.clone(), x.clone())
                     .get_path()
@@ -437,7 +425,7 @@ impl InputsAsPaths {
         self.raw_inputs
             .iter()
             .chain(self.groups_by_name.values().flatten())
-            .chain(self.bins_by_name.values().flatten())
+            //.chain(self.bins_by_name.values().flatten())
             .map(|x| x.get_parent_descriptor())
             .map(|x| {
                 RelativeDirEntry::new(self.tup_dir.clone(), x.clone())
@@ -445,10 +433,6 @@ impl InputsAsPaths {
                     .to_string()
             })
             .collect()
-    }
-
-    pub(crate) fn get_rule_ref(&self) -> &TupLoc {
-        &self.rule_ref
     }
 
     pub(crate) fn get_extension(&self) -> Vec<String> {
@@ -476,21 +460,64 @@ impl InputsAsPaths {
             .collect()
     }
 
-    pub(crate) fn get_glob(&self) -> Option<&Vec<String>> {
+    pub(crate) fn get_glob(&self) -> Vec<String> {
         self.raw_inputs_glob_match
             .as_ref()
             .and_then(InputResolvedType::as_glob_match)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+impl FormatReplacements for InputsAsPaths {
+    fn get_paths_str_from_tok(&self, tok: &char) -> Vec<String> {
+        match tok {
+            'f' | 'i' => self.get_paths(),
+            'd' => self.get_parent_paths(),
+            'e' => self.get_extension(),
+            'B' => self.get_file_stem(),
+            'b' => self.get_file_names(),
+            'g' | 'h' => self.get_glob(),
+            _ => Vec::new(),
+        }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.raw_inputs.is_empty()
+    fn get_bin_paths(&self, bin_name: &str) -> Vec<String> {
+        let paths = |bin_name| -> Vec<_> {
+            let vals = self
+                .bins_by_name
+                .get(bin_name)
+                .cloned()
+                .map(|x| x.iter().map(|p| p.to_string()).collect())
+                .unwrap_or_default();
+            debug!("bin paths for {:?} are {:?}", bin_name, vals);
+            vals
+        };
+        if bin_name.starts_with('{') {
+            paths(bin_name)
+        } else {
+            vec!["".to_string()]
+        }
+    }
+}
+
+impl FormatReplacements for OutputsAsPaths {
+    fn get_paths_str_from_tok(&self, tok: &char) -> Vec<String> {
+        match tok {
+            'o' => self.get_paths(),
+            'O' => self.get_file_stem(),
+            _ => Vec::new(),
+        }
+    }
+    fn get_bin_paths(&self, _: &str) -> Vec<String> {
+        unreachable!("bin paths not available for outputs")
     }
 }
 
 impl InputsAsPaths {
     pub(crate) fn new_from_raw(
         tup_cwd: &PathDescriptor,
-        inp: &Vec<PathExpr>,
+        inp: &[PathExpr],
         path_buffers: &impl PathBuffers,
     ) -> InputsAsPaths {
         let inp_resolved: Vec<_> = inp
@@ -502,13 +529,12 @@ impl InputsAsPaths {
             })
             .map(|inp_desc| InputResolvedType::Deglob(MatchingPath::new(inp_desc, tup_cwd.clone())))
             .collect();
-        InputsAsPaths::new(tup_cwd, &inp_resolved, path_buffers, TupLoc::default())
+        InputsAsPaths::new(tup_cwd, &inp_resolved, path_buffers)
     }
     pub(crate) fn new(
         tup_cwd: &PathDescriptor,
         inp: &[InputResolvedType],
         path_buffers: &impl PathBuffers,
-        rule_ref: TupLoc,
     ) -> InputsAsPaths {
         let isnot_grp = |x: &InputResolvedType| {
             !matches!(x, &InputResolvedType::GroupEntry(_, _))
@@ -569,7 +595,6 @@ impl InputsAsPaths {
             groups_by_name: namedgroupitems,
             bins_by_name: named_bin_items,
             raw_inputs_glob_match,
-            rule_ref,
             tup_dir: tup_cwd.clone(),
         }
     }
@@ -610,7 +635,7 @@ impl InputResolvedType {
             false
         }
     }
-    /// Get matched glob in the input to a rule
+    /// Get list of captured globs for DeGlob
     fn as_glob_match(&self) -> Option<&Vec<String>> {
         match self {
             InputResolvedType::Deglob(e) => Some(e.get_captured_globs()),

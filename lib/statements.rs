@@ -302,15 +302,62 @@ pub(crate) struct Target {
     ///  bin that accumulates outputs of a rule locally in a tupfile, this is Some(Bucket(_)) if not null
     pub bin: Option<PathExpr>,
 }
+
+#[derive(Debug, Clone, PartialEq, Default, Hash, Eq, Ord, PartialOrd)]
+pub(crate) struct RuleDescription {
+    pub(crate) flags: String,
+    pub(crate) display_str: Vec<PathExpr>,
+}
+
+impl RuleDescription {
+    pub(crate) fn get_flags(&self) -> &String {
+        &self.flags
+    }
+    pub(crate) fn get_display_str(&self) -> &Vec<PathExpr> {
+        &self.display_str
+    }
+}
+
+impl RuleDescription {
+    pub(crate) fn new(flags: String, display_str: Vec<PathExpr>) -> Self {
+        RuleDescription { flags, display_str }
+    }
+}
 /// formula for a tup rule
 #[derive(PartialEq, Debug, Clone, Default, Hash, Eq, Ord, PartialOrd)]
 pub(crate) struct RuleFormula {
     /// Description of a rule
-    pub description: Vec<PathExpr>,
+    pub description: Option<RuleDescription>,
     /// Rule Formula  holds the command to be executed. It appears here in raw or subst-ed form but without % symbols decoded
     pub formula: Vec<PathExpr>,
 }
 
+impl RuleFormula {
+    pub(crate) fn new(description: Option<RuleDescription>, formula: Vec<PathExpr>) -> Self {
+        RuleFormula {
+            description,
+            formula,
+        }
+    }
+    pub(crate) fn get_description(&self) -> Option<&RuleDescription> {
+        self.description.as_ref()
+    }
+    pub(crate) fn get_formula(&self) -> &Vec<PathExpr> {
+        &self.formula
+    }
+    pub(crate) fn get_flags(&self) -> &str {
+        self.description
+            .as_ref()
+            .map(|d| d.get_flags().as_str())
+            .unwrap_or_default()
+    }
+    pub(crate) fn get_description_str(&self) -> String {
+        self.description
+            .as_ref()
+            .map(|d| d.display_str.cat())
+            .unwrap_or_default()
+    }
+}
 /// combined representation of a tup rule consisting of source/target and rule formula
 #[derive(PartialEq, Debug, Clone, Default)]
 pub(crate) struct Link {
@@ -728,39 +775,20 @@ impl From<DollarExprs> for PathExpr {
 }
 
 impl RuleFormula {
-    #[allow(dead_code)]
-    pub(crate) fn new(description: String, formula: String) -> RuleFormula {
-        RuleFormula {
-            description: vec![PathExpr::from(description)],
-            formula: vec![PathExpr::from(formula)],
-        }
-    }
     pub(crate) fn new_from_parts(
-        description: Vec<PathExpr>,
-        formula: Vec<PathExpr>,
+        description: Option<RuleDescription>,
+        mut formula: Vec<PathExpr>,
     ) -> RuleFormula {
-        RuleFormula {
-            description,
-            formula,
-        }
-    }
-    /// Create a RuleFormula from combined string representing both description and command
-    /// in the form ^ desc^ command
-    #[allow(dead_code)]
-    pub(crate) fn new_from_raw(combined_formula: &str) -> RuleFormula {
-        let mut sz = 0;
-        let desc = if let Some(display_str) = combined_formula.strip_prefix('^') {
-            if let Some(an) = display_str.find('^') {
-                sz = an;
-                combined_formula[1..an].to_owned()
-            } else {
-                String::new()
+        //description.cleanup();
+        formula.cleanup();
+        for pe in formula.iter() {
+            if let PathExpr::Literal(s) = pe {
+                if s.contains(" ") {
+                    log::debug!("found space in formula");
+                }
             }
-        } else {
-            String::new()
-        };
-        let formula = combined_formula[sz..].to_owned();
-        RuleFormula::new(desc, formula)
+        }
+        RuleFormula::new(description, formula)
     }
 }
 impl Cat for &Statement {
@@ -774,9 +802,7 @@ impl Cat for &Statement {
                     pos: _,
                 },
                 ..,
-            ) => {
-                format!("{} {}", r.description.cat(), r.formula.cat())
-            }
+            ) => r.cat(),
             Statement::EvalBlock(body) => body.cat(),
             _ => "".to_owned(),
         }

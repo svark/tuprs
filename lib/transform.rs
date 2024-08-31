@@ -773,7 +773,7 @@ impl PathExpr {
             PathExpr::DollarExprs(ref x) => x.subst(m, path_searcher),
             PathExpr::AtExpr(ref x) => {
                 if let Some(val) = m.conf_map.get(x.as_str()) {
-                    intersperse_sp1(val)
+                    intersperse_sp1(val.iter().cloned())
                 } else {
                     log::warn!("atexpr {} not found", x);
                     vec![PathExpr::default()]
@@ -1031,7 +1031,7 @@ impl DollarExprs {
                     debug!("subst from:{:?} to:{:?} in:{:?}", from, to, vs);
                     let replacer = |x: &[PathExpr]| {
                         // following will potentially also replace white spaces.
-                        intersperse_sp1(words_from_pelist(x).as_slice())
+                        intersperse_sp1(words_from_pelist(x).into_iter())
                             .cat()
                             .replace(from.as_str(), to.as_str())
                     };
@@ -1041,9 +1041,7 @@ impl DollarExprs {
                         result.push(PathExpr::from(x.to_owned()));
                         result.push(PathExpr::Sp1);
                     }
-                    if !result.is_empty() {
-                        result.pop();
-                    }
+                    result.pop();
                     result
                 } else {
                     vs
@@ -1051,20 +1049,29 @@ impl DollarExprs {
             }
 
             DollarExprs::Format(ref spec, ref body) => {
-                let body = body.subst_pe(m, path_searcher);
-                let spec = spec.subst(m, path_searcher);
-                let inputs = InputsAsPaths::new_from_raw(
-                    &m.get_tup_dir_desc(),
-                    &body,
-                    m.get_path_buffers().as_ref(),
-                );
+                let mut body = body.subst_pe(m, path_searcher);
+                body.cleanup();
+                let body = trim_list(&body);
+                log::debug!("formatting body:{:?}", body);
+                let mut spec = spec.subst(m, path_searcher);
+                spec.cleanup();
+                log::debug!("formatting spec:{:?}", spec);
                 let mut result = Vec::new();
-                {
-                    let v = spec
-                        .decode_input_place_holders(&inputs, &Default::default())
-                        .unwrap_or_default();
-                    result.extend(v);
+                for body_frag in body.split(PathExpr::is_ws) {
+                    let inputs = InputsAsPaths::new_from_raw(
+                        &m.get_tup_dir_desc(),
+                        body_frag,
+                        m.get_path_buffers().as_ref(),
+                    );
+                    if !inputs.is_empty() {
+                        let v = spec.decode_input_place_holders(&inputs, &Default::default());
+                        if !v.is_empty() {
+                            result.extend(v);
+                            result.push(PathExpr::Sp1);
+                        }
+                    }
                 }
+                result.pop();
                 result
             }
             DollarExprs::Filter(ref filter, ref body) => {
@@ -1464,7 +1471,7 @@ impl DollarExprs {
                     }
                 }
                 debug!("input with pattern replaced:{:?}", ts);
-                intersperse_sp1(ts.as_slice())
+                intersperse_sp1(ts.into_iter())
             }
             DollarExprs::Call(ref name, args) => {
                 let args: Vec<_> = args.iter().map(|x| x.subst_pe(m, path_searcher)).collect();
@@ -1697,15 +1704,43 @@ impl DollarExprs {
     }
 }
 
+fn trim_list(p0: &Vec<PathExpr>) -> &[PathExpr] {
+    match p0.as_slice() {
+        &[PathExpr::Sp1, ref elt @ ..] => elt,
+        &[PathExpr::NL, ref elt @ ..] => elt,
+        &[ref elt @ .., PathExpr::Sp1] => elt,
+        &[ref elt @ .., PathExpr::NL] => elt,
+        _ => p0.as_slice(),
+    }
+}
+
 /// creates [PathExpr] array separated by PathExpr::Sp1
-fn intersperse_sp1(val: &[String]) -> Vec<PathExpr> {
-    let mut vs = Vec::new();
-    for pe in val.iter().map(|x| PathExpr::from(x.clone())) {
-        vs.push(pe);
+pub(crate) fn intersperse_sp1<I>(val: I) -> Vec<PathExpr>
+where
+    I: Iterator<Item = String>,
+{
+    let mut vs: Vec<PathExpr> = Vec::new();
+    let mut lines = Vec::new();
+    for pe in val {
+        for line in pe.split(|c| c == '\n' || c == '\r') {
+            lines.push(PathExpr::from(line.to_owned()));
+            lines.push(PathExpr::NL);
+        }
+        lines.pop();
+        vs.extend(lines.drain(..));
         vs.push(PathExpr::Sp1);
     }
     vs.pop();
     vs
+}
+
+pub(crate) fn to_pelist(s: String) -> Vec<PathExpr> {
+    let pe_list = intersperse_sp1(
+        s.split(|c: char| c == ' ' || c == '\t')
+            .map(ToOwned::to_owned),
+    );
+    debug!("to_pelist: {:?}", pe_list);
+    pe_list
 }
 
 trait SubstPEs {
@@ -1845,7 +1880,7 @@ impl ExpandMacro for Link {
     fn expand(&self, m: &mut ParseState) -> Result<Self, Err> {
         let mut source = self.source.clone();
         let mut target = self.target.clone();
-        let mut desc = self.rule_formula.description.clone();
+        let mut desc = self.rule_formula.get_description().cloned();
         let pos = self.pos;
         let mut formulae = Vec::new();
         for pathexpr in self.rule_formula.formula.iter() {
@@ -1858,7 +1893,7 @@ impl ExpandMacro for Link {
                     if let Some(explink) = m.rule_map.get(name.as_str()) {
                         source += explink.source.clone();
                         target += explink.target.clone();
-                        if desc.is_empty() {
+                        if explink.rule_formula.get_description().is_some() {
                             desc = explink.rule_formula.description.clone();
                         }
                         let mut r = explink.rule_formula.formula.clone();
@@ -2712,8 +2747,8 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         cur_folder: P,
         path_searcher: Q,
     ) -> Result<TupParser<Q>, Error> {
-        let (_, parent) = locate_file(cur_folder.as_ref(), ".tup/db", "")
-            .or(locate_file(cur_folder.as_ref(), "Tupfile.ini", ""))
+        let (_, parent) = locate_file(cur_folder.as_ref(), "Tupfile.ini", "")
+            //.or(locate_file(cur_folder.as_ref(), "Tupfile.ini", ""))
             .ok_or(RootNotFound)?;
 
         let root = parent.as_path();

@@ -19,7 +19,7 @@ use crate::errors::Error as Err;
 use crate::paths::GlobPath;
 use crate::statements::Statement::Rule;
 use crate::statements::*;
-use crate::transform::{ParseState, ResolvedRules};
+use crate::transform::{to_pelist, ParseState, ResolvedRules};
 
 lazy_static! {
     static ref LINENO: &'static str = "lineno";
@@ -305,10 +305,14 @@ impl ScriptRuleCommand {
         self
     }
     pub(crate) fn build(self) -> RuleFormula {
-        RuleFormula {
-            description: vec![self.display_fn.into()],
-            formula: vec![self.command.into()],
-        }
+        let display_fn = self.display_fn;
+        let rule_display = if display_fn.is_empty() {
+            None
+        } else {
+            Some(RuleDescription::new("".to_string(), to_pelist(display_fn)))
+        };
+        let command = self.command;
+        RuleFormula::new(rule_display, to_pelist(command))
     }
 }
 
