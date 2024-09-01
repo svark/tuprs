@@ -9,6 +9,6 @@ expression: strings
   "CXX_FLAGS = -std=c++11 -Wall -Wextra -Wpedantic -Werror -W3 -Wno-unused-parameter",
   "$(call enable_warnings)",
   "$(info CXX_FLAGS is *$(CXX_FLAGS))",
-  "FILES := ./file.lib file2.lib a/b/cfile.exe readme",
-  "GRPS := $(formatpath \"/<%B>\", $(FILES))"
+  "FILES := ./file.lib file2.lib a/b/cfile.exe -L readme -lsdf",
+  "GRPS := $(formatpath \"/<%B_lib>\", $(strip-prefix -l -L,$(FILES)))"
 ]

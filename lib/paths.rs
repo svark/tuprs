@@ -15,7 +15,7 @@ use crate::buffers::{
 use crate::decode::{GroupInputs, TupLoc};
 use crate::errors::Error;
 use crate::glob::Candidate;
-use crate::statements::{CatRef, PathExpr};
+use crate::statements::PathExpr;
 use crate::transform::get_parent;
 use crate::{BinDescriptor, GroupPathDescriptor};
 //use tap::Pipe;
@@ -517,18 +517,21 @@ impl FormatReplacements for OutputsAsPaths {
 impl InputsAsPaths {
     pub(crate) fn new_from_raw(
         tup_cwd: &PathDescriptor,
-        inp: &[PathExpr],
+        inp: Cow<str>,
         path_buffers: &impl PathBuffers,
     ) -> InputsAsPaths {
-        let inp_resolved: Vec<_> = inp
-            .split(PathExpr::is_ws)
-            .filter_map(|p| {
-                let np = NormalPath::new_from_cow_str(p.cat_ref());
-                let path = path_buffers.add_path_from(tup_cwd, np.as_path());
-                path.ok()
-            })
-            .map(|inp_desc| InputResolvedType::Deglob(MatchingPath::new(inp_desc, tup_cwd.clone())))
-            .collect();
+        let inp_resolved: Vec<_> = {
+            let inp_desc = {
+                let np = NormalPath::new_from_cow_str(inp);
+                path_buffers.add_path_from(tup_cwd, np.as_path()).ok()
+            };
+            inp_desc
+                .map(|inp_desc| {
+                    InputResolvedType::Deglob(MatchingPath::new(inp_desc, tup_cwd.clone()))
+                })
+                .into_iter()
+                .collect()
+        };
         InputsAsPaths::new(tup_cwd, &inp_resolved, path_buffers)
     }
     pub(crate) fn new(

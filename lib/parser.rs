@@ -26,6 +26,7 @@ use nom::{AsBytes, Offset, Slice};
 use nom_locate::LocatedSpan;
 
 use crate::buffers::PathDescriptor;
+use crate::statements::Level;
 use crate::statements::*;
 
 type IResult<I, O, E = nom::error::VerboseError<I>> = nomIResult<I, O, E>;
@@ -242,6 +243,7 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
                 complete(parse_pathexpr_call),
                 complete(parse_pathexpr_dir),
                 complete(parse_pathexpr_eval),
+                complete(parse_pathexpr_message), // for $(error..
                 complete(parse_pathexpr_fallback),
             )),
         )(i),
@@ -267,6 +269,7 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
                 complete(parse_pathexpr_notdir),
                 complete(parse_pathexpr_patsubst),
                 complete(parse_pathexpr_realpath),
+                complete(parse_pathexpr_message), // for $(info..
                 complete(parse_pathexpr_fallback),
             )),
         )(i),
@@ -278,8 +281,10 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
                 complete(parse_pathexpr_strip),
                 complete(parse_pathexpr_subst),
                 complete(parse_pathexpr_shell),
+                complete(parse_pathexpr_stripprefix),
                 complete(parse_pathexpr_word),
                 complete(parse_pathexpr_wildcard),
+                complete(parse_pathexpr_message), // for $(warning.. or $(warn..
                 complete(parse_pathexpr_fallback),
             )),
         )(i),
@@ -467,6 +472,10 @@ fn parse_pathexpr_foreach(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag(",")(s)?;
     let (s, (list, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKSIO)?;
     let (s, _) = opt(parse_ws)(s)?;
+    log::debug!(
+        "next few chars: {:?}",
+        std::str::from_utf8(&s.as_bytes()[..10]).unwrap()
+    );
     let (s, (text, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
     let (s, _) = opt(parse_ws)(s)?;
     log::debug!("parsed foreach: {:?} {:?}", list, text);
@@ -572,11 +581,30 @@ fn parse_pathexpr_firstword(i: Span) -> IResult<Span, PathExpr> {
 fn parse_pathexpr_eval(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(eval")(i)?;
     let (s, _) = parse_ws(s)?;
-    let (s, (exps, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, (exps, _)) = cut(context("parsing body of eval block", |s| {
+        parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)
+    }))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
     let (s, _) = opt(tag(";"))(s)?;
     log::debug!("parsed eval: {:?}", exps);
     Ok((s, PathExpr::DollarExprs(DollarExprs::Eval(exps))))
+}
+/// parse message expression $(error/info/warn/warning body)
+fn parse_pathexpr_message(i: Span) -> IResult<Span, PathExpr> {
+    let (s, level) = alt((
+        complete(value(Level::Warning, tag("$(warning"))),
+        complete(value(Level::Warning, tag("$(warn"))),
+        complete(value(Level::Info, tag("$(info"))),
+        complete(value(Level::Error, tag("$(error"))),
+    ))(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (exps, _)) = cut(context("parsing body of message", |s| {
+        parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)
+    }))(s)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, _) = opt(tag(";"))(s)?;
+    log::debug!("parsed message: {:?} at level {:?}", exps, level);
+    Ok((s, PathExpr::DollarExprs(DollarExprs::Message(exps, level))))
 }
 
 /// parse $(dir names...)
@@ -668,6 +696,20 @@ fn parse_pathexpr_if(i: Span) -> IResult<Span, PathExpr> {
     ))
 }
 
+/// parse $(stripprefix prefix, body)
+/// $(stripprefix prefix, body) is a function that removes the prefix from the beginning of body.
+/// If body does not start with prefix, the result is body.
+fn parse_pathexpr_stripprefix(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(stripprefix")(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (prefix, _)) = parse_pelist_till_delim_with_ws(s, ",", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    let (s, (body, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
+    let (s, _) = opt(parse_ws)(s)?;
+    log::debug!("parsed stripprefix: {:?} {:?}", prefix, body);
+    Ok((s, PathExpr::from(DollarExprs::StripPrefix(prefix, body))))
+}
+
 /// parse $(formatpath quoted_str, ...)
 /// $(formatpath quoted_str...) is a function that returns the string str with the format specifiers replaced by the corresponding arguments for each word in the list.
 fn parse_pathexpr_format(i: Span) -> IResult<Span, PathExpr> {
@@ -677,7 +719,6 @@ fn parse_pathexpr_format(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = opt(parse_ws)(s)?;
     let (s, _) = tag(",")(s)?;
     let (s, (pattern, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKS)?;
-    let (s, _) = opt(parse_ws)(s)?;
     Ok((
         s,
         PathExpr::from(DollarExprs::Format(Box::new(format_spec), pattern)),

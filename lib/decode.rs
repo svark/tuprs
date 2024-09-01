@@ -597,7 +597,6 @@ impl DecodeInputPaths for Vec<PathExpr> {
         search_dirs: &Vec<PathDescriptor>,
     ) -> Result<Vec<InputResolvedType>, Err> {
         // gather locations where exclude patterns show up
-        debug!("decoding inputs");
         let excludeindices: Vec<_> = self
             .iter()
             .enumerate()

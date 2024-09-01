@@ -238,6 +238,28 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
                 write_pathexprs(writer, paths);
                 write!(writer, ")").unwrap();
             }
+            DollarExprs::Message(msg, level) => {
+                match level {
+                    Level::Info => {
+                        write!(writer, "$(info ").unwrap();
+                    }
+                    Level::Warning => {
+                        write!(writer, "$(warning ").unwrap();
+                    }
+                    Level::Error => {
+                        write!(writer, "$(error ").unwrap();
+                    }
+                }
+                write_pathexprs(writer, msg);
+                write!(writer, ")").unwrap();
+            }
+            DollarExprs::StripPrefix(prefix, body) => {
+                write!(writer, "$(strip-prefix ").unwrap();
+                write_pathexprs(writer, prefix);
+                write!(writer, ",").unwrap();
+                write_pathexprs(writer, body);
+                write!(writer, ")").unwrap();
+            }
         },
         PathExpr::ExcludePattern(pattern) => {
             write!(writer, "^{}", pattern).unwrap();
@@ -362,6 +384,7 @@ pub(crate) fn write_statement<T: Write>(
             } else {
                 write!(writer, "$(error ").unwrap();
             }
+            log::debug!("message:{e:?}");
             write_pathexprs(writer, e);
             write!(writer, ")\n").unwrap();
         }

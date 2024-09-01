@@ -87,7 +87,7 @@ impl Default for PathExpr {
     }
 }
 /// level of the message to display when parsing tupfiles
-#[derive(PartialEq, Debug, Clone, Copy, Eq, Hash)]
+#[derive(PartialEq, Debug, Clone, Copy, Eq, Hash, PartialOrd, Ord)]
 pub enum Level {
     /// Info message
     Info,
@@ -207,6 +207,8 @@ pub(crate) enum DollarExprs {
     WildCard(Vec<PathExpr>),
     /// $(strip EXPR)
     Strip(Vec<PathExpr>),
+    /// $(stripprefix EXPR)
+    StripPrefix(Vec<PathExpr>, Vec<PathExpr>),
     /// $(notdir EXPR)
     NotDir(Vec<PathExpr>),
     /// $(dir EXPR)
@@ -231,6 +233,8 @@ pub(crate) enum DollarExprs {
     Shell(Vec<PathExpr>),
     // $(grep-files content-pattern, glob-pattern, paths, ...)
     GrepFiles(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
+    // $(info ..) or  $(warning ..) or $(error ..)
+    Message(Vec<PathExpr>, Level),
 }
 
 /// represents the equality condition in if(n)eq (LHS,RHS)

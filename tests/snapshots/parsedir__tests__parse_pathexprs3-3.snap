@@ -2,4 +2,4 @@
 source: tuprs/tests/parsedir.rs
 expression: "v2.get(\"GRPS\").unwrap().join(\" \")"
 ---
-"/<file> /<file2> /<cfile> /<readme>"
+"/<file_lib> /<file2_lib> /<cfile_lib> /<readme_lib> /<sdf_lib>"

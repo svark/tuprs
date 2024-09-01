@@ -274,6 +274,12 @@ impl ParseState {
             .find_key(key)
             .map(|env| env.get().get_val_str().to_string())
     }
+    // add to load dir
+    pub(crate) fn add_load_dir(&mut self, p0: PathDescriptor) {
+        if !self.load_dirs.contains(&p0) {
+            self.load_dirs.push(p0);
+        }
+    }
 
     pub(crate) fn get_tupfiles_read(&self) -> &Vec<PathDescriptor> {
         &self.tup_files_read
@@ -408,7 +414,7 @@ impl ParseState {
         tup_desc: &TupPathDescriptor,
         mut vs: Vec<LocatedStatement>,
     ) {
-        let vs: Vec<_> = vs.drain(..).filter(|s| !s.is_comment()).collect();
+        vs.retain_mut(|x| !x.is_comment());
         self.statement_cache
             .deref()
             .write()
@@ -582,7 +588,7 @@ impl Statement {
                 let p = Path::new(dir.as_str());
                 let tup_parent_desc = parse_state.get_cur_file_desc().get_parent_descriptor();
                 let dirid = path_buffers.add_path_from(&tup_parent_desc, p)?;
-                parse_state.load_dirs.push(dirid);
+                parse_state.add_load_dir(dirid);
             }
             Statement::Run(script_args) => {
                 if let Some(script) = script_args.first() {
@@ -978,6 +984,15 @@ impl DollarExprs {
                 let body = body.subst_callargs(m);
                 DExpr(DollarExprs::Format(Box::new(spec), body))
             }
+            DollarExprs::StripPrefix(ref prefix, ref vs) => {
+                let prefix = prefix.subst_callargs(m);
+                let vs = vs.subst_callargs(m);
+                DExpr(DollarExprs::StripPrefix(prefix, vs))
+            }
+            DollarExprs::Message(msg, l) => {
+                let msg = msg.subst_callargs(m);
+                DExpr(DollarExprs::Message(msg, l.clone()))
+            }
         }
     }
     fn subst(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Vec<PathExpr> {
@@ -1052,15 +1067,16 @@ impl DollarExprs {
                 let mut body = body.subst_pe(m, path_searcher);
                 body.cleanup();
                 let body = trim_list(&body);
-                log::debug!("formatting body:{:?}", body);
+                debug!("formatting body:{:?}", body);
                 let mut spec = spec.subst(m, path_searcher);
                 spec.cleanup();
-                log::debug!("formatting spec:{:?}", spec);
+                debug!("formatting spec:{:?}", spec);
                 let mut result = Vec::new();
                 for body_frag in body.split(PathExpr::is_ws) {
+                    let body_frag_str = body_frag.cat_ref();
                     let inputs = InputsAsPaths::new_from_raw(
                         &m.get_tup_dir_desc(),
-                        body_frag,
+                        body_frag_str,
                         m.get_path_buffers().as_ref(),
                     );
                     if !inputs.is_empty() {
@@ -1072,6 +1088,31 @@ impl DollarExprs {
                     }
                 }
                 result.pop();
+                result
+            }
+            DollarExprs::StripPrefix(ref prefix, ref body) => {
+                let prefix = prefix.subst_pe(m, path_searcher);
+                let body = body.subst_pe(m, path_searcher);
+                let prefix = prefix.as_slice();
+                let prefix = prefix.cat_ref();
+                let mut result = Vec::new();
+                for body_frag in body.split(PathExpr::is_ws) {
+                    let mut body_frag_str = body_frag.first().unwrap().cat_ref();
+                    for p in prefix.split(" ") {
+                        if body_frag_str.as_ref().starts_with(p) {
+                            let body_frag_str_ = body_frag_str.as_ref().strip_prefix(p).unwrap();
+                            body_frag_str = body_frag_str_.to_string().into();
+                            break;
+                        }
+                    }
+                    if !body_frag_str.is_empty() {
+                        result.push(PathExpr::from(body_frag_str.to_string()));
+                    }
+                    result.extend(body_frag[1..].iter().cloned());
+                    result.push(PathExpr::Sp1);
+                }
+                result.pop();
+                result.cleanup();
                 result
             }
             DollarExprs::Filter(ref filter, ref body) => {
@@ -1638,6 +1679,18 @@ impl DollarExprs {
                     .into_iter()
                     .map(|x| PathExpr::DeGlob(x))
                     .collect::<Vec<_>>()
+            }
+            DollarExprs::Message(msg, l) => {
+                let msg = msg.subst_pe(m, path_searcher);
+                let msg = msg.cat();
+                match l {
+                    Level::Warning => log::warn!("{}", msg),
+                    Level::Error => {
+                        panic!("{}", msg)
+                    }
+                    Level::Info => log::info!("{}", msg),
+                }
+                vec![]
             }
         }
     }
@@ -2297,7 +2350,7 @@ impl LocatedStatement {
         let mut paths = paths.subst_pe(parse_state, path_searcher);
         paths.cleanup();
         let dir = paths.cat();
-        let dirs = dir.split(":").collect::<Vec<_>>();
+        let dirs = dir.split(" ").collect::<Vec<_>>();
         let pattern = dirs.first().cloned();
         let tup_cwd = parse_state.get_tup_dir_desc();
         for dir in dirs.into_iter().skip(1) {
@@ -2310,7 +2363,7 @@ impl LocatedStatement {
                 )
             })?;
             {
-                parse_state.load_dirs.push(dirid);
+                parse_state.add_load_dir(dirid);
             }
         }
         Ok(())
