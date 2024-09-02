@@ -170,7 +170,6 @@ pub struct Glob {
     glob: String,
     re: String,
     opts: GlobOptions,
-    tokens: Tokens,
 }
 
 impl PartialEq for Glob {
@@ -207,7 +206,6 @@ pub struct GlobMatcher {
     //pat: Glob,
     /// The pattern, as a compiled regex.
     re: Regex,
-    tokens: Tokens,
 }
 
 impl GlobMatcher {}
@@ -270,15 +268,6 @@ impl<'a> From<Candidate<'a>> for String {
 }
 impl GlobMatcher {
     /// Tests whether the given path matches this pattern or not.
-    pub(crate) fn is_recursive_prefix(&self) -> bool {
-        self.tokens
-            .iter()
-            .skip_while(|x| matches!(**x, Literal(_)))
-            .take_while(|x| **x == RecursiveZeroOrMore || **x == RecursivePrefix)
-            .count()
-            > 0
-    }
-
     pub fn is_match_candidate(&self, candidate: &Candidate) -> bool {
         self.re.is_match(candidate.path().as_ref())
     }
@@ -398,8 +387,7 @@ impl Glob {
     /// Returns a matcher for this pattern.
     pub fn compile_matcher(&self) -> GlobMatcher {
         let re = new_regex(&self.re).expect("regex compilation shouldn't fail");
-        let tokens = self.tokens.clone();
-        GlobMatcher { re, tokens }
+        GlobMatcher { re }
     }
 }
 
@@ -441,7 +429,6 @@ impl<'a> GlobBuilder<'a> {
                 glob: self.glob.to_string(),
                 re: tokens.to_regex_with(&self.opts),
                 opts: self.opts,
-                tokens: tokens.clone(),
             })
         }
     }

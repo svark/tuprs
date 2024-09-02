@@ -218,7 +218,7 @@ pub struct GlobPath {
     glob_path_desc: GlobPathDescriptor,
     base_desc: PathDescriptor,
     tup_cwd: PathDescriptor,
-    glob: MyGlob,
+    glob: std::sync::OnceLock<MyGlob>,
 }
 
 impl GlobPath {
@@ -241,16 +241,11 @@ impl GlobPath {
         glob_path_desc: &PathDescriptor,
     ) -> Result<GlobPath, Error> {
         let (base_path_desc, _has_glob) = get_non_pattern_prefix(glob_path_desc);
-        let pattern = glob_path_desc.get_path_ref();
-        if pattern.as_ref().ends_with(")") {
-            log::debug!("unexpected token ')'");
-        }
-        let glob = MyGlob::new_raw(pattern.as_path())?;
         Ok(GlobPath {
             glob_path_desc: glob_path_desc.clone(),
             base_desc: base_path_desc,
             tup_cwd: tup_cwd.clone(),
-            glob,
+            glob: std::sync::OnceLock::new(),
         })
     }
 
@@ -294,24 +289,33 @@ impl GlobPath {
             })
     }
 
+    fn get_glob(&self) -> &MyGlob {
+        self.glob.get_or_init(|| {
+            let pattern = self.glob_path_desc.get_path_ref();
+            MyGlob::new_raw(pattern.as_path()).unwrap()
+        })
+    }
     /// Check if the glob path has a recursive prefix
     pub fn is_recursive_prefix(&self) -> bool {
-        self.glob.is_recursive_prefix()
+        self.glob_path_desc.components().any(|x| {
+            let name = x.as_ref().get_name();
+            name.contains("**")
+        })
     }
 
     /// Regexp string corresponding to glob
     pub fn re(&self) -> String {
-        self.glob.re().to_string()
+        self.get_glob().re().to_string()
     }
 
     /// Checks if the path is a match with the glob we have
     pub fn is_match<P: AsRef<Path>>(&self, p: P) -> bool {
-        self.glob.is_match(p.as_ref())
+        self.get_glob().is_match(p.as_ref())
     }
 
     /// List of all glob captures in a path
     pub fn group<P: AsRef<Path>>(&self, p: P) -> Vec<String> {
-        self.glob.group(p)
+        self.get_glob().group(p)
     }
 }
 

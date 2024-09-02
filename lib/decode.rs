@@ -513,8 +513,9 @@ impl DecodeInputPaths for PathExpr {
 
         match self {
             PathExpr::Literal(_) => {
-                let glob_path =
-                    GlobPath::build_from_relative(tup_cwd, Path::new(self.cat_ref().as_ref()))?;
+                let s = self.cat_ref();
+                debug!("resolving literal: {:?}", s);
+                let glob_path = GlobPath::build_from_relative(tup_cwd, Path::new(s.as_ref()))?;
                 let glob_path_desc = glob_path.get_glob_path_desc();
                 let mut glob_paths = vec![glob_path];
                 let rel_path_desc = RelativeDirEntry::new(tup_cwd.clone(), glob_path_desc.clone());

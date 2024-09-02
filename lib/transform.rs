@@ -67,7 +67,7 @@ fn value_is_non_empty(s: &Vec<String>) -> bool {
 }
 fn pe_value_is_non_empty(s: &Vec<PathExpr>) -> bool {
     let len = s.len();
-    log::debug!("variable_value_is_non_empty_pe:{:?}", s);
+    debug!("variable_value_is_non_empty_pe:{:?}", s);
     match len {
         len if len > 1 => true,
         len if len == 1 => !s.first().unwrap().is_empty(),
@@ -482,6 +482,7 @@ impl ParseState {
         right: Vec<PathExpr>,
         path_searcher: &impl PathSearcher,
     ) {
+        debug!("assigning {:?} to {:?}", v, right);
         let val = self.eval_right(&right, path_searcher);
         if let Some(vals) = self.expr_map.get_mut(v) {
             if log::log_enabled!(log::Level::Debug) {
@@ -583,13 +584,6 @@ impl Statement {
         let path_buffers = parse_state.get_path_buffers();
         let path_buffers = path_buffers.deref();
         match self {
-            Statement::Preload(v) => {
-                let dir = v.cat();
-                let p = Path::new(dir.as_str());
-                let tup_parent_desc = parse_state.get_cur_file_desc().get_parent_descriptor();
-                let dirid = path_buffers.add_path_from(&tup_parent_desc, p)?;
-                parse_state.add_load_dir(dirid);
-            }
             Statement::Run(script_args) => {
                 if let Some(script) = script_args.first() {
                     let mut acnt = 0;
@@ -716,11 +710,7 @@ impl ExpandRun for Vec<LocatedStatement> {
         Self: Sized,
     {
         let mut from = 0 as usize;
-        while let Some((i, ls)) = self[from..]
-            .iter()
-            .enumerate()
-            .find(|(_, ls)| ls.is_run() || ls.is_preload())
-        {
+        while let Some((i, ls)) = self[from..].iter().enumerate().find(|(_, ls)| ls.is_run()) {
             {
                 let l = ls.get_statement().clone();
                 let stmts = l.expand_run(parse_state, path_searcher, ls.get_loc())?;
@@ -728,10 +718,7 @@ impl ExpandRun for Vec<LocatedStatement> {
                 from = i + 1;
             }
         }
-        self.retain_mut(|x| {
-            !matches!(x.get_statement(), Statement::Run(_))
-                && !matches!(x.get_statement(), Statement::Preload(_))
-        });
+        self.retain(|x| !x.is_run());
         Ok(())
     }
 }
@@ -1044,19 +1031,16 @@ impl DollarExprs {
                 if from.len() > 0 {
                     let mut result = Vec::new();
                     debug!("subst from:{:?} to:{:?} in:{:?}", from, to, vs);
-                    let replacer = |x: &[PathExpr]| {
-                        // following will potentially also replace white spaces.
-                        intersperse_sp1(words_from_pelist(x).into_iter())
-                            .cat()
-                            .replace(from.as_str(), to.as_str())
-                    };
-                    let replaced_vec = replacer(&vs);
-                    debug!("after subst :{:?}", replaced_vec);
-                    for x in replaced_vec.split_whitespace() {
-                        result.push(PathExpr::from(x.to_owned()));
-                        result.push(PathExpr::Sp1);
-                    }
+                    let inp = vs.as_slice();
+                    inp.cat_ref()
+                        .replace(&from, to.as_ref())
+                        .split_whitespace()
+                        .for_each(|x| {
+                            result.push(PathExpr::from(x.to_owned()));
+                            result.push(PathExpr::Sp1);
+                        });
                     result.pop();
+                    debug!("subst result:{:?}", result);
                     result
                 } else {
                     vs
@@ -1081,10 +1065,18 @@ impl DollarExprs {
                     );
                     if !inputs.is_empty() {
                         let v = spec.decode_input_place_holders(&inputs, &Default::default());
-                        if !v.is_empty() {
-                            result.extend(v);
+                        let vstr = v.cat();
+                        log::debug!("formatted string:{}", vstr);
+                        let mut pelist = crate::parser::parse_pelist_till_line_end_with_ws(
+                            Span::new(vstr.as_bytes()),
+                        )
+                        .map(|x| x.1 .0)
+                        .unwrap_or(vec![]);
+                        pelist.cleanup();
+                        pelist.iter().for_each(|x| {
+                            result.push(x.clone());
                             result.push(PathExpr::Sp1);
-                        }
+                        });
                     }
                 }
                 result.pop();
@@ -1093,10 +1085,15 @@ impl DollarExprs {
             DollarExprs::StripPrefix(ref prefix, ref body) => {
                 let prefix = prefix.subst_pe(m, path_searcher);
                 let body = body.subst_pe(m, path_searcher);
-                let prefix = prefix.as_slice();
+                let body = trim_list(&body);
+                let prefix = trim_list(&prefix);
                 let prefix = prefix.cat_ref();
                 let mut result = Vec::new();
                 for body_frag in body.split(PathExpr::is_ws) {
+                    if body_frag.is_empty() {
+                        log::debug!("empty body frag");
+                        continue;
+                    }
                     let mut body_frag_str = body_frag.first().unwrap().cat_ref();
                     for p in prefix.split(" ") {
                         if body_frag_str.as_ref().starts_with(p) {
@@ -1227,49 +1224,61 @@ impl DollarExprs {
             DollarExprs::WildCard(glob) => {
                 // wild cards are not expanded in the substitution phase
 
-                debug!("wildcard to expand:{:?}", glob.cat());
-                let gstr = m
-                    .switch_tupfile_and_process(&m.get_tup_base_file(), |m| {
-                        // Wildcards are special : set the current directory to the directory of the tupfile being processed and then evaluate the glob
-                        debug!("^substing wildcard glob..");
-                        Ok(glob.subst_pe(m, path_searcher).cat())
-                    })
-                    .unwrap();
-                debug!("wildcard glob expanded{:?}", gstr);
-                if !gstr.is_empty() {
-                    let dir = m.get_tup_base_dir(); // wildcards are evaluated w.r.t tup base dir (tupfile being parsed as opposed to one of its includes)
-                    debug!("relative to {:?}", dir.get_path_ref());
-                    let ldirs = m.load_dirs.clone();
-                    m.with_path_buffers_do(|path_buffers_mut| {
-                        let glob_path =
-                            GlobPath::build_from_relative(&dir, Path::new(gstr.as_str()))
-                                .expect("Failed to build a glob path");
-                        let mut glob_paths = vec![glob_path];
-                        let glob_path_desc = glob_paths[0].get_glob_path_desc();
-                        let rel_path = RelativeDirEntry::new(dir.clone(), glob_path_desc);
-                        for dir_desc in ldirs.iter() {
-                            let glob_path = GlobPath::build_from_relative_desc(dir_desc, &rel_path)
-                                .expect("Failed to build a glob path");
-                            glob_paths.push(glob_path); // other directories in which to look for paths
-                        }
-                        let paths = path_searcher
-                            .discover_paths(path_buffers_mut, glob_paths.as_slice())
-                            .unwrap_or_else(|e| {
-                                log::warn!("Error while globbing {:?}: {}", glob_paths, e);
-                                vec![]
-                            });
-                        let mut res: Vec<_> = paths
-                            .into_iter()
-                            .flat_map(|x| vec![PathExpr::DeGlob(x), PathExpr::Sp1])
-                            .collect();
-                        if let Some(PathExpr::Sp1) = res.last() {
-                            res.pop();
-                        }
-                        res
-                    })
-                } else {
-                    vec![]
+                let glob = trim_list(&glob);
+                if glob.cat_ref().contains(" ") && !glob.contains(&PathExpr::Sp1) {
+                    log::debug!("wildcard glob contains spaces and is not a list");
                 }
+                debug!("wildcard to expand:{:?}", glob.cat());
+                let mut result = Vec::new();
+                for glob in glob.split(PathExpr::is_ws) {
+                    let gstr = m
+                        .switch_tupfile_and_process(&m.get_tup_base_file(), |m| {
+                            // Wildcards are special : set the current directory to the directory of the tupfile being processed and then evaluate the glob
+                            debug!("^substing wildcard glob..");
+                            Ok(glob.subst_pe(m, path_searcher).cat())
+                        })
+                        .unwrap();
+                    debug!("wildcard glob expanded{:?}", gstr);
+                    if !gstr.is_empty() {
+                        let dir = m.get_tup_base_dir(); // wildcards are evaluated w.r.t tup base dir (tupfile being parsed as opposed to one of its includes)
+                        debug!("relative to {:?}", dir.get_path_ref());
+                        let ldirs = m.load_dirs.clone();
+                        let r = m.with_path_buffers_do(|path_buffers_mut| {
+                            let glob_path =
+                                GlobPath::build_from_relative(&dir, Path::new(gstr.as_str()))
+                                    .expect("Failed to build a glob path");
+                            let mut glob_paths = vec![glob_path];
+                            let glob_path_desc = glob_paths[0].get_glob_path_desc();
+                            let rel_path = RelativeDirEntry::new(dir.clone(), glob_path_desc);
+                            debug!("rel_path:{:?}", rel_path);
+                            for dir_desc in ldirs.iter() {
+                                let glob_path =
+                                    GlobPath::build_from_relative_desc(dir_desc, &rel_path)
+                                        .expect("Failed to build a glob path");
+                                debug!("looking for path in {:?}", glob_path);
+                                glob_paths.push(glob_path); // other directories in which to look for paths
+                            }
+                            let paths = path_searcher
+                                .discover_paths(path_buffers_mut, glob_paths.as_slice())
+                                .unwrap_or_else(|e| {
+                                    log::warn!("Error while globbing {:?}: {}", glob_paths, e);
+                                    vec![]
+                                });
+                            let res = vec![];
+                            let mut res = paths.into_iter().fold(res, |mut acc, x| {
+                                acc.push(PathExpr::DeGlob(x));
+                                acc.push(PathExpr::Sp1);
+                                acc
+                            });
+                            res.pop();
+                            res
+                        });
+                        result.extend(r);
+                        result.push(PathExpr::Sp1);
+                    }
+                }
+                result.pop();
+                result
             }
             DollarExprs::Strip(ref vs) => {
                 // strip trailing and leading spaces
@@ -1797,20 +1806,35 @@ pub(crate) fn to_pelist(s: String) -> Vec<PathExpr> {
 }
 
 trait SubstPEs {
-    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self
+    type Output;
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output
     where
         Self: Sized;
 }
 
 trait CallArgs {
-    fn subst_callargs(&self, m: &mut CallArgsMap) -> Self
+    type Output;
+    fn subst_callargs(&self, m: &mut CallArgsMap) -> <Self as CallArgs>::Output
     where
         Self: Sized;
 }
 
 impl SubstPEs for Vec<PathExpr> {
+    type Output = Self;
     /// call subst on each path expr and flatten/cleanup the output.
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
+        let mut newpe: Vec<_> = self
+            .iter()
+            .flat_map(|x| x.subst(m, path_searcher))
+            .collect();
+        newpe.cleanup();
+        newpe
+    }
+}
+impl SubstPEs for &[PathExpr] {
+    type Output = Vec<PathExpr>;
+    /// call subst on each path expr and flatten/cleanup the output.
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output {
         let mut newpe: Vec<_> = self
             .iter()
             .flat_map(|x| x.subst(m, path_searcher))
@@ -1822,6 +1846,7 @@ impl SubstPEs for Vec<PathExpr> {
 
 impl CallArgs for Vec<PathExpr> {
     /// call subst on each path expr and flatten/cleanup the output.
+    type Output = Vec<PathExpr>;
     fn subst_callargs(&self, m: &mut CallArgsMap) -> Self {
         let mut newpe: Vec<_> = self
             .iter()
@@ -1834,6 +1859,8 @@ impl CallArgs for Vec<PathExpr> {
 }
 
 impl SubstPEs for Source {
+    type Output = Self;
+
     /// call subst on each path expr and flatten/cleanup the input.
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         Source {
@@ -1893,6 +1920,7 @@ fn takefirst(
 }
 
 impl SubstPEs for Target {
+    type Output = Self;
     /// run variable substitution on `Target'
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         let primary = self.primary.subst_pe(m, path_searcher);
@@ -1910,6 +1938,7 @@ impl SubstPEs for Target {
     }
 }
 impl SubstPEs for RuleFormula {
+    type Output = Self;
     /// run variable substitution on `RuleFormula'
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         RuleFormula {
@@ -2058,6 +2087,7 @@ pub fn load_conf_vars_relative_to(root: &Path) -> Result<HashMap<String, Vec<Str
 }
 
 impl SubstPEs for Link {
+    type Output = Self;
     /// recursively substitute variables inside a link
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         Link {
@@ -2070,6 +2100,7 @@ impl SubstPEs for Link {
 }
 
 impl SubstPEs for EqCond {
+    type Output = Self;
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self
     where
         Self: Sized,
@@ -2083,6 +2114,7 @@ impl SubstPEs for EqCond {
 }
 
 impl SubstPEs for Condition {
+    type Output = Self;
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self
     where
         Self: Sized,
@@ -2346,16 +2378,14 @@ impl LocatedStatement {
         loc: &Loc,
         paths: &Vec<PathExpr>,
     ) -> Result<(), Error> {
-        debug!("adding search paths:{:?}", paths);
         let mut paths = paths.subst_pe(parse_state, path_searcher);
         paths.cleanup();
         let dir = paths.cat();
-        let dirs = dir.split(" ").collect::<Vec<_>>();
-        let pattern = dirs.first().cloned();
-        let tup_cwd = parse_state.get_tup_dir_desc();
-        for dir in dirs.into_iter().skip(1) {
-            let p = Path::new(dir).join(pattern.unwrap());
-            let dirid = parse_state.path_buffers.add_path_from(&tup_cwd, p);
+        debug!("adding search paths:{:?}", dir);
+        let dirs = dir.split(":").collect::<Vec<_>>();
+        let tup_cwd = parse_state.get_tup_base_dir();
+        for dir in dirs.into_iter() {
+            let dirid = parse_state.path_buffers.add_path_from(&tup_cwd, dir);
             let dirid = dirid.map_err(|_| {
                 Error::PathNotFound(
                     dir.to_string(),

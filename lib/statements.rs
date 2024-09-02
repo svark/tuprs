@@ -410,6 +410,7 @@ impl LocatedStatement {
     pub(crate) fn is_run(&self) -> bool {
         matches!(self.statement, Statement::Run(_))
     }
+    #[allow(dead_code)]
     pub(crate) fn is_preload(&self) -> bool {
         matches!(self.statement, Statement::Preload(_))
     }
@@ -653,7 +654,9 @@ impl CleanupPaths for Vec<PathExpr> {
                 match pe {
                     PathExpr::Quoted(vs) => {
                         if let Some(PathExpr::Quoted(last)) = acc.last_mut() {
-                            last.extend(vs.clone());
+                            let mut vec = vs.clone();
+                            vec.cleanup();
+                            last.extend(vec);
                         } else {
                             acc.push(pe.clone());
                         }

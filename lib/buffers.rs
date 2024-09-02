@@ -1325,12 +1325,7 @@ impl MyGlob {
     pub(crate) fn re(&self) -> &regex::bytes::Regex {
         self.matcher.re()
     }
-
-    pub(crate) fn is_recursive_prefix(&self) -> bool {
-        self.matcher.is_recursive_prefix()
-    }
 }
-
 /// Output path and its id.
 pub struct OutputType {
     pub(crate) pid: PathDescriptor,
