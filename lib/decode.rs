@@ -25,6 +25,7 @@ use crate::buffers::{
 use crate::decode::Index::All;
 use crate::errors::Error::PathSearchError;
 use crate::errors::{Error as Err, Error};
+use crate::parser::reparse_literal_as_input;
 use crate::paths::{
     ExcludeInputPaths, FormatReplacements, GlobPath, InputResolvedType, InputsAsPaths,
     MatchingPath, NormalPath, OutputsAsPaths,
@@ -804,7 +805,8 @@ fn formatted_pe<F: Fn(&str) -> String>(replacer: F, pe: &PathExpr) -> Vec<PathEx
     let pe = if let PathExpr::Literal(s) = pe {
         let mut result = Vec::new();
         for s in replacer(s).split(" \t") {
-            result.push(s.to_string().into());
+            let pelist = reparse_literal_as_input(s).unwrap_or(vec![s.to_string().into()]);
+            result.extend(pelist);
             result.push(PathExpr::Sp1);
         }
         result.pop();
@@ -816,7 +818,8 @@ fn formatted_pe<F: Fn(&str) -> String>(replacer: F, pe: &PathExpr) -> Vec<PathEx
         } else {
             let s = s.as_slice();
             for s in replacer(&*s.cat_ref()).split(" \t") {
-                result.push(s.to_string().into());
+                let pelist = reparse_literal_as_input(s).unwrap_or(vec![(s.to_string()).into()]);
+                result.extend(pelist);
                 result.push(PathExpr::Sp1);
             }
             result.pop();
@@ -840,9 +843,7 @@ impl DecodeInputPlaceHolders for PathExpr {
                 replacer_inputs(pattern, inputs, secondary_inputs, capture)
             })
         };
-        let pe = self;
-        let pe = formatted_pe(frep, pe);
-        pe
+        formatted_pe(frep, self)
     }
 }
 
@@ -1302,11 +1303,7 @@ impl ResolvedLink {
         let pes: Vec<MatchingPath> =
             path_searcher.discover_paths(path_buffers, glob_paths.as_slice())?;
         if pes.is_empty() {
-            debug!("Could not resolve :{:?}", path_buffers.get_path(p));
-            return Err(Error::UnResolvedFile(
-                rel_path.as_path().to_string_lossy().to_string(),
-                rule_ref.clone(),
-            ));
+            log::error!("Could not resolve :{:?}", path_buffers.get_path(p));
         }
         Ok(pes)
     }
@@ -1518,10 +1515,11 @@ impl ResolvePaths for ResolvedLink {
                                 .push(InputResolvedType::GroupEntry(Clone::clone(g), pd.clone()));
                         }
                     } else {
-                        return Err(Error::StaleGroupRef(
-                            path_buffers.get_input_path_name(i),
-                            rlink.get_tup_loc().clone(),
-                        ));
+                        log::warn!(
+                            "Stale group reference :{:?} at {:?}",
+                            g,
+                            rlink.get_tup_loc()
+                        );
                     }
                 }
                 _ => rlink.primary_sources.push(i.clone()),
@@ -1550,10 +1548,11 @@ impl ResolvePaths for ResolvedLink {
                                 .push(InputResolvedType::GroupEntry(Clone::clone(g), pd.clone()))
                         }
                     } else {
-                        return Err(Error::StaleGroupRef(
-                            path_buffers.get_input_path_name(i),
-                            rlink.get_tup_loc().clone(),
-                        ));
+                        log::warn!(
+                            "Stale group reference :{:?} at {:?}",
+                            g,
+                            rlink.get_tup_loc()
+                        );
                     }
                 }
                 _ => rlink.secondary_sources.push(i.clone()),

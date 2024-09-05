@@ -1065,14 +1065,13 @@ impl DollarExprs {
                     );
                     if !inputs.is_empty() {
                         let v = spec.decode_input_place_holders(&inputs, &Default::default());
-                        let vstr = v.cat();
-                        log::debug!("formatted string:{}", vstr);
-                        let mut pelist = crate::parser::parse_pelist_till_line_end_with_ws(
-                            Span::new(vstr.as_bytes()),
-                        )
-                        .map(|x| x.1 .0)
-                        .unwrap_or(vec![]);
+                        let vstr = v.as_slice();
+                        let cow_vstr = vstr.cat_ref();
+                        log::debug!("formatted string:{}", cow_vstr.as_ref());
+                        let mut pelist = crate::parser::reparse_literal_as_input(cow_vstr.as_ref())
+                            .unwrap_or_default();
                         pelist.cleanup();
+                        log::debug!("formatted pelist:{:?}", pelist);
                         pelist.iter().for_each(|x| {
                             result.push(x.clone());
                             result.push(PathExpr::Sp1);
@@ -1242,26 +1241,27 @@ impl DollarExprs {
                     if !gstr.is_empty() {
                         let dir = m.get_tup_base_dir(); // wildcards are evaluated w.r.t tup base dir (tupfile being parsed as opposed to one of its includes)
                         debug!("relative to {:?}", dir.get_path_ref());
-                        let ldirs = m.load_dirs.clone();
+                        //let ldirs = m.load_dirs.clone();
                         let r = m.with_path_buffers_do(|path_buffers_mut| {
                             let glob_path =
                                 GlobPath::build_from_relative(&dir, Path::new(gstr.as_str()))
                                     .expect("Failed to build a glob path");
-                            let mut glob_paths = vec![glob_path];
-                            let glob_path_desc = glob_paths[0].get_glob_path_desc();
+                            //let glob_paths = vec![glob_path];
+                            let glob_path_desc = glob_path.get_glob_path_desc();
                             let rel_path = RelativeDirEntry::new(dir.clone(), glob_path_desc);
                             debug!("rel_path:{:?}", rel_path);
+                            /* wildcard in makefile does not look for files in vpath or other search dirs unless.
                             for dir_desc in ldirs.iter() {
                                 let glob_path =
                                     GlobPath::build_from_relative_desc(dir_desc, &rel_path)
                                         .expect("Failed to build a glob path");
                                 debug!("looking for path in {:?}", glob_path);
                                 glob_paths.push(glob_path); // other directories in which to look for paths
-                            }
+                            }*/
                             let paths = path_searcher
-                                .discover_paths(path_buffers_mut, glob_paths.as_slice())
+                                .discover_paths(path_buffers_mut, std::slice::from_ref(&glob_path))
                                 .unwrap_or_else(|e| {
-                                    log::warn!("Error while globbing {:?}: {}", glob_paths, e);
+                                    log::warn!("Error while globbing {:?}: {}", glob_path, e);
                                     vec![]
                                 });
                             let res = vec![];
@@ -2239,20 +2239,7 @@ impl LocatedStatement {
             }
             Statement::Task(t) => {
                 Self::subst_task(parse_state, path_searcher, loc, t);
-            } /*Statement::SearchDir(pattern, dirs) => {
-                  let dirs = dirs.subst_pe(parse_state, path_searcher);
-                  let pattern = pattern.subst_pe(parse_state, path_searcher);
-                  let tup_cwd = parse_state.get_tup_dir_desc();
-                  for dir in dirs.split(PathExpr::is_ws) {
-                      let dirid = parse_state
-                          .path_buffers
-                          .add_path_from(&tup_cwd, dir.cat().as_str())
-                          .ok();
-                      if let Some(dirid) = dirid {
-                          parse_state.load_dirs.push(dirid.join_leaf(&pattern.as_slice().cat_ref().replace("%", "*")));
-                      }
-                  }
-              }*/
+            }
         }
         Ok(newstats)
     }

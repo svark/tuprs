@@ -835,6 +835,12 @@ fn parse_pathexpr_no_ws<'a>(
     res
 }
 
+pub(crate) fn reparse_literal_as_input(e: &str) -> Result<Vec<PathExpr>, ()> {
+    let pe_list = parse_rule_inp(Span::new(e.as_bytes()), "")
+        .map(|(_, (r, _))| r)
+        .map_err(|_| ())?;
+    Ok(pe_list)
+}
 // repeatedly invoke the rvalue parser until eof or end_tok is encountered
 // parser pauses to create new pathexpr when break_tok is encountered
 fn parse_pelist_till_delim_with_ws<'a>(
@@ -1272,9 +1278,19 @@ fn default_inp<'a>() -> Span<'a> {
     Span::new(b"")
 }
 /// parse rule inputs including groups and bin and exclude patterns
-pub(crate) fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
+pub(crate) fn parse_rule_inp<'a, 'b: 'static>(
+    i: Span<'a>,
+    end_tok: &'b str,
+) -> IResult<Span<'a>, (Vec<PathExpr>, Span<'a>)> {
     let (s, _) = opt(sp1)(i)?;
-    let pe = |i| parse_pathexpr_ws(i, "|", &BRKTOKSIO);
+    let pe = |i| parse_pathexpr_ws(i, end_tok, &BRKTOKSIO);
+    let end = |i| {
+        if end_tok.eq("") {
+            eof(i)
+        } else {
+            tag(end_tok)(i)
+        }
+    };
     many_till(
         alt((
             complete(parse_pathexpr_exclude_pattern),
@@ -1282,7 +1298,7 @@ pub(crate) fn parse_rule_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span)> {
             complete(parse_pathexpr_bin),
             complete(pe),
         )),
-        preceded(multispace0, tag("|")),
+        preceded(multispace0, end),
     )(s)
 }
 /// parse secondary input in a rule expression
@@ -1339,7 +1355,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
     log::debug!("parsing rule expression at line:{}", i.location_line());
     let (s, _) = opt(sp1)(s)?;
     let (s, for_each) = opt(tag("foreach"))(s)?;
-    let (s, input) = context("rule input", cut(opt(parse_rule_inp)))(s)?;
+    let (s, input) = context("rule input", cut(opt(|i| parse_rule_inp(i, "|"))))(s)?;
     let (s, _) = opt(sp1)(s)?;
     let (s, c) = peek(take(1_usize))(s)?;
     let (s, secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
@@ -1417,7 +1433,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
     }
     let (s, for_each) = opt(tag("foreach"))(s)?;
     let (s, _) = opt(sp1)(s)?;
-    let (s, input) = opt(context("rule input", cut(parse_rule_inp)))(s)?;
+    let (s, input) = opt(context("rule input", cut(|i| parse_rule_inp(i, "|"))))(s)?;
     let (s, c) = peek(take(1_usize))(s)?;
     let (s, secondary_input) = if c.as_bytes().first().cloned() != Some(b'>') {
         let (s, _) = opt(sp1)(s)?;
