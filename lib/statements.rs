@@ -218,7 +218,7 @@ pub(crate) enum DollarExprs {
     /// $(basename EXPR)
     BaseName(Vec<PathExpr>),
     /// $(format str, EXPR)
-    Format(Box<PathExpr>, Vec<PathExpr>),
+    Format(Vec<PathExpr>, Vec<PathExpr>),
     /// $(realpath EXPR)
     RealPath(Vec<PathExpr>),
     /// $(word n, EXPR)

@@ -516,7 +516,8 @@ impl DecodeInputPaths for PathExpr {
             PathExpr::Literal(_) => {
                 let s = self.cat_ref();
                 debug!("resolving literal: {:?}", s);
-                let glob_path = GlobPath::build_from_relative(tup_cwd, Path::new(s.as_ref()))?;
+                let p = path_buffers.add_path_from(tup_cwd, s.as_ref())?;
+                let glob_path = GlobPath::build_from(tup_cwd, &p)?;
                 let glob_path_desc = glob_path.get_glob_path_desc();
                 let mut glob_paths = vec![glob_path];
                 let rel_path_desc = RelativeDirEntry::new(tup_cwd.clone(), glob_path_desc.clone());
@@ -538,7 +539,7 @@ impl DecodeInputPaths for PathExpr {
             }
             PathExpr::Group(dir, name) => {
                 let to_join = dir.cat();
-                let group_dir = tup_cwd.join(to_join.as_str())?;
+                let group_dir = path_buffers.add_path_from(tup_cwd, to_join.as_str())?;
                 let ref grp_desc = path_buffers.add_group_pathexpr(&group_dir, name.cat().as_str());
                 {
                     debug!(
@@ -805,8 +806,7 @@ fn formatted_pe<F: Fn(&str) -> String>(replacer: F, pe: &PathExpr) -> Vec<PathEx
     let pe = if let PathExpr::Literal(s) = pe {
         let mut result = Vec::new();
         for s in replacer(s).split(" \t") {
-            let pelist = reparse_literal_as_input(s).unwrap_or(vec![s.to_string().into()]);
-            result.extend(pelist);
+            result.push(PathExpr::from(s.to_string()));
             result.push(PathExpr::Sp1);
         }
         result.pop();
@@ -818,8 +818,7 @@ fn formatted_pe<F: Fn(&str) -> String>(replacer: F, pe: &PathExpr) -> Vec<PathEx
         } else {
             let s = s.as_slice();
             for s in replacer(&*s.cat_ref()).split(" \t") {
-                let pelist = reparse_literal_as_input(s).unwrap_or(vec![(s.to_string()).into()]);
-                result.extend(pelist);
+                result.push(PathExpr::from(s.to_string()));
                 result.push(PathExpr::Sp1);
             }
             result.pop();
@@ -1110,7 +1109,7 @@ fn get_deglobbed_rule(
     });
     let group = t.group.as_ref().and_then(PathExpr::get_group);
     let group_desc = if let Some((dir, x)) = group {
-        let fullp = tup_cwd.join(dir.cat().as_str());
+        let fullp = path_buffers.add_path_from(tup_cwd, dir.as_slice().cat_ref().as_ref());
 
         let fullp = fullp
             .inspect(|p| debug!("group:{:?}/<{:?}>", p, x.cat()))
@@ -1634,15 +1633,36 @@ impl LocatedStatement {
             loc,
         } = self
         {
+            let mut reparsed_primary = Vec::new();
+            for primary in s.primary.iter() {
+                if let PathExpr::Literal(s) = primary {
+                    let pelist = reparse_literal_as_input(s).unwrap_or(vec![s.to_string().into()]);
+                    reparsed_primary.extend(pelist);
+                    reparsed_primary.push(PathExpr::Sp1);
+                } else {
+                    reparsed_primary.push(primary.clone());
+                }
+            }
+            let mut reparsed_secondary = Vec::new();
+            for secondary in s.secondary.iter() {
+                if let PathExpr::Literal(s) = secondary {
+                    let pelist = reparse_literal_as_input(s).unwrap_or(vec![s.to_string().into()]);
+                    reparsed_secondary.extend(pelist);
+                    reparsed_secondary.push(PathExpr::Sp1);
+                } else {
+                    reparsed_secondary.push(secondary.clone());
+                }
+            }
+
             let rule_ref = &TupLoc::new(tup_desc, loc);
-            let inpdec = s.primary.decode(
+            let inpdec = reparsed_primary.decode(
                 &tup_cwd,
                 path_searcher,
                 path_buffers,
                 rule_ref,
                 &search_dirs,
             )?;
-            let secondinpdec = s.secondary.decode(
+            let secondinpdec = reparsed_secondary.decode(
                 &tup_cwd,
                 path_searcher,
                 path_buffers,

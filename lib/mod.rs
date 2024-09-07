@@ -1,12 +1,9 @@
 //! Crate for parsing a tupfile and thereafter de-globbing and decoding variables in a Tupfile
 #![warn(missing_docs)]
-extern crate bstr;
 extern crate crossbeam;
 #[cfg(test)]
 extern crate env_logger;
 extern crate hashbrown;
-#[macro_use]
-extern crate lazy_static;
 extern crate log;
 extern crate mlua;
 #[macro_use]

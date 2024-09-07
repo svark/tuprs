@@ -601,37 +601,32 @@ impl Statement {
                         let arg = arg_expr.cat_ref();
                         let arg = arg.trim();
                         if arg.contains('*') {
-                            let arg_path = Path::new(arg);
-                            {
-                                let glob_path = GlobPath::build_from_relative(
-                                    &parse_state.get_tup_dir_desc(),
-                                    arg_path,
-                                )?;
-                                let glob_path_desc = glob_path.get_glob_path_desc();
-                                let rel_path = RelativeDirEntry::new(
-                                    parse_state.get_tup_dir_desc(),
-                                    glob_path_desc,
-                                );
-                                let mut glob_paths = vec![glob_path];
-                                for dir_desc in parse_state.load_dirs.iter() {
-                                    let glob_path =
-                                        GlobPath::build_from_relative_desc(dir_desc, &rel_path)?;
-                                    glob_paths.push(glob_path);
-                                }
-                                let matches = path_searcher
-                                    .discover_paths(path_buffers, glob_paths.as_slice())
-                                    .unwrap_or_else(|_| {
-                                        panic!("error matching glob pattern {}", arg)
-                                    });
+                            let p =
+                                path_buffers.add_path_from(&parse_state.get_tup_dir_desc(), arg)?;
+                            let glob_path =
+                                GlobPath::build_from(&parse_state.get_tup_dir_desc(), &p)?;
+                            let glob_path_desc = glob_path.get_glob_path_desc();
+                            let rel_path = RelativeDirEntry::new(
+                                parse_state.get_tup_dir_desc(),
+                                glob_path_desc,
+                            );
+                            let mut glob_paths = vec![glob_path];
+                            for dir_desc in parse_state.load_dirs.iter() {
+                                let glob_path =
+                                    GlobPath::build_from_relative_desc(dir_desc, &rel_path)?;
+                                glob_paths.push(glob_path);
+                            }
+                            let matches = path_searcher
+                                .discover_paths(path_buffers, glob_paths.as_slice())
+                                .unwrap_or_else(|_| panic!("error matching glob pattern {}", arg));
 
-                                debug!("expand_run num files from glob:{:?}", matches.len());
-                                for ofile in matches {
-                                    let p = RelativeDirEntry::new(
-                                        parse_state.get_tup_dir_desc(),
-                                        ofile.path_descriptor(),
-                                    );
-                                    cmd.arg(p.get_path().as_path());
-                                }
+                            debug!("expand_run num files from glob:{:?}", matches.len());
+                            for ofile in matches {
+                                let p = RelativeDirEntry::new(
+                                    parse_state.get_tup_dir_desc(),
+                                    ofile.path_descriptor(),
+                                );
+                                cmd.arg(p.get_path().as_path());
                             }
                         } else if !arg.is_empty() {
                             cmd.arg(arg);
@@ -967,9 +962,9 @@ impl DollarExprs {
                 DExpr(DollarExprs::GrepFiles(pattern, glob, dirs))
             }
             DollarExprs::Format(spec, body) => {
-                let spec = spec.subst_ca(m);
+                let spec = spec.subst_callargs(m);
                 let body = body.subst_callargs(m);
-                DExpr(DollarExprs::Format(Box::new(spec), body))
+                DExpr(DollarExprs::Format(spec, body))
             }
             DollarExprs::StripPrefix(ref prefix, ref vs) => {
                 let prefix = prefix.subst_callargs(m);
@@ -1052,7 +1047,7 @@ impl DollarExprs {
                 body.cleanup();
                 let body = trim_list(&body);
                 debug!("formatting body:{:?}", body);
-                let mut spec = spec.subst(m, path_searcher);
+                let mut spec = spec.subst_pe(m, path_searcher);
                 spec.cleanup();
                 debug!("formatting spec:{:?}", spec);
                 let mut result = Vec::new();
@@ -1243,9 +1238,13 @@ impl DollarExprs {
                         debug!("relative to {:?}", dir.get_path_ref());
                         //let ldirs = m.load_dirs.clone();
                         let r = m.with_path_buffers_do(|path_buffers_mut| {
-                            let glob_path =
-                                GlobPath::build_from_relative(&dir, Path::new(gstr.as_str()))
-                                    .expect("Failed to build a glob path");
+                            let p = path_buffers_mut
+                                .add_path_from(&dir, gstr.as_str())
+                                .unwrap_or_else(|e| {
+                                    panic!("failed to add path from {:?} due to {}", dir, e);
+                                });
+                            let glob_path = GlobPath::build_from(&dir, &p)
+                                .expect("Failed to build a glob path");
                             //let glob_paths = vec![glob_path];
                             let glob_path_desc = glob_path.get_glob_path_desc();
                             let rel_path = RelativeDirEntry::new(dir.clone(), glob_path_desc);
@@ -1655,11 +1654,13 @@ impl DollarExprs {
                             .ok();
                         //let dir = dir.cat();
                         if let Some(dirid) = dirid {
-                            let glob_path = GlobPath::build_from_relative(
-                                &dirid,
-                                Path::new(glob_pattern.as_str()),
-                            )
-                            .expect(&*format!(
+                            let p = m
+                                .path_buffers
+                                .add_path_from(&dirid, glob_pattern.as_str())
+                                .unwrap_or_else(|e| {
+                                    panic!("failed to add path from {:?} due to {}", dir, e);
+                                });
+                            let glob_path = GlobPath::build_from(&dirid, &p).expect(&*format!(
                                 "Failed to build a glob path:{}",
                                 glob_pattern.as_str()
                             ));

@@ -2,7 +2,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use bstr::io::BufReadExt;
+//use bstr::io::BufReadExt;
 use combinator::eof;
 use log::log_enabled;
 use nom::bytes::complete::{is_a, is_not};
@@ -46,15 +46,12 @@ pub(crate) enum EndClause {
     //EndDef
 }
 
-lazy_static! {
-    static ref BRKTOKSINNER: &'static str = "\\\n$";
-    static ref BRKTOKS: &'static str = "\\\n$@";
-    static ref BRKTOKSQ: &'static str = "\\\n$@\"";
-    static ref BRKTOKSWS: &'static str = "\\\n$@ ";
-    static ref BRKTOKSIO: &'static str = "\\\n $@^<{";
-    static ref BRKTAGSNOWS: &'static str = "<|{";
-    static ref BRKTAGS: &'static str = " <|{^";
-}
+static BRKTOKS: &'static str = "\\\n$@";
+static BRKTOKSQ: &'static str = "\\\n$@\"";
+static BRKTOKSWS: &'static str = "\\\n$@ ";
+static BRKTOKSIO: &'static str = "\\\n $@^<{";
+static BRKTAGSNOWS: &'static str = "<|{";
+static BRKTAGS: &'static str = " <|{^";
 
 /// convert byte str to PathExpr
 fn from_str(res: Span) -> Result<PathExpr, std::str::Utf8Error> {
@@ -101,7 +98,7 @@ fn ws0_line_ending(i: Span) -> IResult<Span, ()> {
 // checks for presence of a group expression that begins with some path.`
 fn parse_pathexpr_raw_angle(input: Span) -> IResult<Span, Span> {
     //let i = input.clone();
-    preceded(is_not(*BRKTAGS), tag("<"))(input)
+    preceded(is_not(BRKTAGS), tag("<"))(input)
 }
 
 // parse expession wrapped inside dollar or at
@@ -722,13 +719,7 @@ fn parse_pathexpr_format(i: Span) -> IResult<Span, PathExpr> {
         parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSWS)
     }))(s)?;
     log::debug!("parsed formatpath: {:?} {:?}", format_spec, pattern);
-    Ok((
-        s,
-        PathExpr::from(DollarExprs::Format(
-            Box::new(PathExpr::Quoted(format_spec)),
-            pattern,
-        )),
-    ))
+    Ok((s, PathExpr::from(DollarExprs::Format(format_spec, pattern))))
 }
 
 /// parse $(realpath names...)
@@ -1161,7 +1152,7 @@ fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
         )),
     )(s)?;
 
-    body.iter_mut().for_each(|x| x.cleanup());
+    body.iter_mut().for_each(CleanupPaths::cleanup);
     log::debug!("with body: {:?}", body);
     let body: Vec<_> = body
         .drain(..)
@@ -1190,13 +1181,7 @@ fn parse_eval_block(i: Span) -> IResult<Span, LocatedStatement> {
 
     log::debug!(
         "attempting to parse input as eval block: {:?}",
-        from_utf8(Span::new(
-            &s.byte_lines()
-                .into_iter()
-                .next()
-                .unwrap()
-                .unwrap_or(Vec::new())
-        )) //from_utf8(s)
+        from_utf8(s)
     );
     let (s, (body, _)) = complete(parse_pelist_till_line_end_with_ws)(s)?;
     log::debug!("parsed eval block: {:?}", body);
@@ -1320,7 +1305,7 @@ pub(crate) fn parse_secondary_inp(i: Span) -> IResult<Span, (Vec<PathExpr>, Span
 fn parse_output_delim(i: Span) -> IResult<Span, Span> {
     alt((
         complete(peek(line_ending)),
-        complete(map(peek(one_of(*BRKTAGSNOWS)), |_| i)),
+        complete(map(peek(one_of(BRKTAGSNOWS)), |_| i)),
         complete(peek(parse_pathexpr_raw_angle)),
     ))(i)
 }

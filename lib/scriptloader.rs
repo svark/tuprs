@@ -21,10 +21,8 @@ use crate::statements::Statement::Rule;
 use crate::statements::*;
 use crate::transform::{to_pelist, ParseState, ResolvedRules};
 
-lazy_static! {
-    static ref LINENO: &'static str = "lineno";
-    static ref CURDIR: &'static str = "curdir";
-}
+static LINENO: &'static str = "lineno";
+static CURDIR: &'static str = "curdir";
 /*
 
 
@@ -702,7 +700,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                 rulcmd.set_command(cmd);
                 rulcmd.set_display_str(desc);
                 let i: u32 = lua_ctx
-                    .named_registry_value(*LINENO)
+                    .named_registry_value(LINENO)
                     .expect("line number missing lua registry");
                 //  let globals = lua_ctx.globals();
                 let tup_shared: AnyUserData = globals.get("tup")?;
@@ -848,7 +846,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                     rulcmd.set_command(cmd);
                     rulcmd.set_display_str(desc);
                     let i: u32 = luactx
-                        .named_registry_value(*LINENO)
+                        .named_registry_value(LINENO)
                         .expect("line number missing lua registry");
                     //let globals = luactx.globals();
                     let tup_shared: AnyUserData = globals.get("tup")?;
@@ -879,9 +877,12 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
             //let outputs = OutputAssocs::new_no_resolve_groups();
             let matching_paths = {
                 let path_searcher = scriptctx.get_path_searcher();
-                let glob_path =
-                    &GlobPath::build_from_relative(&scriptctx.get_cwd_desc(), Path::new(path))
-                        .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
+                let p = scriptctx
+                    .bo_as_mut()
+                    .add_path_from(&scriptctx.get_cwd_desc(), path)
+                    .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
+                let glob_path = &GlobPath::build_from(&scriptctx.get_cwd_desc(), &p)
+                    .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
                 path_searcher
                     .discover_paths(scriptctx.bo_as_mut(), std::slice::from_ref(glob_path))
                     .expect("Glob expansion failed")
@@ -913,7 +914,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                         } else {
                             ""
                         };
-                        let curdir: String = luactx.named_registry_value(*CURDIR)?;
+                        let curdir: String = luactx.named_registry_value(CURDIR)?;
                         let incpath = Path::new(&curdir).join(Path::new(path));
                         debug!("include:{}", incpath.to_string_lossy().to_string());
                         let mut file = File::open(&incpath)?;
@@ -922,7 +923,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                         let mut scriptctx: RefMut<TupScriptContext<P, Q>> =
                             tup_shared.borrow_mut()?;
                         luactx.set_named_registry_value(
-                            *CURDIR,
+                            CURDIR,
                             incpath
                                 .parent()
                                 .expect("parent path")
@@ -938,7 +939,7 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                         let mut contents = Vec::new();
                         file.read_to_end(&mut contents)?;
                         luactx.load(contents.as_bytes()).exec()?;
-                        luactx.set_named_registry_value(*CURDIR, curdir)?;
+                        luactx.set_named_registry_value(CURDIR, curdir)?;
                         Ok(())
                     })
                     .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
@@ -990,12 +991,12 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
             },
             |lua_context, debug| {
                 lua_context
-                    .set_named_registry_value(*LINENO, debug.curr_line())
+                    .set_named_registry_value(LINENO, debug.curr_line())
                     .expect("could not set registry value");
                 Ok(())
             },
         );
-        lua.set_named_registry_value(*CURDIR, root.join(cur_dir).to_string_lossy().to_string())?;
+        lua.set_named_registry_value(CURDIR, root.join(cur_dir).to_string_lossy().to_string())?;
         let tup_append_table = lua.create_function(|luactx, (a, b): (Value, Value)| {
             let mut t = luactx.create_table()?;
             if let Value::String(s) = a {

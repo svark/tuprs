@@ -222,11 +222,6 @@ pub struct GlobPath {
 }
 
 impl GlobPath {
-    /// tup_cwd should include root (it is not relative to root but includes root)
-    pub fn build_from_relative(tup_cwd: &PathDescriptor, glob_path: &Path) -> Result<Self, Error> {
-        let ided_path = tup_cwd.join(glob_path)?;
-        Self::build_from(tup_cwd, &ided_path)
-    }
     /// append a relative path to tup_cwd, to construct a new glob search path
     pub fn build_from_relative_desc(
         tup_cwd: &PathDescriptor,

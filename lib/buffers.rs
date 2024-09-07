@@ -1022,7 +1022,7 @@ impl GeneratedFiles {
         &self.children
     }
     /// Get a mutable references all the groups with collected rule outputs.
-    /// This can be used to to fill path references from a database.
+    /// This can be used to fill path references from a database.
     fn get_mut_groups(&mut self) -> &mut HashMap<GroupPathDescriptor, BTreeSet<PathDescriptor>> {
         &mut self.groups
     }
@@ -1390,7 +1390,18 @@ impl PathBuffers for BufferObjects {
 
     /// Add a path to a group in this buffer
     fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> GroupPathDescriptor {
-        let pd = tup_cwd.clone();
+        let mut pd = tup_cwd.clone();
+        if pe.contains("/") || pe.contains("\\") {
+            let res = tup_cwd.join(pe).unwrap_or_else(|e| {
+                panic!(
+                    "unable to join {} with {} due to {}",
+                    tup_cwd.get_path_ref(),
+                    pe,
+                    e
+                )
+            });
+            pd = res.get_parent_descriptor();
+        }
         GroupBufferObject::add_ref(GroupPathEntry::new(pd, pe))
     }
 
