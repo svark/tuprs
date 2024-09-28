@@ -674,6 +674,15 @@ impl InputResolvedType {
         }
     }
 
+    /// return group (unresolved or otherwise) that this input refers to
+    pub fn get_group_ref(&self) -> Option<GroupPathDescriptor> {
+        match self {
+            InputResolvedType::GroupEntry(g, _) => Some(g.clone()),
+            InputResolvedType::UnResolvedGroupEntry(g) => Some(g.clone()),
+            _ => None,
+        }
+    }
+
     /// return task that this input refers to
     pub fn get_task_ref(&self) -> Option<TaskDescriptor> {
         match self {

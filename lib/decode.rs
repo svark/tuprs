@@ -1464,6 +1464,7 @@ impl ResolvePaths for Vec<ResolvedLink> {
             if resolved_link.has_unresolved_inputs() {
                 let cur_tup_desc = resolved_link.get_tup_loc().get_tupfile_desc();
 
+                debug!("resolving paths for {:?}", resolved_link);
                 let art = resolved_link.resolve_paths(
                     cur_tup_desc,
                     path_searcher,

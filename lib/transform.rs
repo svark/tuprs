@@ -494,7 +494,7 @@ impl ParseState {
             *vals = val;
         } else {
             debug!(
-                "eager assign of {:?} to \"{:?}\" with not previously set val",
+                "eager assign of {:?} to \"{:?}\" with no previously set val",
                 v, val
             );
             self.expr_map.insert(v.to_string(), val);
@@ -949,17 +949,11 @@ impl DollarExprs {
                 let vs = e.subst_callargs(m);
                 DExpr(DollarExprs::Eval(vs))
             }
-            DollarExprs::GrepFiles(ref pattern, ref glob, ref dirs) => {
+            DollarExprs::GrepFiles(ref pattern, ref glob) => {
                 let pattern = pattern.subst_callargs(m);
                 let glob = glob.subst_callargs(m);
-                let dirs = dirs.subst_callargs(m);
-                log::debug!(
-                    "grepfiles pattern:{:?} glob:{:?} text:{:?}",
-                    pattern,
-                    glob,
-                    dirs
-                );
-                DExpr(DollarExprs::GrepFiles(pattern, glob, dirs))
+                log::debug!("grepfiles pattern:{:?} glob:{:?}", pattern, glob,);
+                DExpr(DollarExprs::GrepFiles(pattern, glob))
             }
             DollarExprs::Format(spec, body) => {
                 let spec = spec.subst_callargs(m);
@@ -1610,7 +1604,9 @@ impl DollarExprs {
                 let subst_val = cmd.subst_pe(m, path_searcher);
                 let args = subst_val.cat();
                 eprintln!("Running shell command:{}", args);
-                eprintln!("consider rewriting in lua");
+                eprintln!(
+                    "consider rewriting in a configuration step and access it here as an env"
+                );
                 // run sh -c over the args and process stdout
                 let child = shell(args).stdout(Stdio::piped()).spawn();
                 let outstr = {
@@ -1638,41 +1634,28 @@ impl DollarExprs {
 
                 vec![PathExpr::from(outstr)]
             }
-            DollarExprs::GrepFiles(pattern, glob_pattern, dirs) => {
+            DollarExprs::GrepFiles(pattern, glob_pattern) => {
                 // grep for pattern in files matching glob_pattern in dirs
                 let pattern = pattern.subst_pe(m, path_searcher);
                 let glob_pattern = glob_pattern.subst_pe(m, path_searcher);
-                let dirs = dirs.subst_pe(m, path_searcher);
                 let pattern = pattern.cat();
                 let glob_pattern = glob_pattern.cat();
                 let mut glob_paths = Vec::new();
                 let tup_cwd = m.get_tup_dir_desc();
                 let paths = m.with_path_buffers_do(|path_buffers_mut| {
-                    for dir in dirs.split(PathExpr::is_ws) {
-                        let dirid = path_buffers_mut
-                            .add_path_from(&tup_cwd, dir.cat().as_str())
-                            .ok();
-                        //let dir = dir.cat();
-                        if let Some(dirid) = dirid {
-                            let p = m
-                                .path_buffers
-                                .add_path_from(&dirid, glob_pattern.as_str())
-                                .unwrap_or_else(|e| {
-                                    panic!("failed to add path from {:?} due to {}", dir, e);
-                                });
-                            let glob_path = GlobPath::build_from(&dirid, &p).expect(&*format!(
-                                "Failed to build a glob path:{}",
-                                glob_pattern.as_str()
-                            ));
-                            glob_paths.push(glob_path); // other directories in which to look for paths
-                        } else {
-                            eprintln!(
-                                "failed to add path: {} to path buffers at tup folder:{:?}",
-                                dir.cat(),
-                                tup_cwd
-                            );
-                        }
-                    }
+                    let dirid = tup_cwd;
+                    let p = m
+                        .path_buffers
+                        .add_path_from(&dirid, glob_pattern.as_str())
+                        .unwrap_or_else(|e| {
+                            panic!("failed to add path from {:?} due to {}", dirid, e);
+                        });
+                    let glob_path = GlobPath::build_from(&dirid, &p).expect(&*format!(
+                        "Failed to build a glob path:{}",
+                        glob_pattern.as_str()
+                    ));
+                    glob_paths.push(glob_path); // other directories in which to look for paths
+
                     let paths = discover_paths_with_pattern(
                         path_searcher,
                         path_buffers_mut,
@@ -1760,10 +1743,19 @@ impl DollarExprs {
         });
         debug!("eval stmts after subst: {:?}", stmts);
         stmts.cleanup();
-        let v: Vec<_> = stmts.iter().map(|x| x.cat()).collect();
-        let str = v.join(" ");
-        debug!("eval returned {}", str.as_str());
-        vec![PathExpr::from(str)]
+
+        // let v: Vec<_> = stmts.iter().map(|x| x.cat()).collect();
+        //let str = v.join(" ");
+        let mut result = Vec::new();
+        for stmt in stmts.iter() {
+            let pelist = match stmt.get_statement() {
+                Statement::EvalBlock(eb) => eb.clone(),
+                _ => to_pelist(stmt.cat()),
+            };
+            result.extend(pelist);
+        }
+        debug!("eval returned {}", result.as_slice().cat_ref());
+        result
     }
 }
 
@@ -2342,7 +2334,26 @@ impl LocatedStatement {
     ) -> Result<(), Error> {
         debug!("evaluating block: {:?}", body);
         let body = body.subst_pe(parse_state, path_searcher);
-        if !body.is_empty() {
+        if body
+            .split(|x| x == &PathExpr::NL || x == &PathExpr::Sp1)
+            .all(|x| {
+                debug!("eval block line: {:?}", x);
+                matches!(x, &[PathExpr::DeGlob(_), ..])
+            })
+        {
+            body.split(|x| x == &PathExpr::NL).fold(
+                newstats,
+                |acc: &mut Vec<LocatedStatement>, x: &[PathExpr]| {
+                    let mut pelist = x.subst_pe(parse_state, path_searcher);
+                    pelist.cleanup();
+                    acc.push(LocatedStatement::new(
+                        Statement::EvalBlock(pelist),
+                        self.get_loc().clone(),
+                    ));
+                    acc
+                },
+            );
+        } else if !body.is_empty() {
             let body_str = body.cat() + "\n";
 
             debug!("evaluating block: {:?}", body_str.as_str());

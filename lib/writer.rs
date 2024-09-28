@@ -229,13 +229,12 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
                 write_pathexprs(writer, script);
                 write!(writer, ")").unwrap();
             }
-            DollarExprs::GrepFiles(content, glob, paths) => {
+            DollarExprs::GrepFiles(content, glob) => {
                 write!(writer, "$(grep-files ").unwrap();
                 write_pathexprs(writer, content);
-                write!(writer, ",").unwrap();
+                write!(writer, " ").unwrap();
                 write_pathexprs(writer, glob);
-                write!(writer, ",").unwrap();
-                write_pathexprs(writer, paths);
+                write!(writer, " ").unwrap();
                 write!(writer, ")").unwrap();
             }
             DollarExprs::Message(msg, level) => {
@@ -254,7 +253,7 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
                 write!(writer, ")").unwrap();
             }
             DollarExprs::StripPrefix(prefix, body) => {
-                write!(writer, "$(strip-prefix ").unwrap();
+                write!(writer, "$(stripprefix ").unwrap();
                 write_pathexprs(writer, prefix);
                 write!(writer, ",").unwrap();
                 write_pathexprs(writer, body);

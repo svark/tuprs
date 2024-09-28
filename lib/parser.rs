@@ -643,29 +643,19 @@ fn parse_pathexpr_grep_files(i: Span) -> IResult<Span, PathExpr> {
     let (s, _) = tag("$(grep-files")(i)?;
     let (s, _) = parse_ws(s)?;
     let (s, _) = many0(delimited(tag("-"), anychar, sp1))(s)?;
-    let (s, pattern) = parse_quote(s)?;
+    let (s, pattern) = cut(context("parsing grep pattern", parse_quote))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
-    let (s, _) = tag(",")(s)?;
-    let (s, (glob, end)) = parse_pelist_till_delim_with_ws(s, ",)", &BRKTOKSWS)?;
+    let (s, (glob, _end)) = cut(context("parsing file globs", |s| {
+        parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSWS)
+    }))(s)?;
     let (s, _) = opt(parse_ws)(s)?;
     //let (s, bytes) = take_until(")")(s)?;
-    let (s, paths) = if end == ',' {
-        let (s, (paths, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSWS)?;
-        (s, paths)
-    } else {
-        (s, vec![])
-    };
 
     let (s, _) = opt(parse_ws)(s)?;
-    log::debug!(
-        "parsed grep-files: pattern: {:?} glob: {:?} paths: {:?}",
-        pattern,
-        glob,
-        paths
-    );
+    log::debug!("parsed grep-files: pattern: {:?} glob: {:?}", pattern, glob);
     Ok((
         s,
-        PathExpr::from(DollarExprs::GrepFiles(vec![pattern], glob, paths)),
+        PathExpr::from(DollarExprs::GrepFiles(vec![pattern], glob)),
     ))
 }
 
@@ -844,6 +834,21 @@ fn parse_pelist_till_delim_with_ws<'a>(
         alt((value('\0' as char, eof), one_of(end_tok))),
     )(input)
 }
+fn parse_pelist_till_delim_or_com_with_ws<'a>(
+    input: Span<'a>,
+    end_tok: &'static str,
+    break_toks: &'static str,
+) -> IResult<Span<'a>, (Vec<PathExpr>, char)> {
+    many_till(
+        |i| parse_pathexpr_ws(i, end_tok, break_toks),
+        alt((
+            value('\0' as char, eof),
+            one_of(end_tok),
+            value('\0' as char, parse_ignored_comment),
+        )),
+    )(input)
+}
+
 // repeatedly invoke the rvalue parser until eof or delim is encountered
 // parser pauses to create new pathexpr when break_tok is encountered
 fn parse_pelist_till_delim_no_ws<'a>(
@@ -864,6 +869,15 @@ pub(crate) fn parse_pelist_till_line_end_with_ws(
     alt((
         complete(map(ws0_line_ending, |_| (Vec::new(), '\0'))), // trailing ws before line ends are ignored
         complete(|i| parse_pelist_till_delim_with_ws(i, "\r\n", &BRKTOKSWS)),
+    ))(input)
+}
+
+pub(crate) fn parse_pelist_till_line_end_or_comment_with_ws(
+    input: Span,
+) -> IResult<Span, (Vec<PathExpr>, char)> {
+    alt((
+        complete(map(ws0_line_ending, |_| (Vec::new(), '\0'))), // trailing ws before line ends are ignored
+        complete(|i| parse_pelist_till_delim_or_com_with_ws(i, "\r\n", &BRKTOKSWS)),
     ))(input)
 }
 
@@ -1079,8 +1093,8 @@ fn parse_task_statement(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = opt(sp1)(s)?;
     let (s, deps) = opt(parse_pelist_till_line_end_with_ws)(s)?;
     if log_enabled!(log::Level::Debug) {
-        let nextfew_chars = std::str::from_utf8(&s.fragment()[..10]).unwrap();
-        log::warn!("remaining: {:?}", nextfew_chars);
+        //    let nextfew_chars = std::str::from_utf8(&s.fragment()[..10]).unwrap();
+        //   log::warn!("remaining: {:?}", nextfew_chars);
     }
     let deps = deps.map(|x| x.0).unwrap_or_default();
 
@@ -1115,7 +1129,7 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     log::debug!("parsing assignment expression with lhs {:?}", left.name);
     log::debug!("op:{:?}", std::str::from_utf8(op.fragment()).unwrap_or(""));
     let (s, _) = opt(sp1)(s)?;
-    let (s, r) = complete(parse_pelist_till_line_end_with_ws)(s)?;
+    let (s, r) = complete(parse_pelist_till_line_end_or_comment_with_ws)(s)?;
     log::debug!("and rhs: {:?}", r);
     let right = r.0;
     let offset = i.offset(&s);

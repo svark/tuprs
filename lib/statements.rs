@@ -231,8 +231,8 @@ pub(crate) enum DollarExprs {
     Call(Vec<PathExpr>, Vec<Vec<PathExpr>>),
     // $(shell ..)
     Shell(Vec<PathExpr>),
-    // $(grep-files content-pattern, glob-pattern, paths, ...)
-    GrepFiles(Vec<PathExpr>, Vec<PathExpr>, Vec<PathExpr>),
+    // $(grep-files search-string glob-pattern, ...)
+    GrepFiles(Vec<PathExpr>, Vec<PathExpr>),
     // $(info ..) or  $(warning ..) or $(error ..)
     Message(Vec<PathExpr>, Level),
 }
