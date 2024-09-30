@@ -218,7 +218,7 @@ fn init_env() -> Vec<Env> {
 
 /// Accessor and constructors of ParseState
 impl ParseState {
-    /// Initialize ParseState for var-subst-ing `cur_file'
+    /// Initialize ParseState for var-substitution in given file `cur_file_desc`
     pub fn new(
         conf_map: &HashMap<String, Vec<String>>,
         cur_file_desc: TupPathDescriptor,
@@ -260,6 +260,57 @@ impl ParseState {
             path_buffers: bo,
             ..ParseState::default()
         }
+    }
+    /// Evaluate a variable and return its value. Eagerness is preferred over laziness.
+    /// Lazy evaluation is done for functions and `conf_map`.
+    /// Environment variable values are directly returned if the key is not found in `expr_map`, `func_map`, or `conf_map`.
+    /// If the evaluation fails, an empty string is returned.
+    /// Once evaluated, the value is stored in the `expr_map`.
+    pub(crate) fn extract_evaluated_var(
+        &mut self,
+        v: &str,
+        path_searcher: &impl PathSearcher,
+    ) -> Vec<PathExpr> {
+        self.expr_map
+            .get(v)
+            .cloned()
+            .or_else(|| {
+                self.func_map.remove(v).map(|val| {
+                    let evaluated_val = val.subst_pe(self, path_searcher);
+                    self.assign_eager(v, evaluated_val.clone(), path_searcher);
+                    evaluated_val
+                })
+            })
+            .or_else(|| {
+                self.conf_map.remove(v).map(|mut val| {
+                    let mut val = val.join(" ");
+                    if !val.ends_with("\n") {
+                        val.push('\n');
+                    }
+                    let pelist = crate::parser::parse_pelist_till_line_end_with_ws(Span::new(
+                        val.as_bytes(),
+                    ))
+                    .map(|x| x.1 .0)
+                    .unwrap_or(vec![]);
+                    let res = pelist.subst_pe(self, path_searcher);
+                    self.assign_eager(v, res.clone(), path_searcher);
+                    res
+                })
+            })
+            .or_else(|| {
+                self.get_env_value(v).map(|val| {
+                    let r = val
+                        .split(|c| c == ' ' || c == '\n')
+                        .map(|x| PathExpr::from(x.to_owned()))
+                        .collect::<Vec<_>>();
+                    debug!("env value for {:?} is {:?}", v, r);
+                    r
+                })
+            })
+            .unwrap_or_else(|| {
+                log::warn!("No substitution found for {}", v);
+                vec![Default::default()]
+            })
     }
     pub(crate) fn add_env(&mut self, p0: &EnvDescriptor) {
         self.cur_env_desc.add(p0.clone())
@@ -975,39 +1026,7 @@ impl DollarExprs {
         match self {
             DollarExprs::DollarExpr(x) => {
                 debug!("substituting {}", x.as_str());
-                let res = {
-                    if let Some(val) = m.expr_map.get(x.as_str()).cloned() {
-                        //  let vs = intersperse_sp1(val);
-                        val
-                    } else if let Some(val) = m.func_map.remove(x.as_str()) {
-                        let right = val.subst_pe(m, path_searcher);
-                        m.assign_eager(x.as_str(), right.clone(), path_searcher);
-                        right
-                    } else if let Some(val) = m.conf_map.remove(x.as_str()) {
-                        let mut val = val.join(" ");
-                        if !val.ends_with("\n") {
-                            val.push('\n');
-                        }
-                        let pelist = crate::parser::parse_pelist_till_line_end_with_ws(Span::new(
-                            val.as_bytes(),
-                        ))
-                        .map(|x| x.1 .0)
-                        .unwrap_or(vec![]);
-                        let res = pelist.subst_pe(m, path_searcher);
-                        m.assign_eager(x.as_str(), res.clone(), path_searcher);
-                        res
-                    } else if let Some(val) = m.get_env_value(x) {
-                        let right = val
-                            .split(|c| c == ' ' || c == '\n')
-                            .map(|x| PathExpr::from(x.to_owned()))
-                            .collect();
-                        log::debug!("substituting env var {} with {:?}", x, right);
-                        right
-                    } else {
-                        log::warn!("No substitution found for {}", x);
-                        vec![Default::default()]
-                    }
-                };
+                let res = m.extract_evaluated_var(x.as_str(), path_searcher);
                 log::debug!("result of subst:{:?}", res);
                 res
             }
@@ -2489,7 +2508,7 @@ impl LocatedStatement {
         assignment_type: &AssignmentType,
     ) {
         let op = assignment_type.to_str();
-        debug!("assign: {:?} {} {:?}", left.name, op, right);
+        log::info!("assign: {:?} {} {:?}", left.name, op, right);
         /*
            With Lazy Assignment (=): The appends are added to the unevaluated value, and everything is evaluated only when the variable is expanded.
         With Eager Assignment (:=): The appends are added to the already evaluated value, and each append operation immediately affects the final value of the variable.
