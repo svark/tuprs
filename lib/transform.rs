@@ -271,9 +271,11 @@ impl ParseState {
         v: &str,
         path_searcher: &impl PathSearcher,
     ) -> Vec<PathExpr> {
+        debug!("evaluating var: {:?}", v);
         self.expr_map
             .get(v)
             .cloned()
+            .inspect(|x| debug!("eager extract_evaluated_var: {:?}", x))
             .or_else(|| {
                 self.func_map.remove(v).map(|val| {
                     let evaluated_val = val.subst_pe(self, path_searcher);
@@ -281,8 +283,9 @@ impl ParseState {
                     evaluated_val
                 })
             })
+            .inspect(|x| debug!("lazy extract_evaluated_var: {:?}", x))
             .or_else(|| {
-                self.conf_map.remove(v).map(|mut val| {
+                self.conf_map.remove(v).map(|val| {
                     let mut val = val.join(" ");
                     if !val.ends_with("\n") {
                         val.push('\n');
@@ -297,16 +300,15 @@ impl ParseState {
                     res
                 })
             })
+            .inspect(|x| debug!("lazy (conf) extract_evaluated_var: {:?}", x))
             .or_else(|| {
                 self.get_env_value(v).map(|val| {
-                    let r = val
-                        .split(|c| c == ' ' || c == '\n')
-                        .map(|x| PathExpr::from(x.to_owned()))
-                        .collect::<Vec<_>>();
+                    let r = to_pelist(val);
                     debug!("env value for {:?} is {:?}", v, r);
                     r
                 })
             })
+            .inspect(|x| debug!("env extract_evaluated_var: {:?}", x))
             .unwrap_or_else(|| {
                 log::warn!("No substitution found for {}", v);
                 vec![Default::default()]
