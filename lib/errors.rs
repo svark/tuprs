@@ -75,8 +75,8 @@ pub enum Error {
     #[error("Path search error: {0} at {1}")]
     PathSearchErrorCtx(String, TupLoc),
     /// Raw lua errors
-    #[error(transparent)]
-    LuaError(#[from] mlua::Error),
+    #[error("Lua error: {0}")]
+    LuaError(String),
     /// User error
     #[error("User error: {0} at {1}")]
     UserError(String, TupLoc),

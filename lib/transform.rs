@@ -37,20 +37,21 @@ use nom::AsBytes;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
-    static START: Once = Once::new();
-    static mut SHELL: Option<OsString> = None;
+    let shell = {
+        static SHELL: RwLock<Option<OsString>> = RwLock::new(None);
+        static START: Once = Once::new();
 
-    let shell = unsafe {
         START.call_once(|| {
-            SHELL = Some(
+            let mut shell = SHELL.write();
+            *shell = Some(
                 std::env::var_os("SHELL").unwrap_or_else(|| OsString::from(String::from("sh"))),
-            )
+            );
         });
 
-        SHELL.as_ref().unwrap()
+        SHELL.read()
     };
 
-    let mut command = std::process::Command::new(shell);
+    let mut command = std::process::Command::new(shell.as_ref().unwrap());
 
     command.arg("-c");
     command.arg(cmd);
@@ -2729,12 +2730,12 @@ impl ReadWriteBufferObjects {
     }
 
     /// returns the rule corresponding to `RuleDescriptor`
-    pub fn get_rule<'a>(&'a self, rd: &'a RuleDescriptor) -> &RuleFormulaInstance {
+    pub fn get_rule<'a>(&'a self, rd: &'a RuleDescriptor) -> &'a RuleFormulaInstance {
         let r = self.get();
         r.get_rule(rd)
     }
     /// returns task from its descriptor
-    pub fn get_task<'a>(&'a self, rd: &'a TaskDescriptor) -> &TaskInstance {
+    pub fn get_task<'a>(&'a self, rd: &'a TaskDescriptor) -> &'a TaskInstance {
         let r = self.get();
         r.get_task(rd)
     }

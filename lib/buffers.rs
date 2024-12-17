@@ -74,20 +74,20 @@ pub trait PathBuffers {
     /// return relative path from current and base.
     fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> NormalPath;
     /// Return Rule from its descriptor
-    fn get_rule<'a>(&'a self, rd: &'a RuleDescriptor) -> &RuleFormulaInstance;
+    fn get_rule<'a>(&'a self, rd: &'a RuleDescriptor) -> &'a RuleFormulaInstance;
     /// return Env from its descriptor
-    fn get_env<'a>(&'a self, ed: &'a EnvDescriptor) -> &Env;
+    fn get_env<'a>(&'a self, ed: &'a EnvDescriptor) -> &'a Env;
 
     /// Return tup file path from its descriptor
 
     /// Return task reference name from its descriptor
-    fn get_task<'a>(&'a self, id: &'a TaskDescriptor) -> &TaskInstance;
+    fn get_task<'a>(&'a self, id: &'a TaskDescriptor) -> &'a TaskInstance;
 
     /// fetch the descriptor for a task using its name and directory
     fn try_get_task_desc(&self, tup_cwd: &PathDescriptor, name: &str) -> Option<TaskDescriptor>;
 
     /// Try get a bin path entry by its descriptor.
-    fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &GroupPathEntry;
+    fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &'a GroupPathEntry;
 
     /// Directory descriptor from a group descriptor
     fn get_group_dir(&self, gd: &GroupPathDescriptor) -> PathDescriptor;
@@ -105,7 +105,7 @@ pub trait PathBuffers {
     fn get_path_str(&self, p: &PathDescriptor) -> String;
 
     /// Bin Name
-    fn get_bin_name<'a>(&'a self, b: &'a BinDescriptor) -> Cow<'_, str>;
+    fn get_bin_name<'a>(&'a self, b: &'a BinDescriptor) -> Cow<'a, str>;
 }
 
 /// ```PathDescriptor``` is an id given to a  folder where tupfile was found
@@ -812,10 +812,6 @@ impl PathBufferObject {
         });
         dir_entry.map(PathDescriptor::from_interned)
     }
-    /// get Path with the given id in this buffer
-    pub fn get_path(pd: &PathDescriptor) -> &NormalPath {
-        pd.get_path_ref()
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -1494,16 +1490,16 @@ impl PathBuffers for BufferObjects {
     }
 
     /// Returns rule corresponding to a rule descriptor. Panics if none is found
-    fn get_rule<'a>(&'a self, id: &'a RuleDescriptor) -> &RuleFormulaInstance {
+    fn get_rule<'a>(&'a self, id: &'a RuleDescriptor) -> &'a RuleFormulaInstance {
         RuleBufferObject::get(id)
     }
     /// Returns env corresponding to a env descriptor. Panics if none is found
-    fn get_env<'a>(&'a self, id: &'a EnvDescriptor) -> &Env {
+    fn get_env<'a>(&'a self, id: &'a EnvDescriptor) -> &'a Env {
         EnvBufferObject::get(id)
     }
 
     /// Returns path corresponding to the given tupfile descriptor
-    fn get_task<'a>(&'a self, id: &'a TaskDescriptor) -> &TaskInstance {
+    fn get_task<'a>(&'a self, id: &'a TaskDescriptor) -> &'a TaskInstance {
         TaskBufferObject::get(id)
     }
 
@@ -1521,7 +1517,7 @@ impl PathBuffers for BufferObjects {
         TaskBufferObject::fetch_interned(&task)
     }
     /// Try get a bin path entry by its descriptor.
-    fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &GroupPathEntry {
+    fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &'a GroupPathEntry {
         GroupBufferObject::get(gd)
     }
 
@@ -1554,7 +1550,7 @@ impl PathBuffers for BufferObjects {
     }
 
     /// return name of bin stored against its id
-    fn get_bin_name<'a>(&'a self, b: &'a BinDescriptor) -> Cow<'_, str> {
+    fn get_bin_name<'a>(&'a self, b: &'a BinDescriptor) -> Cow<'a, str> {
         b.get().get_name().into()
     }
 }

@@ -1221,7 +1221,7 @@ fn parse_rule_flags_or_description(i: Span) -> IResult<Span, RuleDescription> {
     let (s, _) = tag("^")(s)?;
     let (s, c) = alt((
         value(vec![' '], complete::char(' ')),
-        many1(one_of("bcjot")),
+        many1(one_of("bcjot1")),
     ))(s)?;
 
     let rule_flags: String = c.iter().skip_while(|c| c.is_whitespace()).collect();
