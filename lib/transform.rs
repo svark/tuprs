@@ -2,6 +2,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
+use std::io::BufWriter;
 use std::ops::ControlFlow::Continue;
 use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -19,7 +20,7 @@ use crate::decode::{
     paths_with_pattern, DecodeInputPlaceHolders, PathSearcher, ResolvePaths, ResolvedLink,
     ResolvedTask, RuleFormulaInstance, TaskInstance, TupLoc,
 };
-use crate::errors::Error::RootNotFound;
+use crate::errors::Error::{IoError, RootNotFound};
 use crate::errors::{Error as Err, Error};
 use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
 use crate::paths::{GlobPath, InputResolvedType, InputsAsPaths};
@@ -262,11 +263,11 @@ impl ParseState {
             ..ParseState::default()
         }
     }
-    /// Evaluate a variable and return its value. Eagerness is preferred over laziness.
-    /// Lazy evaluation is done for functions and `conf_map`.
+    /// Evaluate a variable and return its value. Eager evaluation is preferred over lazy evaluation.
+    /// Lazy evaluation is done for functions and `tupconfig` assignments in `conf_map`.
     /// Environment variable values are directly returned if the key is not found in `expr_map`, `func_map`, or `conf_map`.
     /// If the evaluation fails, an empty string is returned.
-    /// Once evaluated, the value is stored in the `expr_map`.
+    /// Once evaluated, it is stored in `expr_map`.
     pub(crate) fn extract_evaluated_var(
         &mut self,
         v: &str,
@@ -333,6 +334,26 @@ impl ParseState {
         if !self.load_dirs.contains(&p0) {
             self.load_dirs.push(p0);
         }
+    }
+
+    // Dump all variable to a file
+    pub(crate) fn dump_vars(&self, path: &Path) -> Result<(), Error> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(path).map_err(|e| crate::errors::Error::IoError(e,String::from("Unable to dump config"), Loc::new(0,0, 0)))?;
+        let mut f = BufWriter::new(f);
+        for (k, v) in self.expr_map.iter() {
+            let res = write!(f, "{}:={}", k, v.cat());
+            if let Err(e) = res {
+                return Err(IoError(e, String::from("Could write to config"), Loc::new(0,0, 0)));
+            }
+        }
+        for (k, v) in self.func_map.iter() {
+            let res = writeln!(f, "{}={}", k, v.cat());
+            if let Err(e) = res {
+                return Err(IoError(e, String::from("Could write to config"), Loc::new(0,0, 0)));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn get_tupfiles_read(&self) -> &Vec<PathDescriptor> {
