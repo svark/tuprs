@@ -1,8 +1,11 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
+use hex::encode;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
-use std::io::BufWriter;
+use std::fs::File;
+use std::io::Write;
+use std::io::{BufRead, BufWriter};
 use std::ops::ControlFlow::Continue;
 use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
 use std::path::{Path, PathBuf};
@@ -10,6 +13,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Once;
 use std::vec::Drain;
+
+use nonempty::{nonempty, NonEmpty};
 
 use crate::buffers::{
     BufferObjects, EnvDescriptor, EnvList, GenBufferObject, GlobPathDescriptor, GroupBufferObject,
@@ -36,7 +41,46 @@ use crossbeam::channel::{Receiver, Sender};
 use log::debug;
 use nom::AsBytes;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use sha2::{Digest, Sha256};
+use std::io::{self, BufReader, Read};
+use thiserror::__private::AsDisplay;
+fn dump_temp_tup(contents: &[u8], tuprun_pd: &PathDescriptor) {
+    if log::log_enabled!(log::Level::Debug) {
+        // write contents to a file for the user to inspect
+        let path = tuprun_pd.get_path_ref().as_path();
+        let mut f = File::create(path).expect("Could not write to tup_run_output.tup");
+        f.write_all(contents)
+            .expect(&format!("Could not write to {}", path.display()));
+    }
+}
 
+fn compute_sha256<P: AsRef<Path>>(path: P) -> io::Result<String> {
+    let file = File::open(path.as_ref())?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 1024];
+
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+
+    let result = hasher.finalize();
+    Ok(encode(result))
+}
+
+#[cfg(test)]
+fn test_sha256() -> io::Result<()> {
+    let path = "~/.bashrc";
+    match compute_sha256(path) {
+        Ok(hash) => println!("SHA-256 hash: {}", hash),
+        Err(e) => eprintln!("Error: {}", e),
+    }
+    Ok(())
+}
 fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     let shell = {
         static SHELL: RwLock<Option<OsString>> = RwLock::new(None);
@@ -93,8 +137,8 @@ impl StatementsToResolve {
         }
     }
     /// return parsed tupfile whose statements are to be resolved
-    pub fn get_tup_desc(&self) -> &TupPathDescriptor {
-        &self.parse_state.cur_file_desc
+    pub fn get_cur_file_desc(&self) -> &TupPathDescriptor {
+        &self.parse_state.get_cur_file_desc()
     }
     /// Get parse state after tupfile parsing.
     pub fn fetch_var(&self, var: &String) -> Option<String> {
@@ -125,24 +169,23 @@ pub(crate) struct ParseState {
     pub(crate) conf_map: HashMap<String, Vec<String>>,
     /// Macro assignments waiting for subst
     pub(crate) rule_map: HashMap<String, Link>,
-    /// Tupfile being read
-    pub(crate) tup_base_path: TupPathDescriptor,
-    /// Tupfile or an included file being read
-    pub(crate) cur_file: PathBuf,
-    /// unique descriptor for tupfile
-    pub(crate) cur_file_desc: TupPathDescriptor,
     /// preload these dirs
     pub(crate) load_dirs: Vec<PathDescriptor>,
     /// current state of env variables to be passed to rules for execution
     pub(crate) cur_env_desc: EnvList,
     /// Cache of statements from previously read Tupfiles
-    pub(crate) statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
+    pub(crate) statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, StatementsInFile>>>,
     /// Buffers to store files, groups, bins, env with its id.
     pub(crate) path_buffers: Arc<BufferObjects>,
     /// tracks the context of parsing for substitutions
     pub(crate) parse_context: ParseContext,
     /// history of included files parsed so far
     pub(crate) tup_files_read: Vec<TupPathDescriptor>,
+    /// cached config information that stores substituted parse state to a config file
+    /// Only absolute paths (from build root) must be present such files
+    pub(crate) cached_config: Vec<(TupPathDescriptor, PathDescriptor)>,
+    /// current tupfile active stack.
+    pub(crate) cur_tupfile_loc_stack: NonEmpty<TupLoc>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -225,11 +268,11 @@ impl ParseState {
         conf_map: &HashMap<String, Vec<String>>,
         cur_file_desc: TupPathDescriptor,
         cur_env_desc: Vec<EnvDescriptor>,
-        statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>,
+        statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, StatementsInFile>>>,
         bo: Arc<BufferObjects>,
     ) -> Self {
         let mut def_vars = HashMap::new();
-        let cur_file = bo.get_path(&cur_file_desc).clone();
+        //let cur_file = bo.get_path(&cur_file_desc).clone();
         let dir = cur_file_desc.get_parent_descriptor();
         def_vars.insert(
             "TUP_CWD".to_owned(),
@@ -254,14 +297,54 @@ impl ParseState {
         ParseState {
             conf_map: conf_map.clone(),
             expr_map: def_vars,
-            cur_file: cur_file.clone().to_path_buf(),
-            tup_base_path: cur_file_desc.clone(),
-            cur_file_desc,
             cur_env_desc: EnvList::from(cur_env_desc),
             statement_cache: statement_cache.clone(),
             path_buffers: bo,
+            cur_tupfile_loc_stack: nonempty![TupLoc::new(&cur_file_desc, &Loc::default())],
+            tup_files_read,
             ..ParseState::default()
         }
+    }
+    pub(crate) fn to_statements_in_file(&self, stmts: Vec<LocatedStatement>) -> StatementsInFile {
+        StatementsInFile::new_includes_from_with_trail(
+            self.get_current_tup_loc().clone(),
+            stmts,
+            self.get_include_path().clone(),
+        )
+    }
+
+    fn get_cached_config(&self) -> &Vec<(TupPathDescriptor, PathDescriptor)> {
+        &self.cached_config
+    }
+    fn set_cached_config(&mut self, path: Option<PathDescriptor>) {
+        let tup_path_desc: TupPathDescriptor = self.get_cur_file_desc().clone();
+        path.map(|p| (tup_path_desc, p))
+            .iter()
+            .for_each(|(tup, p)| {
+                self.cached_config.push((tup.clone(), p.clone()));
+            });
+    }
+    pub(crate) fn get_include_path_str(&self) -> String {
+        let mut buf = Vec::new();
+        self.cur_tupfile_loc_stack.iter().for_each(|x| {
+            write!(buf, "{}\n", x.as_display()).unwrap();
+        });
+        String::from_utf8(buf).unwrap()
+    }
+    fn get_include_path(&self) -> &NonEmpty<TupLoc> {
+        &self.cur_tupfile_loc_stack
+    }
+
+    fn set_loc(&mut self, loc: &Loc) {
+        self.cur_tupfile_loc_stack.last_mut().set_loc(loc.clone());
+    }
+
+    fn get_current_tup_loc(&self) -> &TupLoc {
+        self.get_include_path().last()
+    }
+
+    fn get_current_loc(&self) -> &Loc {
+        &self.get_current_tup_loc().get_loc()
     }
     /// Evaluate a variable and return its value. Eager evaluation is preferred over lazy evaluation.
     /// Lazy evaluation is done for functions and `tupconfig` assignments in `conf_map`.
@@ -320,7 +403,7 @@ impl ParseState {
         self.cur_env_desc.add(p0.clone())
     }
 
-    pub(crate) fn get_envs(&mut self) -> HashMap<String, String> {
+    pub(crate) fn get_envs(&self) -> HashMap<String, String> {
         self.cur_env_desc.get_key_value_pairs()
     }
 
@@ -336,21 +419,76 @@ impl ParseState {
         }
     }
 
+    fn read_cached_config_at(&self, fullpath: &Path) -> Result<(String, String), Error> {
+        let hash = get_sha256_hash(self.get_cur_file())?;
+        // read the first line of the file and compare with the hash
+        let f = std::fs::File::open(fullpath)
+            .map_err(|e| Error::new_path_search_error(format!("{}", e.to_string())))?;
+        let mut buf = BufReader::new(f);
+        let mut line = String::new();
+        buf.read_line(&mut line).unwrap_or_default();
+        let header = format!("#tup.config {}", hash);
+        Ok((line, header))
+    }
+
+    pub(crate) fn read_cached_config(&mut self) -> bool {
+        let mut do_read = false;
+        let mut read = || -> std::result::Result<bool, Error> {
+            let fullpath = self.get_cur_file().with_extension("tup.config");
+            if std::fs::exists(fullpath.as_path()).unwrap_or(false) {
+                let (line, header) = self.read_cached_config_at(&fullpath)?;
+                if line.trim() == header {
+                    do_read = true;
+                }
+            }
+            if do_read {
+                load_config_vars_raw(fullpath.as_path(), &mut self.conf_map)?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        };
+        read().unwrap_or_default()
+    }
+
+    pub(crate) fn write_cached_config(&mut self) {
+        let mut c = self.get_cached_config().iter();
+        while let Some((tup, p)) = c.next() {
+            if tup.ne(self.get_cur_file_desc()) {
+                continue;
+            }
+            let path = p.get_path_ref();
+            debug!("writing cached config to {:?}", path);
+            let cur_file = self.get_cur_file();
+            //let extn = cur_file.extension().unwrap_or_default();
+            let fullpath = cur_file.with_extension("tempconfig.tup");
+            debug!("writing cached config to {:?}", fullpath);
+            let _ = get_sha256_hash(&cur_file)
+                .and_then(|hash| self.dump_vars(&fullpath, hash.as_str()));
+        }
+    }
     // Dump all variable to a file
-    pub(crate) fn dump_vars(&self, path: &Path) -> Result<(), Error> {
+    pub(crate) fn dump_vars(&self, path: &Path, sha: &str) -> Result<(), Error> {
         use std::io::Write;
-        let mut f = std::fs::File::create(path).map_err(|e| crate::errors::Error::IoError(e,String::from("Unable to dump config"), Loc::new(0,0, 0)))?;
+        let err_string = format!("Could not write to cached config {:?}", path);
+        let f = std::fs::File::create(path)
+            .map_err(|e| IoError(e, err_string.clone(), Loc::new(0, 0, 0)))?;
         let mut f = BufWriter::new(f);
+        write!(f, "#tup.config sha:{}\n", sha).expect(err_string.as_str());
         for (k, v) in self.expr_map.iter() {
             let res = write!(f, "{}:={}", k, v.cat());
             if let Err(e) = res {
-                return Err(IoError(e, String::from("Could write to config"), Loc::new(0,0, 0)));
+                return Err(IoError(e, err_string, Loc::new(0, 0, 0)));
             }
         }
         for (k, v) in self.func_map.iter() {
             let res = writeln!(f, "{}={}", k, v.cat());
             if let Err(e) = res {
-                return Err(IoError(e, String::from("Could write to config"), Loc::new(0,0, 0)));
+                return Err(IoError(
+                    e,
+                    String::from("Could write to config"),
+                    Loc::new(0, 0, 0),
+                ));
             }
         }
         Ok(())
@@ -367,16 +505,19 @@ impl ParseState {
     pub(crate) fn get_statements_from_cache(
         &self,
         tup_desc: &TupPathDescriptor,
-    ) -> Option<Vec<LocatedStatement>> {
+    ) -> Option<StatementsInFile> {
         let x = self.statement_cache.deref().read();
         x.get(tup_desc).cloned()
     }
     /// returns the Tupfile being parsed (not the included file)
     pub(crate) fn get_tup_base_dir(&self) -> PathDescriptor {
-        self.tup_base_path.get_parent_descriptor()
+        self.get_include_path()
+            .first()
+            .get_tupfile_desc()
+            .get_parent_descriptor()
     }
     pub(crate) fn get_tup_base_file(&self) -> PathDescriptor {
-        self.tup_base_path.clone()
+        self.get_include_path().first().get_tupfile_desc().clone()
     }
 
     pub(crate) fn replace_tup_cwd(&mut self, dir: MatchingPath) -> Option<Vec<PathExpr>> {
@@ -401,11 +542,11 @@ impl ParseState {
         tupfile_desc: &PathDescriptor,
         process: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        let old_cur_file = self.get_cur_file_desc().clone();
-        self.add_to_tupfiles_read(tupfile_desc);
-        self.set_cwd(tupfile_desc)?;
+        let do_pop = self.push_tup(tupfile_desc)?;
         let res = process(self);
-        self.set_cwd(&old_cur_file)?;
+        if do_pop {
+            self.pop_tup()?;
+        }
         res
     }
 
@@ -420,7 +561,10 @@ impl ParseState {
         let pbuffers = Arc::new(BufferObjects::new(get_parent(cur_file.as_ref())));
         let cur_file_desc = pbuffers.add_tup(cur_file.as_ref());
         let tup_dir = cur_file_desc.get_parent_descriptor();
-        let cur_file = cur_file_desc.get_path_ref().as_path().to_path_buf();
+        debug!(
+            "creating new  parseState for {:?}",
+            cur_file_desc.get_path_ref()
+        );
         def_vars.insert(
             "TUP_CWD".to_owned(),
             vec![MatchingPath::new(tup_dir, PathDescriptor::default()).into()],
@@ -434,26 +578,29 @@ impl ParseState {
             .into()],
         );
 
+        let include_path_stack = nonempty![TupLoc::new(&cur_file_desc, &Loc::default())];
         ParseState {
             expr_map: def_vars,
-            cur_file: cur_file.clone(),
-            tup_base_path: cur_file_desc.clone(),
-            cur_file_desc,
+            cur_tupfile_loc_stack: include_path_stack,
             path_buffers: pbuffers,
             ..ParseState::default()
         }
     }
     /// set the current TUP_CWD, TUP_ROOT in expression map in ParseState as we switch to reading an included file
-    pub fn set_cwd(&mut self, tupfile: &PathDescriptor) -> Result<(), Error> {
-        if tupfile.eq(&self.cur_file_desc) {
+    pub fn set_cwd(
+        &mut self,
+        tupfile: &PathDescriptor,
+        old_tupfile: &TupPathDescriptor,
+    ) -> Result<(), Error> {
+        let old_tup_dir = old_tupfile.get_parent_descriptor();
+        if tupfile.eq(&self.get_cur_file_desc()) {
             return Ok(());
         }
-        let old_tup_dir = self.get_tup_dir_desc();
-
-        self.cur_file_desc = tupfile.clone();
+        //self.cur_file_desc = tupfile.clone();
         debug!(
             "switching to:{:?} from: {:?}",
-            self.cur_file_desc, old_tup_dir
+            self.get_cur_file_desc(),
+            old_tup_dir
         );
         if self.get_tup_dir_desc() != old_tup_dir {
             let diff = RelativeDirEntry::new(self.get_tup_base_dir(), self.get_tup_dir_desc());
@@ -468,9 +615,36 @@ impl ParseState {
         Ok(())
     }
 
+    pub fn push_tup(&mut self, tupfile: &PathDescriptor) -> Result<bool, Error> {
+        let old_tupfile = self.get_cur_file_desc().clone();
+        if tupfile.eq(&self.get_cur_file_desc()) {
+            return Ok(false);
+        }
+        self.push_trail(tupfile);
+        self.set_cwd(tupfile, &old_tupfile)?;
+        Ok(true)
+    }
+    pub fn pop_tup(&mut self) -> Result<(), Error> {
+        //let new_tupfile = self.get_cur_file_desc().clone();
+
+        let new_tupfile = self.pop_trail().get_tupfile_desc().clone();
+        let old_tupfile = self.get_cur_file_desc().clone();
+        self.set_cwd(&old_tupfile, &new_tupfile)?;
+        Ok(())
+    }
+
+    fn push_trail(&mut self, tupfile: &TupPathDescriptor) {
+        self.cur_tupfile_loc_stack
+            .push(TupLoc::new(tupfile, &Loc::default()));
+    }
+    fn pop_trail(&mut self) -> TupLoc {
+        let tuploc = self.cur_tupfile_loc_stack.pop().unwrap();
+        tuploc
+    }
+
     /// return the tupfile being parsed
     pub(crate) fn get_cur_file(&self) -> &Path {
-        self.cur_file_desc.get_path_ref().as_path()
+        self.get_cur_file_desc().get_path_ref().as_path()
     }
 
     // get directory of the tupfile being parsed
@@ -478,18 +652,14 @@ impl ParseState {
         self.get_cur_file_desc().get_parent_descriptor()
     }
 
-    /// Get descritptor of the tup file being parsed
+    /// Get descriptor of the tup file being parsed
     pub(crate) fn get_cur_file_desc(&self) -> &TupPathDescriptor {
-        &self.cur_file_desc
+        //&self.cur_file_desc
+        self.cur_tupfile_loc_stack.last().get_tupfile_desc()
     }
 
     /// Add statements to cache.
-    fn add_statements_to_cache(
-        &mut self,
-        tup_desc: &TupPathDescriptor,
-        mut vs: Vec<LocatedStatement>,
-    ) {
-        vs.retain_mut(|x| !x.is_comment());
+    fn add_statements_to_cache(&mut self, tup_desc: &TupPathDescriptor, vs: StatementsInFile) {
         self.statement_cache
             .deref()
             .write()
@@ -633,175 +803,145 @@ impl ParseState {
     }
 }
 
-/// Method to expand tup `run` statement to discover new rules to add
-/// run is expected to echo regular rule statements which we add to list of rules during the `subst` phase.
-trait ExpandRun {
-    fn expand_run(
-        &mut self,
-        parse_state: &mut ParseState,
-        path_searcher: &impl PathSearcher,
-    ) -> Result<(), Error>
-    where
-        Self: Sized;
-}
-
-impl Statement {
+impl StatementsInFile {
+    fn get_run_script_args(&self) -> Option<&Vec<PathExpr>> {
+        match self {
+            StatementsInFile::Current(l) => match l.get_statement() {
+                Statement::Run(script_args) => Some(script_args),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
     /// expand_run adds Statements returned by executing a shell command. Rules that are output from the command should be in the regular format for rules that Tup supports
     /// see docs for how the environment is picked.
     fn expand_run(
         &self,
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        loc: &Loc,
-    ) -> Result<Vec<LocatedStatement>, Error> {
-        let rule_ref = TupLoc::new(&parse_state.cur_file_desc, loc);
+    ) -> Result<Option<StatementsInFile>, Error> {
+        let tup_loc = parse_state.get_current_tup_loc();
 
+        let loc = tup_loc.get_loc();
         let path_buffers = parse_state.get_path_buffers();
         let path_buffers = path_buffers.deref();
-        match self {
-            Statement::Run(script_args) => {
-                if let Some(script) = script_args.first() {
-                    let mut acnt = 0;
-                    let mut cmd = if !cfg!(windows)
-                        || Path::new(script.cat_ref().as_ref()).extension()
-                            == Some(OsStr::new("sh"))
-                        || script.cat_ref() == "sh"
-                    {
-                        acnt = (script.cat_ref() == "sh").into();
-                        std::process::Command::new("sh")
-                    } else {
-                        std::process::Command::new("cmd.exe")
-                    };
-                    for arg_expr in script_args.iter().skip(acnt) {
-                        let arg = arg_expr.cat_ref();
-                        let arg = arg.trim();
-                        if arg.contains('*') {
-                            let p =
-                                path_buffers.add_path_from(&parse_state.get_tup_dir_desc(), arg)?;
+        let tup_cwd = parse_state.get_tup_dir_desc();
+
+        if let Some(script_args) = self.get_run_script_args() {
+            if let Some(script) = script_args.first() {
+                let mut acnt = 0;
+                let mut cmd = if !cfg!(windows)
+                    || Path::new(script.cat_ref().as_ref()).extension() == Some(OsStr::new("sh"))
+                    || script.cat_ref() == "sh"
+                {
+                    acnt = (script.cat_ref() == "sh").into();
+                    std::process::Command::new("sh")
+                } else {
+                    std::process::Command::new("cmd.exe")
+                };
+                for arg_expr in script_args.iter().skip(acnt) {
+                    let arg = arg_expr.cat_ref();
+                    let arg = arg.trim();
+                    if arg.contains('*') {
+                        let p = path_buffers.add_path_from(&parse_state.get_tup_dir_desc(), arg)?;
+                        let glob_path = GlobPath::build_from(&parse_state.get_tup_dir_desc(), &p)?;
+                        let glob_path_desc = glob_path.get_glob_path_desc();
+                        let rel_path =
+                            RelativeDirEntry::new(parse_state.get_tup_dir_desc(), glob_path_desc);
+                        let mut glob_paths = vec![glob_path];
+                        for dir_desc in parse_state.load_dirs.iter() {
                             let glob_path =
-                                GlobPath::build_from(&parse_state.get_tup_dir_desc(), &p)?;
-                            let glob_path_desc = glob_path.get_glob_path_desc();
-                            let rel_path = RelativeDirEntry::new(
+                                GlobPath::build_from_relative_desc(dir_desc, &rel_path)?;
+                            glob_paths.push(glob_path);
+                        }
+                        let matches = path_searcher
+                            .discover_paths(path_buffers, glob_paths.as_slice())
+                            .unwrap_or_else(|_| panic!("error matching glob pattern {}", arg));
+
+                        debug!("expand_run num files from glob:{:?}", matches.len());
+                        for ofile in matches {
+                            let p = RelativeDirEntry::new(
                                 parse_state.get_tup_dir_desc(),
-                                glob_path_desc,
+                                ofile.path_descriptor(),
                             );
-                            let mut glob_paths = vec![glob_path];
-                            for dir_desc in parse_state.load_dirs.iter() {
-                                let glob_path =
-                                    GlobPath::build_from_relative_desc(dir_desc, &rel_path)?;
-                                glob_paths.push(glob_path);
-                            }
-                            let matches = path_searcher
-                                .discover_paths(path_buffers, glob_paths.as_slice())
-                                .unwrap_or_else(|_| panic!("error matching glob pattern {}", arg));
-
-                            debug!("expand_run num files from glob:{:?}", matches.len());
-                            for ofile in matches {
-                                let p = RelativeDirEntry::new(
-                                    parse_state.get_tup_dir_desc(),
-                                    ofile.path_descriptor(),
-                                );
-                                cmd.arg(p.get_path().as_path());
-                            }
-                        } else if !arg.is_empty() {
-                            cmd.arg(arg);
+                            cmd.arg(p.get_path().as_path());
                         }
-                    }
-                    let envs = parse_state.get_envs();
-                    let tupdir = parse_state.get_tup_dir_desc();
-                    let dir = path_buffers
-                        .get_root_dir()
-                        .join(tupdir.get_path_ref().as_path().as_os_str());
-                    if cmd.get_args().len() != 0 {
-                        cmd.envs(envs).current_dir(dir.as_path());
-
-                        debug!("running {:?} to fetch more rules", cmd);
-                        let output = cmd
-                            .stdout(Stdio::piped())
-                            .stderr(Stdio::piped())
-                            .output()
-                            .unwrap_or_else(|_| {
-                                panic!(
-                                    "Failed to execute tup run {} in Tupfile : {:?} at pos:{:?}",
-                                    script_args.cat().as_str(),
-                                    dir.as_os_str(),
-                                    loc
-                                )
-                            });
-                        //println!("status:{}", output.status);
-                        let contents = output.stdout;
-                        if !output.stderr.is_empty() {
-                            return Err(Error::RunError(
-                                rule_ref,
-                                std::str::from_utf8(output.stderr.as_slice())
-                                    .unwrap()
-                                    .to_string(),
-                            ));
-                        }
-                        debug!(
-                            "contents: \n {}",
-                            String::from_utf8(contents.clone()).unwrap_or_default()
-                        );
-                        let err = String::from_utf8(output.stderr.clone()).unwrap_or_default();
-                        if err.len() > 0 {
-                            log::error!(
-                            "error from executing run statement \n {} \n in Tupfile in dir: {:?} at pos:{:?}",
-                            String::from_utf8(output.stderr).unwrap_or_default(),
-                            dir.as_os_str(),
-                            loc
-                        );
-                        }
-
-                        let lstmts = parse_statements_until_eof(Span::new(contents.as_slice()))
-                            .expect("failed to parse output of tup run");
-                        let lstmts = lstmts
-                            .subst(parse_state, path_searcher)
-                            .expect("subst failure in generated tup rules");
-                        return Ok(lstmts);
-                    } else {
-                        eprintln!("Warning tup run arguments are empty in Tupfile in dir:{:?} at pos:{:?}", dir, loc);
+                    } else if !arg.is_empty() {
+                        cmd.arg(arg);
                     }
                 }
-            }
-            _ => {}
-        }
-        Ok(vec![])
-    }
-}
+                let envs = parse_state.get_envs();
+                let tupdir = parse_state.get_tup_dir_desc();
+                let dir = path_buffers
+                    .get_root_dir()
+                    .join(tupdir.get_path_ref().as_path().as_os_str());
+                if cmd.get_args().len() != 0 {
+                    cmd.envs(envs).current_dir(dir.as_path());
 
-impl ExpandRun for Vec<LocatedStatement> {
-    /// discover more rules to add by running shell commands
-    fn expand_run(
-        &mut self,
-        parse_state: &mut ParseState,
-        path_searcher: &impl PathSearcher,
-    ) -> Result<(), Error>
-    where
-        Self: Sized,
-    {
-        let mut from = 0 as usize;
-        while let Some((i, ls)) = self[from..].iter().enumerate().find(|(_, ls)| ls.is_run()) {
-            {
-                let l = ls.get_statement().clone();
-                let stmts = l.expand_run(parse_state, path_searcher, ls.get_loc())?;
-                self.splice(i..i + 1, stmts);
-                from = i + 1;
+                    debug!("running {:?} to fetch more rules", cmd);
+                    let output = cmd
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .output()
+                        .unwrap_or_else(|_| {
+                            panic!(
+                                "Failed to execute tup run {} in Tupfile : {:?} at pos:{:?}",
+                                script_args.cat().as_str(),
+                                dir.as_os_str(),
+                                loc
+                            )
+                        });
+                    //println!("status:{}", output.status);
+                    let contents = output.stdout;
+                    if !output.stderr.is_empty() {
+                        return Err(Error::RunError(
+                            tup_loc.clone(),
+                            std::str::from_utf8(output.stderr.as_slice())
+                                .unwrap()
+                                .to_string(),
+                        ));
+                    }
+                    debug!(
+                        "contents: \n {}",
+                        String::from_utf8(contents.clone()).unwrap_or_default()
+                    );
+                    let err = String::from_utf8(output.stderr.clone()).unwrap_or_default();
+                    if err.len() > 0 {
+                        log::error!(
+                        "error from executing run statement \n {} \n in Tupfile in dir: {:?} at pos:{:?}",
+                        String::from_utf8(output.stderr).unwrap_or_default(),
+                        dir.as_os_str(),
+                        loc
+                    );
+                    }
+                    let tup_run_file_name = format!("tup_run_output_temp{}.tup", loc.get_line());
+                    let tuprun_pd =
+                        path_buffers.add_path_from(&tup_cwd, tup_run_file_name.as_str())?;
+                    dump_temp_tup(contents.as_slice(), &tuprun_pd);
+                    let lstmts = parse_state.switch_tupfile_and_process(&tuprun_pd, |ps| {
+                        let lstmts = parse_statements_until_eof(Span::new(contents.as_slice()))
+                            .expect(
+                                format!(
+                                    "failed to parse output of tup run: \n{}",
+                                    std::str::from_utf8(contents.as_slice()).unwrap_or_default()
+                                )
+                                .as_str(),
+                            );
+                        let lstmts = ps.to_statements_in_file(lstmts);
+                        let lstmts = lstmts.subst(ps, path_searcher)?;
+                        Ok(lstmts)
+                    })?;
+                    return Ok(Some(lstmts));
+                } else {
+                    eprintln!(
+                        "Warning tup run arguments are empty in Tupfile in dir:{:?} at pos:{:?}",
+                        dir, loc
+                    );
+                }
             }
         }
-        self.retain(|x| !x.is_run());
-        Ok(())
+        Ok(None)
     }
-}
-
-/// trait that a method to run variable substitution on different parts of tupfile
-pub(crate) trait Subst {
-    fn subst(
-        &self,
-        parse_state: &mut ParseState,
-        path_searcher: &impl PathSearcher,
-    ) -> Result<Self, Err>
-    where
-        Self: Sized;
 }
 
 /// trait to substitute macro references in rules
@@ -885,7 +1025,7 @@ pub(crate) fn to_regex(pat: &str) -> String {
 /// Discover paths that match glob pattern and have pattern in its contents
 fn discover_paths_with_pattern(
     psx: &impl PathSearcher,
-    path_buffers: &impl PathBuffers,
+    path_buffers: &BufferObjects,
     glob: &[GlobPath],
     pattern: &str,
 ) -> Result<Vec<MatchingPath>, Error> {
@@ -1212,44 +1352,61 @@ impl DollarExprs {
                 //let body = body.subst_pe(m);
                 let body_str = body.cat() + "\n";
                 debug!("eval foreach body as statements:\n{:?}", body_str);
+                let dump_file_name = format!(
+                    "tup_foreach_body{}.tup.temp",
+                    m.get_current_loc().get_line()
+                );
+                let dump_file_pd = m
+                    .get_path_buffers()
+                    .add_path_from(&m.get_tup_dir_desc(), dump_file_name.as_str())
+                    .unwrap();
+                dump_temp_tup(body_str.as_bytes(), &dump_file_pd);
 
-                let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
-                    .expect("failed to parse body of for-each");
-                debug!("stmts:{:?}", stmts);
-                let mut vs_updated = Vec::new();
-                for l in list.iter_mut() {
-                    if let PathExpr::Literal(ref s) = l {
-                        let oldval = m.expr_map.insert(var.clone(), vec![s.clone().into()]);
+                m.switch_tupfile_and_process(&dump_file_pd, |ps| -> Result<Vec<PathExpr>, Error> {
+                    let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
+                        .expect("failed to parse body of for-each");
+                    //stmts.iter_mut().for_each(|x| x.update_loc(m.get_cur_file().get_line()));
+                    debug!("stmts:{:?}", &stmts);
+                    let mut vs_updated = Vec::new();
+                    let stmts_in_file = ps.to_statements_in_file(stmts);
 
-                        let mut vs = Self::subst_as_statements(
-                            m,
-                            path_searcher,
-                            body_str.clone(),
-                            stmts.clone(),
-                        );
-                        if !vs.is_empty() {
-                            vs.push(PathExpr::NL);
-                        }
-                        debug!(
-                            "substed list var {}={} in foreach body :\n{:?}",
-                            var.as_str(),
-                            s.as_str(),
-                            vs
-                        );
-                        debug!("$seen:{}", m.expr_map.get("seen").unwrap_or(&vec![]).cat());
-                        vs_updated.extend(vs);
-                        if let Some(v) = oldval {
-                            m.expr_map.insert(var.clone(), v);
-                        } else {
-                            m.expr_map.remove(var);
+                    for l in list.iter_mut() {
+                        if let PathExpr::Literal(ref s) = l {
+                            let oldval = ps.expr_map.insert(var.clone(), vec![s.clone().into()]);
+
+                            let mut vs = DollarExprs::subst_as_statements(
+                                ps,
+                                path_searcher,
+                                body_str.clone(),
+                                &stmts_in_file,
+                            );
+                            if !vs.is_empty() {
+                                vs.push(PathExpr::NL);
+                            }
+                            debug!(
+                                "substed list var {}={} in foreach body :\n{:?}",
+                                var.as_str(),
+                                s.as_str(),
+                                vs
+                            );
+                            debug!("$seen:{}", ps.expr_map.get("seen").unwrap_or(&vec![]).cat());
+                            vs_updated.extend(vs);
+                            if let Some(v) = oldval {
+                                ps.expr_map.insert(var.clone(), v);
+                            } else {
+                                ps.expr_map.remove(var);
+                            }
                         }
                     }
-                }
-                if vs_updated.ends_with(&[PathExpr::Sp1]) || vs_updated.ends_with(&[PathExpr::NL]) {
-                    vs_updated.pop();
-                }
-                vs_updated.cleanup();
-                vs_updated
+                    if vs_updated.ends_with(&[PathExpr::Sp1])
+                        || vs_updated.ends_with(&[PathExpr::NL])
+                    {
+                        vs_updated.pop();
+                    }
+                    vs_updated.cleanup();
+                    Ok(vs_updated)
+                })
+                .unwrap_or_default()
             }
 
             DollarExprs::WildCard(glob) => {
@@ -1273,7 +1430,6 @@ impl DollarExprs {
                     if !gstr.is_empty() {
                         let dir = m.get_tup_base_dir(); // wildcards are evaluated w.r.t tup base dir (tupfile being parsed as opposed to one of its includes)
                         debug!("relative to {:?}", dir.get_path_ref());
-                        //let ldirs = m.load_dirs.clone();
                         let r = m.with_path_buffers_do(|path_buffers_mut| {
                             let p = path_buffers_mut
                                 .add_path_from(&dir, gstr.as_str())
@@ -1286,14 +1442,6 @@ impl DollarExprs {
                             let glob_path_desc = glob_path.get_glob_path_desc();
                             let rel_path = RelativeDirEntry::new(dir.clone(), glob_path_desc);
                             debug!("rel_path:{:?}", rel_path);
-                            /* wildcard in makefile does not look for files in vpath or other search dirs unless.
-                            for dir_desc in ldirs.iter() {
-                                let glob_path =
-                                    GlobPath::build_from_relative_desc(dir_desc, &rel_path)
-                                        .expect("Failed to build a glob path");
-                                debug!("looking for path in {:?}", glob_path);
-                                glob_paths.push(glob_path); // other directories in which to look for paths
-                            }*/
                             let paths = path_searcher
                                 .discover_paths(path_buffers_mut, std::slice::from_ref(&glob_path))
                                 .unwrap_or_else(|e| {
@@ -1601,27 +1749,58 @@ impl DollarExprs {
             DollarExprs::If(cond, then_part, else_part) => {
                 let cond = cond.subst_pe(m, path_searcher);
                 let cond = cond.cat();
+                let dump_else_part_file_name = format!(
+                    "tup_if_else_part{}.tup.temp",
+                    m.get_current_loc().get_line()
+                );
+                let dump_else_part_pd = m
+                    .get_path_buffers()
+                    .add_path_from(&m.get_tup_dir_desc(), dump_else_part_file_name.as_str())
+                    .unwrap();
                 if cond.is_empty() {
                     let else_part_str = else_part.cat() + "\n";
-                    let else_part = parse_statements_until_eof(Span::new(else_part_str.as_bytes()))
+                    dump_temp_tup(else_part_str.as_bytes(), &dump_else_part_pd);
+                    m.switch_tupfile_and_process(&dump_else_part_pd, |m| {
+                        let else_part = parse_statements_until_eof(Span::new(
+                            else_part_str.as_bytes(),
+                        ))
                         .unwrap_or_else(|e| {
                             panic!(
                                 "failed to parse else part of if statement: {:?} with error: {}",
                                 else_part, e
                             )
                         });
-                    Self::subst_as_statements(m, path_searcher, else_part_str, else_part)
+                        let else_part_statements = m.to_statements_in_file(else_part);
+                        Ok(Self::subst_as_statements(
+                            m,
+                            path_searcher,
+                            else_part_str,
+                            &else_part_statements,
+                        ))
+                    })
+                    .unwrap_or_default()
                 } else {
                     let then_part_str = then_part.cat() + "\n";
-                    let then_part = parse_statements_until_eof(Span::new(then_part_str.as_bytes()))
+                    dump_temp_tup(then_part_str.as_bytes(), &dump_else_part_pd);
+                    m.switch_tupfile_and_process(&dump_else_part_pd, |m| {
+                        let then_part = parse_statements_until_eof(Span::new(
+                            then_part_str.as_bytes(),
+                        ))
                         .unwrap_or_else(|e| {
                             panic!(
                                 "failed to parse then part of if statement: {:?} with error: {}",
-                                then_part_str.as_str(),
-                                e
+                                then_part_str, e
                             )
                         });
-                    Self::subst_as_statements(m, path_searcher, then_part_str, then_part)
+                        let then_part_statements = m.to_statements_in_file(then_part);
+                        Ok(Self::subst_as_statements(
+                            m,
+                            path_searcher,
+                            then_part_str,
+                            &then_part_statements,
+                        ))
+                    })
+                    .unwrap_or_default()
                 }
             }
             DollarExprs::Eval(pes) => {
@@ -1631,14 +1810,24 @@ impl DollarExprs {
                     let mut val = pes.cat();
                     val.push('\n');
                     debug!("evaluating {}", val);
-                    let stmts = parse_statements_until_eof(Span::new(val.as_bytes()))
-                        .unwrap_or_else(|e| {
-                            panic!(
-                                "failed to parse eval body statements statement: {:?} with error: {}",
-                                val.as_str(), e
-                            )
-                        });
-                    Self::subst_as_statements(m, path_searcher, val, stmts)
+                    let dump_eval_file_name =
+                        format!("tup_eval{}.tup.temp", m.get_current_loc().get_line());
+                    let dump_eval_file_pd = m
+                        .get_path_buffers()
+                        .add_path_from(&m.get_tup_dir_desc(), dump_eval_file_name.as_str())
+                        .unwrap();
+                    dump_temp_tup(val.as_bytes(), &dump_eval_file_pd);
+                    m.switch_tupfile_and_process(&dump_eval_file_pd, |m| {
+                        let stmts = parse_statements_until_eof(Span::new(val.as_bytes()))
+                            .unwrap_or_else(|e| {
+                                panic!(
+                                    "failed to parse eval body statements statement: {:?} with error: {} o:{}",
+                                    val.as_str(), e, m.get_include_path_str()
+                                )
+                            });
+                        let stmt = m.to_statements_in_file(stmts);
+                        Ok(DollarExprs::subst_as_statements(m, path_searcher, val, &stmt))
+                    }).unwrap_or_default()
                 } else {
                     pes.subst_pe(m, path_searcher)
                 }
@@ -1774,7 +1963,7 @@ impl DollarExprs {
         m: &mut ParseState,
         path_searcher: &impl PathSearcher,
         val: String,
-        stmts_: Vec<LocatedStatement>,
+        stmts_: &StatementsInFile,
     ) -> Vec<PathExpr> {
         debug!("eval stmts before subst: {:?} with val:{}", stmts_, val);
         let mut stmts = stmts_.subst(m, path_searcher).unwrap_or_else(|e| {
@@ -1787,16 +1976,14 @@ impl DollarExprs {
         debug!("eval stmts after subst: {:?}", stmts);
         stmts.cleanup();
 
-        // let v: Vec<_> = stmts.iter().map(|x| x.cat()).collect();
-        //let str = v.join(" ");
         let mut result = Vec::new();
-        for stmt in stmts.iter() {
+        stmts.for_each(|stmt| {
             let pelist = match stmt.get_statement() {
                 Statement::EvalBlock(eb) => eb.clone(),
                 _ => to_pelist(stmt.cat()),
             };
             result.extend(pelist);
-        }
+        });
         debug!("eval returned {}", result.as_slice().cat_ref());
         result
     }
@@ -2072,28 +2259,7 @@ fn tovecstring(right: &[PathExpr]) -> Vec<String> {
 pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>, Error> {
     let mut conf_vars = HashMap::new();
     if conf_file.is_file() {
-        for LocatedStatement { statement, .. } in parse_tupfile(conf_file.as_path())?.iter() {
-            if let Statement::AssignExpr { left, right, .. } = statement {
-                if let Some(rest) = left.name.strip_prefix("CONFIG_") {
-                    log::warn!("conf var:{} = {}", rest, right.cat());
-                    conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
-                } else {
-                    log::warn!("conf var:{} = {}", left.name, right.cat());
-                    conf_vars.insert(left.name.clone(), tovecstring(right.as_slice()));
-                }
-            } else if let Statement::Import(e, v) = statement {
-                // import the environment variable `e` into the tupfile as `e` with the value `v` if environment variable `e` is not set.
-                // this is not used as  env var but as a variable .
-
-                if let Ok(val) = std::env::var(e) {
-                    conf_vars.insert(e.clone(), vec![val]);
-                } else if let Some(val) = v.clone() {
-                    if !val.is_empty() {
-                        conf_vars.insert(e.clone(), vec![val]);
-                    }
-                }
-            }
-        }
+        load_config_vars_raw(conf_file.as_path(), &mut conf_vars)?;
     }
     // @(TUP_PLATFORM)
     //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
@@ -2110,6 +2276,35 @@ pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>
     }
 
     Ok(conf_vars)
+}
+
+pub(crate) fn load_config_vars_raw(
+    conf_file: &Path,
+    conf_vars: &mut HashMap<String, Vec<String>>,
+) -> Result<(), Error> {
+    for LocatedStatement { statement, .. } in parse_tupfile(conf_file)?.iter() {
+        if let Statement::AssignExpr { left, right, .. } = statement {
+            if let Some(rest) = left.name.strip_prefix("CONFIG_") {
+                log::warn!("conf var:{} = {}", rest, right.cat());
+                conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
+            } else {
+                log::warn!("conf var:{} = {}", left.name, right.cat());
+                conf_vars.insert(left.name.clone(), tovecstring(right.as_slice()));
+            }
+        } else if let Statement::Import(e, v) = statement {
+            // import the environment variable `e` into the tupfile as `e` with the value `v` if environment variable `e` is not set.
+            // this is not used as  env var but as a variable .
+
+            if let Ok(val) = std::env::var(e) {
+                conf_vars.insert(e.clone(), vec![val]);
+            } else if let Some(val) = v.clone() {
+                if !val.is_empty() {
+                    conf_vars.insert(e.clone(), vec![val]);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// load the conf variables in tup.config in the root directory
@@ -2161,20 +2356,14 @@ impl SubstPEs for Condition {
         }
     }
 }
-impl Subst for CondThenStatements {
-    fn subst(
-        &self,
-        parse_state: &mut ParseState,
-        path_searcher: &impl PathSearcher,
-    ) -> Result<Self, Err>
-    where
-        Self: Sized,
-    {
-        Ok(CondThenStatements {
-            cond: self.cond.subst_pe(parse_state, path_searcher),
-            then_statements: self.then_statements.subst(parse_state, path_searcher)?,
-        })
-    }
+fn get_sha256_hash(path: &Path) -> Result<String, Error> {
+    let sha = compute_sha256(path).map_err(|e| {
+        Error::new_path_search_error(format!(
+            "failed to compute sha256 hash for path:{:?} due to {}",
+            path, e
+        ))
+    })?;
+    Ok(sha)
 }
 
 impl LocatedStatement {
@@ -2182,10 +2371,11 @@ impl LocatedStatement {
         &self,
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-    ) -> Result<Vec<LocatedStatement>, Error> {
-        let mut newstats = Vec::new();
+    ) -> Result<StatementsInFile, Error> {
         let loc = self.get_loc();
         debug!("subst statement: {:?}", &self);
+        //let cur_file_desc = parse_state.get_cur_file_desc();
+        parse_state.set_loc(loc);
         match self.get_statement() {
             Statement::AssignExpr {
                 left,
@@ -2205,23 +2395,22 @@ impl LocatedStatement {
                 then_elif_statements,
                 else_statements,
             } => {
-                Self::subst_if_else_endif(
+                return Self::subst_if_else_endif(
                     parse_state,
                     path_searcher,
-                    &mut newstats,
                     then_elif_statements,
                     else_statements,
-                )?;
+                );
             }
 
             Statement::IncludeRules => {
-                Self::subst_include_rules(parse_state, path_searcher, &mut newstats, loc)?;
+                return Self::subst_include_rules(parse_state, path_searcher);
             }
             Statement::Include(s) => {
-                self.subst_include(parse_state, path_searcher, &mut newstats, s)?;
+                return self.subst_include(parse_state, path_searcher, s);
             }
             Statement::Rule(link, _, _) => {
-                Self::subst_rule(parse_state, path_searcher, &mut newstats, loc, link)?;
+                return Self::subst_rule(parse_state, path_searcher, link);
             }
             // dont subst inside a macro assignment
             // just update the rule_map
@@ -2235,12 +2424,12 @@ impl LocatedStatement {
                 if level == &Level::Error {
                     return Err(Error::UserError(
                         v.cat().as_str().to_string(),
-                        TupLoc::new(&parse_state.cur_file_desc, loc),
+                        parse_state.get_current_tup_loc().clone(),
                     ));
                 }
             }
             Statement::Preload(paths) => {
-                Self::add_load_dirs(parse_state, path_searcher, loc, paths)?;
+                Self::add_load_dirs(parse_state, path_searcher, paths)?;
             }
             Statement::Export(var) => {
                 let id =
@@ -2255,13 +2444,17 @@ impl LocatedStatement {
                         bo.add_env_var(Env::from(var.clone(), val));
                     })
                 }
-                newstats.push(self.clone());
+                //newstats.push(self.clone());
             }
             Statement::Run(r) => {
-                newstats.push(LocatedStatement::new(
+                let lstmt = LocatedStatement::new(
                     Statement::Run(r.subst_pe(parse_state, path_searcher)),
                     *loc,
-                ));
+                );
+                debug!("Running {:?}", lstmt);
+                let maybe_statement =
+                    StatementsInFile::new_current(lstmt).expand_run(parse_state, path_searcher)?;
+                return Ok(maybe_statement.unwrap_or_default());
             }
             Statement::Comment => {
                 // ignore
@@ -2271,68 +2464,71 @@ impl LocatedStatement {
                 parse_state.func_map.insert(name.to_string(), val.clone());
             }
             Statement::EvalBlock(body) => {
-                self.subst_eval_block(parse_state, path_searcher, &mut newstats, body)?;
+                return self.subst_eval_block(parse_state, path_searcher, body);
             }
             Statement::Task(t) => {
                 Self::subst_task(parse_state, path_searcher, loc, t);
             }
+            Statement::CachedConfig => {
+                let p = parse_state.get_cur_file();
+                let conf_path = p.with_extension("tempconfig.tup");
+                let filepathbo = parse_state
+                    .with_path_buffers_do(|bo| bo.add_abs(conf_path.to_string_lossy().as_ref()))
+                    .ok();
+                parse_state.set_cached_config(filepathbo.clone());
+            }
         }
-        Ok(newstats)
+        Ok(StatementsInFile::default())
     }
 
     fn subst_if_else_endif(
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        newstats: &mut Vec<LocatedStatement>,
         then_elif_statements: &Vec<CondThenStatements>,
         else_statements: &Vec<LocatedStatement>,
-    ) -> Result<(), Error> {
+    ) -> Result<StatementsInFile, Error> {
         let new_then_elif_statements: ControlFlow<_> =
             then_elif_statements.iter().try_for_each(|x| {
                 let e = x.cond.subst_pe(parse_state, path_searcher);
                 debug!("testing {:?}", e);
                 if e.verify(parse_state) {
                     debug!("condition satisfied");
-                    return ControlFlow::Break(x.then_statements.subst(parse_state, path_searcher));
+                    let stmts = parse_state.to_statements_in_file(x.then_statements.clone());
+                    return ControlFlow::Break(stmts);
                 } else {
                     debug!("trying alternative branches");
                     Continue(())
                 }
             });
         match new_then_elif_statements {
-            ControlFlow::Break(Ok(mut new_then_elif_statements)) => {
-                newstats.append(&mut new_then_elif_statements);
+            ControlFlow::Break(new_then_elif_statements) => {
+                new_then_elif_statements.subst(parse_state, path_searcher)
             }
-            ControlFlow::Break(Err(e)) => return Err(e),
             _ => {
-                let mut else_s = else_statements.subst(parse_state, path_searcher)?;
-                newstats.append(&mut else_s);
+                let else_s = parse_state.to_statements_in_file(else_statements.clone());
+                else_s.subst(parse_state, path_searcher)
             }
         }
-        Ok(())
     }
-
     fn subst_rule(
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        newstats: &mut Vec<LocatedStatement>,
-        loc: &Loc,
         link: &Link,
-    ) -> Result<(), Error> {
+    ) -> Result<StatementsInFile, Error> {
         let mut l = link.clone();
+        let loc = parse_state.get_current_loc().clone();
         while l.has_ref() {
             l = l.expand(parse_state)?; // expand all nested macro refs
         }
         let env_desc = parse_state.cur_env_desc.clone();
-        newstats.push(LocatedStatement::new(
+        Ok(StatementsInFile::new_current(LocatedStatement::new(
             Statement::Rule(
                 l.subst_pe(parse_state, path_searcher),
                 env_desc,
                 parse_state.load_dirs.clone(),
             ),
-            *loc,
-        ));
-        Ok(())
+            loc,
+        )))
     }
 
     fn subst_task(
@@ -2346,7 +2542,7 @@ impl LocatedStatement {
         let recipe = t.get_body();
         let search_dirs = t.get_search_dirs();
         debug!("adding task:{} with deps:{:?}", name.as_str(), &deps);
-        let tup_loc = TupLoc::new(&parse_state.cur_file_desc, loc);
+        let tup_loc = TupLoc::new(&parse_state.get_cur_file_desc(), loc);
         let tup_dir = parse_state.get_tup_dir_desc();
         let deps = deps.subst_pe(parse_state, path_searcher);
         // each line of the recipe has the same parse state as the task
@@ -2372,10 +2568,10 @@ impl LocatedStatement {
         &self,
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        newstats: &mut Vec<LocatedStatement>,
         body: &Vec<PathExpr>,
-    ) -> Result<(), Error> {
+    ) -> Result<StatementsInFile, Error> {
         debug!("evaluating block: {:?}", body);
+        let mut newstats: Vec<LocatedStatement> = Vec::new();
         let body = body.subst_pe(parse_state, path_searcher);
         if body
             .split(|x| x == &PathExpr::NL || x == &PathExpr::Sp1)
@@ -2384,9 +2580,9 @@ impl LocatedStatement {
                 matches!(x, &[PathExpr::DeGlob(_), ..])
             })
         {
-            body.split(|x| x == &PathExpr::NL).fold(
+            newstats = body.split(|x| x == &PathExpr::NL).fold(
                 newstats,
-                |acc: &mut Vec<LocatedStatement>, x: &[PathExpr]| {
+                |mut acc: Vec<LocatedStatement>, x: &[PathExpr]| {
                     let mut pelist = x.subst_pe(parse_state, path_searcher);
                     pelist.cleanup();
                     acc.push(LocatedStatement::new(
@@ -2396,28 +2592,41 @@ impl LocatedStatement {
                     acc
                 },
             );
+            return Ok(parse_state.to_statements_in_file(newstats));
         } else if !body.is_empty() {
             let body_str = body.cat() + "\n";
 
-            debug!("evaluating block: {:?}", body_str.as_str());
-            let lines = parse_statements_until_eof(Span::new(body_str.as_bytes()))
-                .unwrap_or_else(|e| panic!("failed to parse eval block: {:?}", e));
-            if lines.len() == 1 && lines.first().unwrap() == self {
-                newstats.push(self.clone())
-            } else {
-                debug!("lines in eval block: {:?}", lines);
-                let mut stmts = lines.subst(parse_state, path_searcher)?;
-                debug!("statements in eval block: {:?}", stmts);
-                newstats.append(&mut stmts);
-            }
+            let dump_eval_file_name = format!(
+                "tup_eval_block{}.tup",
+                (parse_state.get_current_loc().get_line())
+            );
+            let tup_cwd = parse_state.get_tup_base_dir();
+            let dump_eval_file_pd = parse_state
+                .get_path_buffers()
+                .add_path_from(&tup_cwd, dump_eval_file_name)?;
+            dump_temp_tup(body_str.as_bytes(), &dump_eval_file_pd);
+
+            return parse_state.switch_tupfile_and_process(&dump_eval_file_pd, |ps| {
+                debug!("evaluating block: {:?}", body_str.as_str());
+                let lines = parse_statements_until_eof(Span::new(body_str.as_bytes()))
+                    .unwrap_or_else(|e| panic!("failed to parse eval block: {:?}", e));
+                if lines.len() == 1 && lines.first().unwrap() == self {
+                    Ok(StatementsInFile::new_current(self.clone())) // break recursion of eval blocks
+                } else {
+                    debug!("lines in eval block: {:?}", lines);
+                    let stmt_in_file = ps.to_statements_in_file(lines);
+                    let stmts = stmt_in_file.subst(ps, path_searcher)?;
+                    debug!("statements in eval block: {:?}", stmts);
+                    Ok(stmts)
+                }
+            });
         }
-        Ok(())
+        Ok(StatementsInFile::default())
     }
 
     fn add_load_dirs(
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        loc: &Loc,
         paths: &Vec<PathExpr>,
     ) -> Result<(), Error> {
         let mut paths = paths.subst_pe(parse_state, path_searcher);
@@ -2429,10 +2638,7 @@ impl LocatedStatement {
         for dir in dirs.into_iter() {
             let dirid = parse_state.path_buffers.add_path_from(&tup_cwd, dir);
             let dirid = dirid.map_err(|_| {
-                Error::PathNotFound(
-                    dir.to_string(),
-                    TupLoc::new(&parse_state.cur_file_desc, loc),
-                )
+                Error::PathNotFound(dir.to_string(), parse_state.get_current_tup_loc().clone())
             })?;
             {
                 parse_state.add_load_dir(dirid);
@@ -2445,17 +2651,16 @@ impl LocatedStatement {
         &self,
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        newstats: &mut Vec<LocatedStatement>,
         s: &Vec<PathExpr>,
-    ) -> Result<(), Error> {
+    ) -> Result<StatementsInFile, Error> {
         debug!("Include:{:?}", s.cat());
         let s = s.subst_pe(parse_state, path_searcher);
         let scat = &s.cat();
-        debug!("found in current file:{:?}", parse_state.cur_file.as_path());
-        let longp = parse_state.cur_file_desc.get_parent_descriptor();
+        debug!("found in current file:{:?}", parse_state.get_cur_file());
+        let cur_tup_dir = parse_state.get_tup_dir_desc();
         let pscat = Path::new(scat.as_str());
-        debug!("longp:{:?}, pscat:{:?}", longp, pscat);
-        let fullp = longp.join(pscat).map_err(|_| {
+        debug!("longp:{:?}, pscat:{:?}", cur_tup_dir, pscat);
+        let fullp = cur_tup_dir.join(pscat).map_err(|_| {
             Error::PathNotFound(
                 pscat.to_string_lossy().to_string(),
                 TupLoc::new(parse_state.get_cur_file_desc(), self.get_loc()),
@@ -2480,48 +2685,54 @@ impl LocatedStatement {
                 TupLoc::new(parse_state.get_cur_file_desc(), self.get_loc()),
             )
         })?;
+        parse_state.add_to_tupfiles_read(p.path_descriptor_ref());
         parse_state.switch_tupfile_and_process(
             p.path_descriptor_ref(),
-            |parse_state| -> Result<(), Error> {
+            |parse_state| -> Result<StatementsInFile, Error> {
+                if parse_state.read_cached_config() {
+                    return Ok(StatementsInFile::default());
+                }
                 let include_stmts =
                     get_or_insert_parsed_statements(path_searcher.get_root(), parse_state)?;
-                newstats.append(&mut include_stmts.subst(parse_state, path_searcher)?);
-                Ok(())
+                let stat = include_stmts.subst(parse_state, path_searcher)?;
+                {
+                    parse_state.write_cached_config();
+                }
+                Ok(stat)
             },
-        )?;
-        Ok(())
+        )
     }
 
     fn subst_include_rules(
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        newstats: &mut Vec<LocatedStatement>,
-        loc: &Loc,
-    ) -> Result<(), Error> {
+    ) -> Result<StatementsInFile, Error> {
         let parent = parse_state.get_tup_dir_desc();
         debug!(
             "attempting to read tuprules in dir:{:?}",
             parent.get_path_ref()
         );
-        let mut found = false;
         // locate tupfiles up the heirarchy from the current Tupfile folder
-        for f in path_searcher.locate_tuprules(&parent, parse_state.get_path_buffers().deref()) {
+        if let Some(f) = path_searcher
+            .locate_tuprules(&parent, parse_state.get_path_buffers().deref())
+            .last()
+        {
             debug!("reading tuprules {:?}", f);
-            parse_state.switch_tupfile_and_process(&f, |parse_state| -> Result<(), Error> {
-                let include_stmts =
-                    get_or_insert_parsed_statements(path_searcher.get_root(), parse_state)?;
-                newstats.append(&mut include_stmts.subst(parse_state, path_searcher)?);
-                found = true;
-                Ok(())
-            })?;
+            parse_state.add_to_tupfiles_read(f);
+            return parse_state.switch_tupfile_and_process(
+                &f,
+                |parse_state| -> Result<StatementsInFile, Error> {
+                    let include_stmts =
+                        get_or_insert_parsed_statements(path_searcher.get_root(), parse_state)?;
+                    let stat = include_stmts.subst(parse_state, path_searcher)?;
+                    Ok(stat)
+                },
+            );
         }
-        if !found {
-            return Err(Error::TupRulesNotFound(TupLoc::new(
-                &parse_state.cur_file_desc,
-                loc,
-            )));
-        }
-        Ok(())
+        Err(Error::TupRulesNotFound(TupLoc::new(
+            &parse_state.get_cur_file_desc(),
+            parse_state.get_current_loc(),
+        )))
     }
 
     fn subst_assign(
@@ -2555,28 +2766,43 @@ impl LocatedStatement {
     }
 }
 
-/// Implement `subst' method for statements. As the statements are processed, this keeps
+/// Implement [subst] method for statements. As the statements are processed, this keeps
 /// track of variables assigned so far and replaces variables occurrences in $(Var) or &(Var) or @(Var)
-impl Subst for Vec<LocatedStatement> {
-    /// `subst' accumulates variable assignments in various maps in ParseState and replaces occurrences of them in subsequent statements
-    fn subst(
+impl StatementsInFile {
+    /// The method [subst] accumulates variable assignments in various maps in ParseState and replaces occurrences of them in subsequent statements
+    pub(crate) fn subst(
         &self,
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-    ) -> Result<Self, Err> {
-        let stats = Vec::new();
-        self.iter().try_fold(stats, |mut stats, statement| {
-            let newstats = statement.subst(parse_state, path_searcher)?;
-            stats.extend(newstats);
-            Ok(stats)
-        })
+    ) -> Result<StatementsInFile, Err> {
+        match self {
+            StatementsInFile::Includes(i) => {
+                let include_statements =
+                    IncludedStatements::new(Vec::new(), parse_state.get_include_path().clone());
+                let include_stats = i.get_statements().iter().try_fold(
+                    include_statements,
+                    |mut stats, statement| {
+                        let newstats = statement.subst(parse_state, path_searcher)?;
+                        if !newstats.is_empty() {
+                            stats.push_statement(newstats);
+                        }
+                        Ok(stats)
+                    },
+                )?;
+                Ok(StatementsInFile::Includes(include_stats))
+            }
+            StatementsInFile::Current(s) => {
+                let newstats = s.subst(parse_state, path_searcher)?;
+                Ok(newstats)
+            }
+        }
     }
 }
 
 fn get_or_insert_parsed_statements(
     root: &Path,
     parse_state: &mut ParseState,
-) -> Result<Vec<LocatedStatement>, Error> {
+) -> Result<StatementsInFile, Error> {
     let tup_desc = parse_state.get_cur_file_desc().clone();
     if let Some(vs) = parse_state.get_statements_from_cache(&tup_desc) {
         debug!(
@@ -2588,8 +2814,9 @@ fn get_or_insert_parsed_statements(
         debug!("Parsing {:?}", parse_state.get_cur_file());
         let res = parse_tupfile(&root.join(parse_state.get_cur_file().as_os_str()))?;
         debug!("Got: {:?} statements", res.len());
-        parse_state.add_statements_to_cache(&tup_desc, res.clone());
-        Ok(res)
+        let stmt_in_file = parse_state.to_statements_in_file(res);
+        parse_state.add_statements_to_cache(&tup_desc, stmt_in_file.clone());
+        Ok(stmt_in_file)
     }
 }
 
@@ -2601,7 +2828,7 @@ pub struct TupParser<Q: PathSearcher + Sized + Send + 'static> {
     path_buffers: Arc<BufferObjects>,
     path_searcher: Arc<RwLock<Q>>,
     config_vars: HashMap<String, Vec<String>>,
-    statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, Vec<LocatedStatement>>>>, //< cache of parsed statements for each included file
+    statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, StatementsInFile>>>, //< cache of parsed statements for each included file
 }
 
 /// ResolvedRules represent fully resolved rules/tasks along with their inputs and outputs that the parser gathers.
@@ -2712,7 +2939,7 @@ impl ResolvedRules {
     }
 }
 
-/// Represents an opens  buffer that is ready to be read for all data that stored with an id during parsing.
+/// Represents and opens  buffer that is ready to be read for all data that stored with an id during parsing.
 /// such as (rules, paths, groups, bins) stored during parsing.
 /// It is also available for writing some data in the parser's buffers
 #[derive(Clone, Debug)]
@@ -2983,14 +3210,13 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         });
 
         // create a parser state
-        let parse_state = ParseState::new(
+        ParseState::new(
             &self.config_vars,
-            tup_desc,
+            tup_desc.clone(),
             env_desc,
             self.statement_cache.clone(),
             self.path_buffers.clone(),
-        );
-        parse_state
+        )
     }
     //noinspection RsBorrowChecker
     /// wait for the next [StatementsToResolve] and process them
@@ -3002,7 +3228,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             receiver
                 .iter()
                 .try_fold(ResolvedRules::new(), |mut resolved_rules, to_resolve| {
-                    let tup_desc = to_resolve.get_tup_desc().clone();
+                    let tup_desc = to_resolve.get_cur_file_desc().clone();
                     let resolved_rules_ = self
                         .process_raw_statements(to_resolve)
                         .map_err(|e| crate::errors::ErrorContext::new(e, tup_desc))?;
@@ -3042,11 +3268,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
             // both path buffers and path searcher are rc-cloned (with shared ref cells) and passed to the lua parser
-            let (arts, _) = parse_script(
-                parse_state,
-                self.path_buffers.clone(),
-                self.path_searcher.clone(),
-            )?;
+            let (arts, _) = parse_script(parse_state, self.path_searcher.clone())?;
             Ok(arts)
         } else {
             let stmts = parse_tupfile(tup_file_path)?;
@@ -3061,18 +3283,20 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         let mut parse_state = statements_to_resolve.parse_state;
         let stmts = statements_to_resolve.statements;
         let tup_desc = parse_state.get_cur_file_desc().clone();
-        let stmts: Vec<LocatedStatement> = {
+
+        let stmts = parse_state.to_statements_in_file(stmts);
+        let stmts_in_file: StatementsInFile = {
             let searcher = self.get_path_searcher();
-            let mut res: Vec<LocatedStatement> = stmts.subst(&mut parse_state, searcher.deref())?;
-            res.expand_run(&mut parse_state, searcher.deref())?;
-            Ok::<Vec<LocatedStatement>, Error>(res)
+            let res = stmts.subst(&mut parse_state, searcher.deref())?;
+            //let res = res.expand_run(&mut parse_state, searcher.deref())?;
+            Ok::<StatementsInFile, Error>(res)
         }?;
         debug!(
             "num statements after expand run:{:?} in tupfile {:?}",
-            stmts.len(),
+            stmts_in_file.len(),
             parse_state.get_cur_file()
         );
-        stmts.resolve_paths(
+        stmts_in_file.resolve_paths(
             &tup_desc,
             self.get_mut_searcher().deref_mut(),
             self.borrow_ref(),
@@ -3143,8 +3367,11 @@ pub mod testing {
 
     use crate::decode::DirSearcher;
     use crate::errors::Error;
-    use crate::statements::{Cat, CatRef, CleanupPaths, LocatedStatement, PathExpr};
+    use crate::statements::{
+        Cat, CatRef, CleanupPaths, LocatedStatement, PathExpr, StatementsInFile,
+    };
     use crate::transform::{get_parent, ParseState};
+    use crate::TupPathDescriptor;
 
     /// Holds parse state variables (eager and lazily assigned)
     pub struct Vars {
@@ -3183,13 +3410,16 @@ pub mod testing {
         statements: Vec<LocatedStatement>,
     ) -> Result<(Vec<LocatedStatement>, Vars), Error> {
         let mut parse_state = ParseState::new_at(filename);
-        let mut stmts = statements;
+        let stmts = StatementsInFile::new_includes_from(TupPathDescriptor::default(), statements);
         let mut v = Vec::new();
         let searcher = DirSearcher::new();
-        for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
-            let mut vs = stmt.subst(&mut parse_state, &searcher)?;
-            v.append(&mut vs);
-        }
+        stmts.try_for_each(|stmt| -> Result<(), Error> {
+            let vs = stmt.subst(&mut parse_state, &searcher)?;
+            vs.for_each(|s| {
+                v.push(s.clone());
+            });
+            Ok(())
+        })?;
         Ok((v, Vars::from(&parse_state)))
     }
 
@@ -3203,13 +3433,17 @@ pub mod testing {
         let mut parse_state = ParseState::new_at(filename);
         //parse_state.set_cwd(filename).unwrap();
         parse_state.conf_map = conf_map;
-        let mut stmts = statements;
+
+        let stmts = parse_state.to_statements_in_file(statements);
         let mut v = Vec::new();
         let searcher = DirSearcher::new_at(get_parent(filename));
-        for stmt in stmts.drain(..).filter(|s| !s.is_comment()) {
-            let mut vs = stmt.subst(&mut parse_state, &searcher)?;
-            v.append(&mut vs);
-        }
+        stmts.try_for_each(|stmt| -> Result<(), Error> {
+            let vs = stmt.subst(&mut parse_state, &searcher)?;
+            vs.for_each(|s| {
+                v.push(s.clone());
+            });
+            Ok(())
+        })?;
         v.cleanup();
         Ok((v, parse_state.conf_map))
     }

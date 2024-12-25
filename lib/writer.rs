@@ -472,6 +472,9 @@ pub(crate) fn write_statement<T: Write>(
               write_pathexprs(writer, dirs);
               write!(writer, "\n").unwrap();
           }*/
+        Statement::CachedConfig => {
+            write!(writer, ".cached_config\n").unwrap();
+        }
     }
 }
 fn write_statements<T: Write>(

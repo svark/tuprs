@@ -13,7 +13,8 @@ extern crate parking_lot;
 extern crate regex;
 extern crate thiserror;
 extern crate walkdir;
-
+extern crate alloc;
+extern crate nonempty;
 pub use buffers::BinDescriptor;
 pub use buffers::GeneratedFiles;
 pub use buffers::GroupPathDescriptor;
@@ -86,7 +87,7 @@ fn test_parse() {
     .unwrap()
     .1;
     let mut m = ParseState::new_at(d.join("Tupfile").as_path());
-    use transform::Subst;
+    //use transform::Subst;
     let path_searcher = DirSearcher::new();
     let stmt = stmt.subst(&mut m, &path_searcher).expect("subst failure");
     let stmt2 = parser::parse_statement(Span::new(b"SOURCES := t1.cxx t2.c\n"))
@@ -105,6 +106,7 @@ fn test_parse() {
     ))
     .expect("parse failure");
     let mut m = ParseState::new_at(Path::new("."));
+    let stmts = m.to_statements_in_file(stmts);
     stmts.subst(&mut m, &path_searcher).expect("subst failure");
     assert_eq!(
         m.expr_map.get("CXX_FLAGS").unwrap().cat(),
@@ -126,7 +128,8 @@ fn test_parse() {
         .clone(),
     ];
     //use crate::transform::Subst;
-    stmts.subst(&mut m, &path_searcher).expect("subst failure");
+    let stmts = m.to_statements_in_file(stmts);
+    let stmts = stmts.subst(&mut m, &path_searcher).expect("subst failure");
     let write_guard = m.path_buffers;
     stmts
         .resolve_paths(&tup_desc, &mut dir_searcher, write_guard.as_ref(), &vec![])

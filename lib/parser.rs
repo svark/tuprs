@@ -1147,6 +1147,24 @@ fn parse_assignment_expr(i: Span) -> IResult<Span, LocatedStatement> {
     ))
 }
 
+// parse a cached_config statement which helps save current file parsed and substed to a new file
+fn parse_cached_config_statement(i: Span) -> IResult<Span, LocatedStatement> {
+    let s = i;
+    let (s, _) = tag(".cached_config")(s)?;
+    let (s, _) = complete(ws0_line_ending)(s)?;
+    let (s, _) = multispace0(s)?;
+    log::debug!("parsed cached config");
+    let offset = i.offset(&s);
+    Ok((
+        s,
+        (
+            Statement::CachedConfig,
+            i.slice(..offset),
+        )
+            .into(),
+    ))
+
+}
 /// parse a define statement and its body until enddef occurs
 fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
@@ -1514,6 +1532,7 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_import),
         complete(parse_pathexpr_define),
         complete(parse_task_statement),
+        complete(parse_cached_config_statement),
         complete(parse_eval_block),
     ))(s)
 }
@@ -1871,7 +1890,7 @@ pub(crate) fn locate_tuprules_from(cur_tupfile: PathDescriptor) -> Vec<PathDescr
             let tupr = anc.join_leaf("Tuprules.tup");
             v.push_front(tupr.clone());
         } else {
-            rulestup.with_extension("lua");
+            let rulestup = rulestup.with_extension("lua");
             if rulestup.is_file() {
                 let tupr = anc.join_leaf("Tuprules.lua");
                 v.push_front(tupr.clone());

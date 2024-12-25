@@ -7,13 +7,13 @@ use std::sync::Arc;
 use log::Level::Debug;
 use log::{debug, log_enabled};
 use mlua::Error::SyntaxError;
-use mlua::{AnyUserData, HookTriggers, IntoLua, Lua, MultiValue, StdLib, Value, Variadic, VmState};
+use mlua::{HookTriggers, IntoLua, Lua, MultiValue, StdLib, Value, Variadic, VmState};
 use mlua::{UserData, UserDataMethods};
 //use mlua::prelude::LuaUserDataRefMut;
 use nom::{AsBytes, InputTake};
 use parking_lot::RwLock;
 
-use crate::buffers::{PathBuffers, PathDescriptor};
+use crate::buffers::{BufferObjects, PathBuffers, PathDescriptor};
 use crate::decode::{OutputHandler, PathSearcher};
 use crate::errors::Error as Err;
 use crate::paths::GlobPath;
@@ -110,9 +110,8 @@ Returns: string
 Returns the extension in the filename filename (excluding the .) or the empty string if there is no extension.
  */
 #[derive(Clone, Debug, Default)]
-pub struct TupScriptContext<P: PathBuffers + Sized, Q: PathSearcher + Sized> {
+pub struct TupScriptContext<Q: PathSearcher + Sized + 'static> {
     parse_state: ParseState,
-    path_buffers: Arc<P>,
     path_searcher: Arc<RwLock<Q>>,
     arts: ResolvedRules,
 }
@@ -314,25 +313,20 @@ impl ScriptRuleCommand {
     }
 }
 
-impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
+impl<Q: PathSearcher> TupScriptContext<Q> {
     pub(crate) fn new(
         parse_state: ParseState,
-        path_buffers: Arc<P>,
         path_searcher: Arc<RwLock<Q>>,
-    ) -> TupScriptContext<P, Q> {
+    ) -> TupScriptContext<Q> {
         TupScriptContext {
             arts: ResolvedRules::new(),
             parse_state,
-            path_buffers,
             path_searcher,
         }
     }
 
-    pub(crate) fn bo_as_mut(&self) -> &P {
-        self.path_buffers.deref()
-    }
-    pub(crate) fn bo_as_ref(&self) -> &P {
-        self.path_buffers.deref()
+    pub(crate) fn bo_as_mut(&self) -> Arc<BufferObjects> {
+        self.parse_state.get_path_buffers()
     }
     pub(crate) fn get_mut_path_searcher(&self) -> parking_lot::RwLockWriteGuard<'_, Q> {
         self.path_searcher.deref().write()
@@ -348,7 +342,8 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
     }
 
     pub fn export(&mut self, var: String) {
-        let id = self.bo_as_mut().add_env_var(Env::new(var));
+        let path_buffers = self.parse_state.get_path_buffers().clone();
+        let id = path_buffers.add_env_var(Env::new(var));
         self.parse_state.add_env(&id);
     }
 
@@ -378,7 +373,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             .resolve_paths(
                 self.parse_state.get_cur_file_desc(),
                 self.get_mut_path_searcher().deref_mut(),
-                self.bo_as_mut(),
+                self.bo_as_mut().deref(),
                 tupfiles_read,
             )
             .expect("unable to resolve paths");
@@ -387,7 +382,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
         let mut paths = Vec::new();
         for i in outs.get_output_files().iter() {
             paths.push(
-                self.bo_as_ref()
+                self.bo_as_mut()
                     .get_path(i)
                     .as_path()
                     .to_string_lossy()
@@ -425,7 +420,7 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
             .resolve_paths(
                 self.parse_state.get_cur_file_desc(),
                 self.get_mut_path_searcher().deref_mut(),
-                self.bo_as_mut(),
+                self.bo_as_mut().deref(),
                 tupfiles_read,
             )
             .expect("unable to resolve paths");
@@ -447,17 +442,13 @@ impl<P: PathBuffers + Default, Q: PathSearcher> TupScriptContext<P, Q> {
     }
     pub fn get_cwd(&self) -> String {
         self.parse_state
-            .cur_file
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .to_string_lossy()
+            .get_cur_file_desc()
+            .get_parent_descriptor()
+            .get_path_ref()
             .to_string()
     }
     pub fn get_cwd_desc(&self) -> PathDescriptor {
         self.parse_state.get_tup_dir_desc()
-    }
-    pub fn get_root(&self) -> std::path::PathBuf {
-        self.bo_as_ref().get_root_dir().to_path_buf()
     }
     pub fn dir(a: &str) -> String {
         Path::new(a).parent().unwrap().to_string_lossy().to_string()
@@ -518,24 +509,14 @@ impl ConvToString for Lua {
     }
 }
 
-impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
-    for TupScriptContext<P, Q>
-{
+impl<Q: PathSearcher + 'static> UserData for TupScriptContext<Q> {
     fn add_methods<'lua, M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_function("getconfig", |lua, var: (mlua::String,)| {
-            let globals = lua.globals();
-            let tup_shared: AnyUserData = globals.get("tup")?;
-            let ctx: mlua::UserDataRef<Self> = tup_shared.borrow()?;
+        methods.add_method("getconfig", |_, ctx, var: (mlua::String,)| {
             let varstr = var.0.to_string_lossy().to_string();
             let conf = ctx.config(varstr.as_str());
             Ok(conf)
         });
-        methods.add_function("getcwd", |lua, _: ()| {
-            let globals = lua.globals();
-            let tup_shared: AnyUserData = globals.get("tup")?;
-            let scriptctx: mlua::UserDataRef<Self> = tup_shared.borrow()?;
-            Ok(scriptctx.get_cwd())
-        });
+        methods.add_method("getcwd", |_, ctx, _: ()| Ok(ctx.get_cwd()));
 
         methods.add_function("base", |_, path: (mlua::String,)| {
             let v = path.0.to_string_lossy().to_string();
@@ -567,20 +548,16 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                 .collect::<Vec<_>>())
         });
 
-        methods.add_function("export", |lua, var: (mlua::String,)| {
-            let globals = lua.globals();
-            let tup_shared: AnyUserData = globals.get("tup")?;
-            let mut ctx: mlua::UserDataRefMut<Self> = tup_shared.borrow_mut()?;
+        methods.add_method_mut("export", |_, ctx, var: (mlua::String,)| {
             let varstr = var.0.to_string_lossy().to_string();
             ctx.export(varstr);
             Ok(())
         });
 
-        methods.add_function("rule", |lua_ctx, inps1: Variadic<Value>| {
+        methods.add_method_mut("rule", |lua_ctx, ctx, inps1: Variadic<Value>| {
             let mut inputs = ScriptInputBuilder::new();
             let mut outputs = ScriptOutputBuilder::new();
             let mut rulcmd = ScriptRuleCommand::new();
-            let globals = lua_ctx.globals();
             if log_enabled!(Debug) {
                 for inp in inps1.iter() {
                     if let Value::String(s) = inp {
@@ -706,10 +683,8 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                     .named_registry_value(LINENO)
                     .expect("line number missing lua registry");
                 //  let globals = lua_ctx.globals();
-                let tup_shared: AnyUserData = globals.get("tup")?;
-                let mut scriptctx: mlua::UserDataRefMut<Self> = tup_shared.borrow_mut()?;
 
-                let paths = scriptctx.rule(i, inputs, rulcmd, outputs)?;
+                let paths = ctx.rule(i, inputs, rulcmd, outputs)?;
                 let t = lua_ctx.create_table()?;
                 let mut cnt: usize = 1;
                 for p in paths {
@@ -725,17 +700,16 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
         methods.add_function_mut(
             "frule",
             |luactx, inps1: Variadic<Value>| -> Result<Value, mlua::Error> {
-                luactx.load("tup.rule").call(inps1)
+                luactx.load("tup:rule").call(inps1)
                 //Ok(())
             },
         );
-        methods.add_function_mut(
+        methods.add_method_mut(
             "foreach_rule",
-            |luactx, inps1: Variadic<Value>| -> Result<Value, mlua::Error> {
+            |luactx, ctx, inps1: Variadic<Value>| -> Result<Value, mlua::Error> {
                 let mut inputs = ScriptInputBuilder::new();
                 let mut outputs = ScriptOutputBuilder::new();
                 let mut rulcmd = ScriptRuleCommand::new();
-                let globals = luactx.globals();
                 if log_enabled!(Debug) {
                     for inp in inps1.iter() {
                         if let Value::String(s) = inp {
@@ -756,12 +730,12 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                 let inps: Vec<_> = inps1
                     .iter()
                     .take(numinps)
-                    .filter_map(|x| TupScriptContext::<P, Q>::convert_to_table(luactx, x).ok())
+                    .filter_map(|x| TupScriptContext::<Q>::convert_to_table(luactx, x).ok())
                     .collect();
                 let outs: Vec<_> = inps1
                     .iter()
                     .skip(outindex)
-                    .filter_map(|x| TupScriptContext::<P, Q>::convert_to_table(luactx, x).ok())
+                    .filter_map(|x| TupScriptContext::<Q>::convert_to_table(luactx, x).ok())
                     .collect();
                 if let Some(Value::Table(t)) = inps.first() {
                     t.clone().pairs().for_each(|x| {
@@ -856,32 +830,28 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                         .named_registry_value(LINENO)
                         .expect("line number missing lua registry");
                     //let globals = luactx.globals();
-                    let tup_shared: AnyUserData = globals.get("tup")?;
-                    let mut scriptctx: mlua::UserDataRefMut<Self> = tup_shared.borrow_mut()?;
-
-                    let paths = scriptctx.for_each_rule(i, inputs, rulcmd, outputs)?;
-                    let t = luactx.create_table()?;
-                    let mut cnt: usize = 1;
-                    for p in paths {
-                        t.set(cnt, p)?;
-                        cnt += 1;
+                    {
+                        let paths = ctx.for_each_rule(i, inputs, rulcmd, outputs)?;
+                        let t = luactx.create_table()?;
+                        let mut cnt: usize = 1;
+                        for p in paths {
+                            t.set(cnt, p)?;
+                            cnt += 1;
+                        }
+                        Ok(Value::Table(t))
                     }
-                    Ok(Value::Table(t))
                 } else {
                     let t = luactx.create_table()?;
                     Ok(Value::Table(t))
                 }
             },
         );
-        methods.add_function("glob", |luactx, pattern: Value| {
+        methods.add_method_mut("glob", |luactx, scriptctx, pattern: Value| {
             let path = if let Value::String(ref s) = pattern {
                 s.to_str().unwrap().to_string()
             } else {
                 String::default()
             };
-            let globals = luactx.globals();
-            let tup_shared: AnyUserData = globals.get("tup")?;
-            let scriptctx: mlua::UserDataRefMut<Self> = tup_shared.borrow_mut()?;
             //let outputs = OutputAssocs::new_no_resolve_groups();
             let matching_paths = {
                 let path_searcher = scriptctx.get_path_searcher();
@@ -892,7 +862,10 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                 let glob_path = &GlobPath::build_from(&scriptctx.get_cwd_desc(), &p)
                     .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
                 path_searcher
-                    .discover_paths(scriptctx.bo_as_mut(), std::slice::from_ref(glob_path))
+                    .discover_paths(
+                        scriptctx.bo_as_mut().deref(),
+                        std::slice::from_ref(glob_path),
+                    )
                     .expect("Glob expansion failed")
             };
             let glob_out = luactx.create_table()?;
@@ -912,9 +885,9 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
             }
             Ok(glob_out)
         });
-        methods.add_function_mut(
+        methods.add_method_mut(
             "include",
-            |luactx, path: Value| -> Result<(), mlua::Error> {
+            |luactx, scriptctx, path: Value| -> Result<(), mlua::Error> {
                 luactx
                     .scope(|_scope| -> Result<(), mlua::Error> {
                         let path = if let Value::String(ref s) = path {
@@ -926,9 +899,6 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
                         let incpath = Path::new(&curdir).join(Path::new(path.as_str()));
                         debug!("include:{}", incpath.to_string_lossy().to_string());
                         let mut file = File::open(&incpath)?;
-                        let globals = luactx.globals();
-                        let tup_shared: AnyUserData = globals.get("tup")?;
-                        let mut scriptctx: mlua::UserDataRefMut<Self> = tup_shared.borrow_mut()?;
                         luactx.set_named_registry_value(
                             CURDIR,
                             incpath
@@ -957,28 +927,29 @@ impl<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static> UserData
 }
 
 /// main entry point for parsing Tupfile.lua
-pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher + 'static>(
+pub(crate) fn parse_script<Q: PathSearcher + 'static>(
     parse_state: ParseState,
-    path_buffers: Arc<P>,
     path_searcher: Arc<RwLock<Q>>,
 ) -> Result<(ResolvedRules, ParseState), Err> {
     let lua = unsafe { Lua::unsafe_new() };
-    let r = lua
-        .scope(|scope| {
-            let script_path = parse_state.get_cur_file().to_path_buf();
-            let script_dir_desc = parse_state.get_tup_dir_desc();
+    let script_path = parse_state.get_cur_file().to_path_buf();
+    let script_dir_desc = parse_state.get_tup_dir_desc();
+    let pbuffers = parse_state.get_path_buffers();
 
-            let pbuffers = path_buffers.clone();
-            let tup_script_ctx = TupScriptContext::new(parse_state, path_buffers, path_searcher);
+    let mut tup_script_ctx = TupScriptContext::new(parse_state, path_searcher.clone());
+    let _r = lua
+        .scope(|scope| {
             let mut rules = Vec::new();
-            for tup_rules in tup_script_ctx
-                .get_path_searcher()
-                .locate_tuprules(&script_dir_desc, pbuffers.deref())
             {
-                rules.push(tup_rules.get_path_ref().clone());
+                let path_searcher_read = path_searcher.deref().read();
+                for tup_rules in
+                    path_searcher_read.locate_tuprules(&script_dir_desc, pbuffers.deref())
+                {
+                    rules.push(tup_rules.get_path_ref().clone());
+                }
             }
-            let root = tup_script_ctx.get_root();
-            let tup_shared = scope.create_userdata(tup_script_ctx)?;
+            let root = pbuffers.get_root_dir();
+            let tup_shared = scope.create_userdata_ref_mut(&mut tup_script_ctx)?;
             lua.load_std_libs(
                 StdLib::DEBUG | StdLib::STRING | StdLib::UTF8 | StdLib::IO | StdLib::OS,
             )?;
@@ -1058,17 +1029,12 @@ pub(crate) fn parse_script<P: PathBuffers + Default + 'static, Q: PathSearcher +
             let mut file = File::open(root.join(script_path.as_path()))?;
             file.read_to_end(&mut contents)?;
             lua.load(contents.as_bytes()).exec()?;
-            let tup_shared: AnyUserData = globals.get("tup")?;
-            let mut scriptctx: mlua::UserDataRefMut<_> =
-                tup_shared.borrow_mut::<TupScriptContext<P, Q>>()?;
-            {
-                let (arts, parse_state) = (
-                    scriptctx.take_resolved_rules(),
-                    scriptctx.take_parsed_state(),
-                );
-                Ok((arts, parse_state))
-            }
+            Ok(())
         })
         .map_err(|e| crate::errors::Error::LuaError(e.to_string()))?;
-    Ok(r)
+    let (arts, parse_state) = (
+        tup_script_ctx.take_resolved_rules(),
+        tup_script_ctx.take_parsed_state(),
+    );
+    Ok((arts, parse_state))
 }

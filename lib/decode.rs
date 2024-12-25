@@ -17,11 +17,7 @@ use parking_lot::MappedRwLockReadGuard;
 use regex::{Captures, Regex};
 use walkdir::{DirEntry, WalkDir};
 
-use crate::buffers::{
-    BinDescriptor, EnvList, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder,
-    OutputType, PathBuffers, PathDescriptor, RelativeDirEntry, RuleDescriptor, TaskDescriptor,
-    TupPathDescriptor,
-};
+use crate::buffers::{BinDescriptor, EnvList, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder, OutputType, PathBuffers, PathDescriptor, RelativeDirEntry, RuleDescriptor, TaskDescriptor, TupPathDescriptor};
 use crate::decode::Index::All;
 use crate::errors::Error::PathSearchError;
 use crate::errors::{Error as Err, Error};
@@ -265,6 +261,15 @@ impl TupLoc {
         self.loc.get_span()
     }
 
+
+    pub(crate) fn set_loc(&mut self, loc: Loc) {
+        self.loc = loc;
+    }
+
+    pub(crate) fn get_loc(&self) -> &Loc {
+        &self.loc
+    }
+
     /// Directory
     pub fn get_tupfile_desc(&self) -> &TupPathDescriptor {
         &self.tup_path_desc
@@ -485,6 +490,7 @@ impl PathSearcher for DirSearcher {
         OutputHandler::merge(&mut self.output_holder, p, o)
     }
 }
+
 
 /// Decode input paths from file globs, bins(buckets), and groups
 pub(crate) trait DecodeInputPaths {
@@ -1748,22 +1754,23 @@ impl LocatedStatement {
     }
 }
 
-impl ResolvePaths for Vec<LocatedStatement> {
+impl ResolvePaths for StatementsInFile {
     fn resolve_paths(
         &self,
         tup_desc: &TupPathDescriptor,
         path_searcher: &mut impl PathSearcher,
         path_buffers: &impl PathBuffers,
-        tupfiles_read: &Vec<PathDescriptor>,
+        other_tupfiles_read: &Vec<PathDescriptor>,
     ) -> Result<ResolvedRules, Err> {
         let mut merged_arts = ResolvedRules::new();
         debug!("Resolving paths for rules in {:?}", tup_desc.as_ref());
-        for stmt in self.iter() {
+        self.try_for_each( |stmt| -> Result<(), Err> {
             let (art, _) =
-                stmt.resolve_paths(tup_desc, path_searcher, path_buffers, tupfiles_read)?;
+                stmt.resolve_paths(tup_desc, path_searcher, path_buffers, other_tupfiles_read)?;
             debug!("{:?}", art);
             merged_arts.extend(art);
-        }
+            Ok(())
+        })?;
         Ok(merged_arts)
     }
 }
@@ -1794,6 +1801,7 @@ pub fn parse_tupfiles(
     tupfiles: &Vec<PathBuf>,
 ) -> Result<(ResolvedRules, ReadWriteBufferObjects), Error> {
     let mut artifacts_all = ResolvedRules::new();
+    debug!("parsing tupfiles in {:?}", root);
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new_at(root))?;
     for tup_file_path in tupfiles.iter() {
         let resolved_rules = parser.parse(tup_file_path)?;
