@@ -427,15 +427,16 @@ impl ParseState {
         let mut buf = BufReader::new(f);
         let mut line = String::new();
         buf.read_line(&mut line).unwrap_or_default();
-        let header = format!("#tup.config {}", hash);
+        let header = format!("#tup.config sha:{}", hash);
         Ok((line, header))
     }
 
     pub(crate) fn read_cached_config(&mut self) -> bool {
         let mut do_read = false;
         let mut read = || -> std::result::Result<bool, Error> {
-            let fullpath = self.get_cur_file().with_extension("tup.config");
+            let fullpath = self.get_cur_file().with_extension("temp-config.tup");
             if std::fs::exists(fullpath.as_path()).unwrap_or(false) {
+                debug!("reading cached config from {:?}", fullpath);
                 let (line, header) = self.read_cached_config_at(&fullpath)?;
                 if line.trim() == header {
                     do_read = true;
@@ -461,7 +462,7 @@ impl ParseState {
             debug!("writing cached config to {:?}", path);
             let cur_file = self.get_cur_file();
             //let extn = cur_file.extension().unwrap_or_default();
-            let fullpath = cur_file.with_extension("tempconfig.tup");
+            let fullpath = cur_file.with_extension("temp-config.tup");
             debug!("writing cached config to {:?}", fullpath);
             let _ = get_sha256_hash(&cur_file)
                 .and_then(|hash| self.dump_vars(&fullpath, hash.as_str()));
@@ -476,7 +477,7 @@ impl ParseState {
         let mut f = BufWriter::new(f);
         write!(f, "#tup.config sha:{}\n", sha).expect(err_string.as_str());
         for (k, v) in self.expr_map.iter() {
-            let res = write!(f, "{}:={}", k, v.cat());
+            let res = writeln!(f, "{}:={}", k, v.cat());
             if let Err(e) = res {
                 return Err(IoError(e, err_string, Loc::new(0, 0, 0)));
             }
@@ -2471,7 +2472,7 @@ impl LocatedStatement {
             }
             Statement::CachedConfig => {
                 let p = parse_state.get_cur_file();
-                let conf_path = p.with_extension("tempconfig.tup");
+                let conf_path = p.with_extension("temp-config.tup");
                 let filepathbo = parse_state
                     .with_path_buffers_do(|bo| bo.add_abs(conf_path.to_string_lossy().as_ref()))
                     .ok();
@@ -2690,16 +2691,15 @@ impl LocatedStatement {
             p.path_descriptor_ref(),
             |parse_state| -> Result<StatementsInFile, Error> {
                 if parse_state.read_cached_config() {
-                    return Ok(StatementsInFile::default());
-                }
-                let include_stmts =
-                    get_or_insert_parsed_statements(path_searcher.get_root(), parse_state)?;
-                let stat = include_stmts.subst(parse_state, path_searcher)?;
-                {
+                     Ok(StatementsInFile::default())
+                } else {
+                    let include_stmts =
+                        get_or_insert_parsed_statements(path_searcher.get_root(), parse_state)?;
+                    let stat = include_stmts.subst(parse_state, path_searcher)?;
                     parse_state.write_cached_config();
+                    Ok(stat)
                 }
-                Ok(stat)
-            },
+            }
         )
     }
 
