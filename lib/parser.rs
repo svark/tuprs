@@ -1857,6 +1857,7 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
     use std::io::prelude::*;
     let filename = filename.as_ref();
     let filename_str = filename.to_str().unwrap();
+    log::info!("parsing tupfile: {}", filename_str);
     let mut file = File::open(filename)
         .map_err(|e| Err::IoError(e, filename_str.to_string(), Loc::default()))?;
     let mut contents = Vec::new();

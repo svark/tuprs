@@ -8,10 +8,7 @@ use std::path::{Path, PathBuf};
 use log::debug;
 use regex::Regex;
 
-use crate::buffers::{
-    BufferObjects, GlobPathDescriptor, MyGlob, PathBuffers, PathDescriptor, RelativeDirEntry,
-    TaskDescriptor,
-};
+use crate::buffers::{BufferObjects, GlobPathDescriptor, MyGlob, PathBuffers, PathDescriptor, RelativeDirEntry, TaskDescriptor};
 use crate::decode::{GroupInputs, TupLoc};
 use crate::errors::Error;
 use crate::glob::Candidate;
@@ -663,6 +660,15 @@ impl InputResolvedType {
             InputResolvedType::UnResolvedGroupEntry(_) => None,
             InputResolvedType::UnResolvedFile(_) => None,
             InputResolvedType::TaskRef(_) => None,
+        }
+    }
+    
+    /// Fetch Group inputs
+    pub fn get_group_inputs(&self) -> Option<GroupPathDescriptor> {
+        match self {
+            InputResolvedType::GroupEntry(g, _) => Some(g.clone()),
+            InputResolvedType::UnResolvedGroupEntry(g) => Some(g.clone()),
+            _ => None,
         }
     }
 

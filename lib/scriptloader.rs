@@ -319,7 +319,7 @@ impl<Q: PathSearcher> TupScriptContext<Q> {
         path_searcher: Arc<RwLock<Q>>,
     ) -> TupScriptContext<Q> {
         TupScriptContext {
-            arts: ResolvedRules::new(),
+            arts: ResolvedRules::new(parse_state.get_cur_file_desc().clone()),
             parse_state,
             path_searcher,
         }

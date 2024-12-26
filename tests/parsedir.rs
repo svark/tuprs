@@ -19,10 +19,9 @@ mod tests {
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("tests/tuptest");
         let (arts, _rwbuffers) = parse_dir(d.as_path()).expect("failed to parse!");
-        let rlinks = arts.rules_by_tup();
+        let rlinks = arts.iter().map(|x| x.get_resolved_links());
         let mut outs = String::new();
         let mut strings = rlinks
-            .iter()
             .map(|rl| rl.iter())
             .flatten()
             .collect::<Vec<_>>();
@@ -45,7 +44,7 @@ mod tests {
         let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         d.push("tests/tupscripttest");
         let (arts, _rwbuffers) = parse_dir(d.as_path()).expect("failed to parse!");
-        let rlinks = arts.rules_by_tup();
+        let rlinks = arts.iter().map(|r| r.get_resolved_links());
         let mut outs = Vec::new();
         for rlinks in rlinks {
             for r in rlinks {

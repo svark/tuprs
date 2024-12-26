@@ -54,7 +54,8 @@ fn dump_temp_tup(contents: &[u8], tuprun_pd: &PathDescriptor) {
     }
 }
 
-fn compute_sha256<P: AsRef<Path>>(path: P) -> io::Result<String> {
+/// Compute SHA-256 hash of a file, fails with io error if file cannot be read
+pub fn compute_sha256<P: AsRef<Path>>(path: P) -> io::Result<String> {
     let file = File::open(path.as_ref())?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
@@ -2357,6 +2358,7 @@ impl SubstPEs for Condition {
         }
     }
 }
+/// Compute SHA256 hash of a file
 fn get_sha256_hash(path: &Path) -> Result<String, Error> {
     let sha = compute_sha256(path).map_err(|e| {
         Error::new_path_search_error(format!(
@@ -2836,21 +2838,33 @@ pub struct TupParser<Q: PathSearcher + Sized + Send + 'static> {
 pub struct ResolvedRules {
     resolved_links: Vec<ResolvedLink>,
     resolved_tasks: Vec<ResolvedTask>,
+    tupid: TupPathDescriptor,
 }
 
 impl ResolvedRules {
     /// Empty constructor for `ResolvedRules`
-    pub fn new() -> ResolvedRules {
-        ResolvedRules::default()
+    pub fn new(tupid: TupPathDescriptor) -> ResolvedRules {
+        ResolvedRules{tupid:tupid, ..ResolvedRules::default()}
+    }
+    /// get the TupPathDescriptor for the tupfile that generated these rules
+    pub fn get_tupid(&self) -> &TupPathDescriptor {
+        &self.tupid
+    }
+
+    /// set links again after resolving missing inputs to links
+    pub fn set_resolved_links(&mut self, resolved_links: Vec<ResolvedLink>) {
+        self.resolved_links = resolved_links;
     }
     /// Builds ResolvedRules from a vector of [ResolvedLink]s
     pub fn from(
         resolved_links: Vec<ResolvedLink>,
         resolved_tasks: Vec<ResolvedTask>,
+        tupid: TupPathDescriptor
     ) -> ResolvedRules {
         ResolvedRules {
             resolved_links,
             resolved_tasks,
+            tupid,
         }
     }
 
@@ -2865,11 +2879,14 @@ impl ResolvedRules {
     }
 
     /// extend links in `resolved_rules` with those in self
-    pub fn extend(&mut self, mut resolved_rules: ResolvedRules) {
-        self.resolved_links
-            .extend(resolved_rules.drain_resolved_links());
-        self.resolved_tasks
-            .extend(resolved_rules.drain_resolved_tasks());
+    pub fn extend(&mut self, mut resolved_rules: ResolvedRules) -> bool {
+        if resolved_rules.tupid == self.tupid {
+            self.resolved_links.append(&mut resolved_rules.resolved_links);
+            self.resolved_tasks.append(&mut resolved_rules.resolved_tasks);
+             true
+        } else {
+             false
+        }
     }
     /// add a single link
     pub fn add_link(&mut self, rlink: ResolvedLink) {
@@ -2884,9 +2901,6 @@ impl ResolvedRules {
         self.resolved_links.drain(..)
     }
 
-    fn drain_resolved_tasks(&mut self) -> Drain<'_, ResolvedTask> {
-        self.resolved_tasks.drain(..)
-    }
     /// divulges secrets of all the resolved links returned by the parser,
     pub fn get_resolved_links(&self) -> &Vec<ResolvedLink> {
         &self.resolved_links
@@ -3218,25 +3232,25 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             self.path_buffers.clone(),
         )
     }
-    //noinspection RsBorrowChecker
     /// wait for the next [StatementsToResolve] and process them
     pub fn receive_resolved_statements(
         &mut self,
         receiver: Receiver<StatementsToResolve>,
-    ) -> Result<ResolvedRules, crate::errors::ErrorContext> {
-        let resolved_rules =
+        mut f: impl FnMut(ResolvedRules) -> Result<(), Error>,
+    ) -> Result<(), crate::errors::ErrorContext> {
             receiver
                 .iter()
-                .try_fold(ResolvedRules::new(), |mut resolved_rules, to_resolve| {
+                .try_for_each( | to_resolve| {
                     let tup_desc = to_resolve.get_cur_file_desc().clone();
                     let resolved_rules_ = self
                         .process_raw_statements(to_resolve)
+                        .map_err(|e| crate::errors::ErrorContext::new(e, tup_desc.clone()))?;
+                    f(resolved_rules_)
                         .map_err(|e| crate::errors::ErrorContext::new(e, tup_desc))?;
-                    resolved_rules.extend(resolved_rules_);
-                    Ok(resolved_rules)
+                    Ok(())
                 })?;
         drop(receiver);
-        Ok(resolved_rules)
+        Ok(())
     }
 
     /// `parse` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
@@ -3306,18 +3320,23 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
 
     /// Re-resolve for resolved groups that were left unresolved in the first round of parsing
     /// This step is usually run as a second pass to resolve group references across Tupfiles
-    pub fn reresolve(&mut self, resolved_rules: ResolvedRules) -> Result<ResolvedRules, Error> {
-        type R = Result<ResolvedRules, Error>;
+    pub fn reresolve(&mut self, resolved_rules_vec: &mut Vec<ResolvedRules>) -> Result<(), Error> {
+        type R = Result<(), Error>;
         self.with_path_buffers_do(|path_buffers| -> R {
             self.with_path_searcher_do(|path_searcher| -> R {
-                resolved_rules.get_resolved_links().resolve_paths(
-                    &TupPathDescriptor::default(),
+                 resolved_rules_vec.iter_mut().try_for_each(|resolved_rules| -> R {
+                    resolved_rules.resolve_paths(
                     path_searcher,
                     path_buffers,
                     &vec![],
-                )
-            })
-        })
+                    )?;
+                     Ok(())
+                })?;
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+        Ok(())
     }
     fn get_path_searcher(&self) -> RwLockReadGuard<'_, Q> {
         self.path_searcher.deref().read()

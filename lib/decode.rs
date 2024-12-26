@@ -1457,32 +1457,33 @@ pub(crate) trait ResolvePaths {
     ) -> Result<ResolvedRules, Err>;
 }
 
-impl ResolvePaths for Vec<ResolvedLink> {
-    fn resolve_paths(
-        &self,
-        _tup_desc: &TupPathDescriptor,
+impl ResolvedRules {
+    /// resolve missing inputs and outputs in all the resolved links
+    pub fn resolve_paths(
+        &mut self,
         path_searcher: &mut impl PathSearcher,
         path_buffers: &impl PathBuffers,
         _: &Vec<PathDescriptor>,
-    ) -> Result<ResolvedRules, Err> {
-        let mut resolved_artifacts = ResolvedRules::new();
-        for resolved_link in self.iter() {
+    ) -> Result<(), Err> {
+        let mut resolved_links = Vec::new();
+        for resolved_link in self.get_resolved_links().iter() {
             if resolved_link.has_unresolved_inputs() {
                 let cur_tup_desc = resolved_link.get_tup_loc().get_tupfile_desc();
 
                 debug!("resolving paths for {:?}", resolved_link);
-                let art = resolved_link.resolve_paths(
+                let mut art = resolved_link.resolve_paths(
                     cur_tup_desc,
                     path_searcher,
                     path_buffers,
                     resolved_link.get_tupfiles_read(),
                 )?;
-                resolved_artifacts.extend(art);
+                resolved_links.extend(art.drain_resolved_links());
             } else {
-                resolved_artifacts.add_link(resolved_link.clone())
+                resolved_links.push(resolved_link.clone());
             }
         }
-        Ok(resolved_artifacts)
+        self.set_resolved_links(resolved_links);
+        Ok(())
     }
 }
 
@@ -1491,7 +1492,7 @@ impl ResolvePaths for ResolvedLink {
     /// the method below replaces
     fn resolve_paths(
         &self,
-        _tup_desc: &TupPathDescriptor,
+        tup_desc: &TupPathDescriptor,
         path_searcher: &mut impl PathSearcher,
         path_buffers: &impl PathBuffers,
         _tupfiles_read: &Vec<PathDescriptor>,
@@ -1567,7 +1568,7 @@ impl ResolvePaths for ResolvedLink {
         let mut out = OutputHolder::new();
         self.gather_outputs(&mut out, path_buffers)?;
         path_searcher.merge(path_buffers, &mut out)?;
-        Ok(ResolvedRules::from(vec![rlink], vec![]))
+        Ok(ResolvedRules::from(vec![rlink], vec![], tup_desc.clone()))
     }
 }
 
@@ -1750,7 +1751,7 @@ impl LocatedStatement {
             }
         }
 
-        Ok((ResolvedRules::from(deglobbed, tasks), output))
+        Ok((ResolvedRules::from(deglobbed, tasks, tup_desc.clone()), output))
     }
 }
 
@@ -1762,21 +1763,21 @@ impl ResolvePaths for StatementsInFile {
         path_buffers: &impl PathBuffers,
         other_tupfiles_read: &Vec<PathDescriptor>,
     ) -> Result<ResolvedRules, Err> {
-        let mut merged_arts = ResolvedRules::new();
+        let mut resolved_rules = ResolvedRules::new(tup_desc.clone());
         debug!("Resolving paths for rules in {:?}", tup_desc.as_ref());
         self.try_for_each( |stmt| -> Result<(), Err> {
             let (art, _) =
                 stmt.resolve_paths(tup_desc, path_searcher, path_buffers, other_tupfiles_read)?;
             debug!("{:?}", art);
-            merged_arts.extend(art);
+            resolved_rules.extend(art);
             Ok(())
         })?;
-        Ok(merged_arts)
+        Ok(resolved_rules)
     }
 }
 
 /// `parse_dir' scans and parses all Tupfiles from a directory root, When sucessful it returns de-globbed, decoded links(rules)
-pub fn parse_dir(root: &Path) -> Result<(ResolvedRules, ReadWriteBufferObjects), Error> {
+pub fn parse_dir(root: &Path) -> Result<(Vec<ResolvedRules>, ReadWriteBufferObjects), Error> {
     let mut tupfiles = Vec::new();
     let tf = OsString::from("Tupfile");
     let tflua = OsString::from("Tupfile.lua");
@@ -1799,16 +1800,17 @@ pub fn parse_dir(root: &Path) -> Result<(ResolvedRules, ReadWriteBufferObjects),
 pub fn parse_tupfiles(
     root: &Path,
     tupfiles: &Vec<PathBuf>,
-) -> Result<(ResolvedRules, ReadWriteBufferObjects), Error> {
-    let mut artifacts_all = ResolvedRules::new();
+) -> Result<(Vec<ResolvedRules>, ReadWriteBufferObjects), Error> {
+    let mut artifacts_all = Vec::new();
     debug!("parsing tupfiles in {:?}", root);
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new_at(root))?;
     for tup_file_path in tupfiles.iter() {
         let resolved_rules = parser.parse(tup_file_path)?;
-        artifacts_all.extend(resolved_rules);
+        artifacts_all.push(resolved_rules);
     }
+   parser.reresolve(&mut artifacts_all)?;
     Ok((
-        parser.reresolve(artifacts_all)?,
+        artifacts_all,
         parser.read_write_buffers(),
     ))
 }
