@@ -270,7 +270,6 @@ impl ScriptOutputBuilder {
     }
 
     pub fn set_exclude_pattern(&mut self, regex: &str) -> &mut Self {
-        //todo: add multiple exclude patterns
         self.exclude_pattern = Some(PathExpr::ExcludePattern(regex.to_owned()));
         self
     }

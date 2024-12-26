@@ -2167,7 +2167,7 @@ impl SubstPEs for RuleFormula {
     /// run variable substitution on `RuleFormula'
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
         RuleFormula {
-            description: self.description.clone(), // todo : convert to rval and subst here as well,
+            description: self.description.clone(),
             formula: self.formula.subst_pe(m, path_searcher),
         }
     }
