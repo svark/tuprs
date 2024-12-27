@@ -128,7 +128,7 @@ impl Display for ErrorKind {
 }
 
 fn new_regex(pat: &str) -> Result<Regex, Error> {
-    log::warn!("building regex from:{}", pat);
+    log::debug!("building regex from:{}", pat);
     RegexBuilder::new(pat)
         .dot_matches_new_line(true)
         .size_limit(10 * (1 << 20))
