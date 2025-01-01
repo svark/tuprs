@@ -1,7 +1,8 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
+use std::string::String;
 use hex::encode;
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::Write;
@@ -21,14 +22,11 @@ use crate::buffers::{
     GroupPathDescriptor, OutputHolder, PathBuffers, PathDescriptor, RelativeDirEntry,
     RuleDescriptor, TaskDescriptor, TupPathDescriptor,
 };
-use crate::decode::{
-    paths_with_pattern, DecodeInputPlaceHolders, PathSearcher, ResolvePaths, ResolvedLink,
-    ResolvedTask, RuleFormulaInstance, TaskInstance, TupLoc,
-};
+use crate::decode::{paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance, TupLoc};
 use crate::errors::Error::{IoError, RootNotFound};
 use crate::errors::{Error as Err, Error};
 use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
-use crate::paths::{GlobPath, InputResolvedType, InputsAsPaths};
+use crate::paths::{GlobPath, InputResolvedType, InputsAsPaths, SelOptions};
 use crate::paths::{MatchingPath, NormalPath};
 use crate::platform::*;
 use crate::scriptloader::parse_script;
@@ -43,7 +41,8 @@ use nom::AsBytes;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use sha2::{Digest, Sha256};
 use std::io::{self, BufReader, Read};
-use thiserror::__private::AsDisplay;
+use walkdir::WalkDir;
+
 fn dump_temp_tup(contents: &[u8], tuprun_pd: &PathDescriptor) {
     if log::log_enabled!(log::Level::Debug) {
         // write contents to a file for the user to inspect
@@ -73,15 +72,6 @@ pub fn compute_sha256<P: AsRef<Path>>(path: P) -> io::Result<String> {
     Ok(encode(result))
 }
 
-#[cfg(test)]
-fn test_sha256() -> io::Result<()> {
-    let path = "~/.bashrc";
-    match compute_sha256(path) {
-        Ok(hash) => println!("SHA-256 hash: {}", hash),
-        Err(e) => eprintln!("Error: {}", e),
-    }
-    Ok(())
-}
 fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     let shell = {
         static SHELL: RwLock<Option<OsString>> = RwLock::new(None);
@@ -279,12 +269,12 @@ impl ParseState {
             "TUP_CWD".to_owned(),
             vec![MatchingPath::new(dir.clone(), PathDescriptor::default()).into()],
         );
-        log::debug!("TUP_CWD:{}", dir);
+        debug!("TUP_CWD:{}", dir);
         let rel_path_to_root = cur_file_desc
             .get_path_to_root()
             .to_string_lossy()
             .to_string();
-        log::debug!("TUP_ROOT:{}", rel_path_to_root);
+        debug!("TUP_ROOT:{}", rel_path_to_root);
         def_vars.insert(
             "TUP_ROOT".to_owned(),
             vec![MatchingPath::new(PathDescriptor::default(), dir).into()],
@@ -328,7 +318,7 @@ impl ParseState {
     pub(crate) fn get_include_path_str(&self) -> String {
         let mut buf = Vec::new();
         self.cur_tupfile_loc_stack.iter().for_each(|x| {
-            write!(buf, "{}\n", x.as_display()).unwrap();
+            write!(buf, "{}\n", x).unwrap();
         });
         String::from_utf8(buf).unwrap()
     }
@@ -423,7 +413,7 @@ impl ParseState {
     fn read_cached_config_at(&self, fullpath: &Path) -> Result<(String, String), Error> {
         let hash = get_sha256_hash(self.get_cur_file())?;
         // read the first line of the file and compare with the hash
-        let f = std::fs::File::open(fullpath)
+        let f = File::open(fullpath)
             .map_err(|e| Error::new_path_search_error(format!("{}", e.to_string())))?;
         let mut buf = BufReader::new(f);
         let mut line = String::new();
@@ -433,18 +423,25 @@ impl ParseState {
     }
 
     pub(crate) fn read_cached_config(&mut self) -> bool {
-        let mut do_read = false;
-        let mut read = || -> std::result::Result<bool, Error> {
+        let mut read = || -> Result<bool, Error> {
+            let mut do_read = false;
+            let mut header_str = String::new();
             let fullpath = self.get_cur_file().with_extension("temp-config.tup");
             if std::fs::exists(fullpath.as_path()).unwrap_or(false) {
                 debug!("reading cached config from {:?}", fullpath);
                 let (line, header) = self.read_cached_config_at(&fullpath)?;
                 if line.trim() == header {
                     do_read = true;
+                    if self.conf_map.contains_key(header.as_str()) {
+                        // we already have the config in memory
+                        return Ok(true);
+                    }
+                    header_str = header;
                 }
             }
             if do_read {
-                load_config_vars_raw(fullpath.as_path(), &mut self.conf_map)?;
+                load_temp_config(fullpath.as_path(), &mut self.expr_map, &mut self.func_map)?;
+                self.conf_map.insert(header_str, vec![]);
                 Ok(true)
             } else {
                 Ok(false)
@@ -473,10 +470,10 @@ impl ParseState {
     pub(crate) fn dump_vars(&self, path: &Path, sha: &str) -> Result<(), Error> {
         use std::io::Write;
         let err_string = format!("Could not write to cached config {:?}", path);
-        let f = std::fs::File::create(path)
+        let f = File::create(path)
             .map_err(|e| IoError(e, err_string.clone(), Loc::new(0, 0, 0)))?;
         let mut f = BufWriter::new(f);
-        write!(f, "#tup.config sha:{}\n", sha).expect(err_string.as_str());
+        writeln!(f, "#tup.config sha:{}", sha).expect(err_string.as_str());
         for (k, v) in self.expr_map.iter() {
             let res = writeln!(f, "{}:={}", k, v.cat());
             if let Err(e) = res {
@@ -1020,11 +1017,12 @@ pub(crate) fn to_regex(pat: &str) -> String {
         }
     }
     regex_pattern.push('$');
-    log::debug!("formed regex: {} from {}", regex_pattern, pat);
+    debug!("formed regex: {} from {}", regex_pattern, pat);
     regex_pattern
 }
 
 /// Discover paths that match glob pattern and have pattern in its contents
+/// Used to discover that match pattern in during subst-ing the pe `DollarExprs::GrepFiles`
 fn discover_paths_with_pattern(
     psx: &impl PathSearcher,
     path_buffers: &BufferObjects,
@@ -1169,7 +1167,7 @@ impl DollarExprs {
             DollarExprs::GrepFiles(ref pattern, ref glob) => {
                 let pattern = pattern.subst_callargs(m);
                 let glob = glob.subst_callargs(m);
-                log::debug!("grepfiles pattern:{:?} glob:{:?}", pattern, glob,);
+                debug!("grepfiles pattern:{:?} glob:{:?}", pattern, glob,);
                 DExpr(DollarExprs::GrepFiles(pattern, glob))
             }
             DollarExprs::Format(spec, body) => {
@@ -1193,7 +1191,7 @@ impl DollarExprs {
             DollarExprs::DollarExpr(x) => {
                 debug!("substituting {}", x.as_str());
                 let res = m.extract_evaluated_var(x.as_str(), path_searcher);
-                log::debug!("result of subst:{:?}", res);
+                debug!("result of subst:{:?}", res);
                 res
             }
             DollarExprs::Subst(ref from, ref to, ref vs) => {
@@ -1241,11 +1239,11 @@ impl DollarExprs {
                         let v = spec.decode_input_place_holders(&inputs, &Default::default());
                         let vstr = v.as_slice();
                         let cow_vstr = vstr.cat_ref();
-                        log::debug!("formatted string:{}", cow_vstr.as_ref());
+                        debug!("formatted string:{}", cow_vstr.as_ref());
                         let mut pelist = crate::parser::reparse_literal_as_input(cow_vstr.as_ref())
                             .unwrap_or_default();
                         pelist.cleanup();
-                        log::debug!("formatted pelist:{:?}", pelist);
+                        debug!("formatted pelist:{:?}", pelist);
                         pelist.iter().for_each(|x| {
                             result.push(x.clone());
                             result.push(PathExpr::Sp1);
@@ -1264,7 +1262,7 @@ impl DollarExprs {
                 let mut result = Vec::new();
                 for body_frag in body.split(PathExpr::is_ws) {
                     if body_frag.is_empty() {
-                        log::debug!("empty body frag");
+                        debug!("empty body frag");
                         continue;
                     }
                     let mut body_frag_str = body_frag.first().unwrap().cat_ref();
@@ -1416,7 +1414,7 @@ impl DollarExprs {
 
                 let glob = trim_list(&glob);
                 if glob.cat_ref().contains(" ") && !glob.contains(&PathExpr::Sp1) {
-                    log::debug!("wildcard glob contains spaces and is not a list");
+                    debug!("wildcard glob contains spaces and is not a list");
                 }
                 debug!("wildcard to expand:{:?}", glob.cat());
                 let mut result = Vec::new();
@@ -1743,7 +1741,7 @@ impl DollarExprs {
 
                     substed_lines
                 } else {
-                    eprintln!("function {} not found", func_name);
+                    log::warn!("function {} not found", func_name);
                     vec![]
                 }
             }
@@ -1837,8 +1835,8 @@ impl DollarExprs {
             DollarExprs::Shell(cmd) => {
                 let subst_val = cmd.subst_pe(m, path_searcher);
                 let args = subst_val.cat();
-                eprintln!("Running shell command:{}", args);
-                eprintln!(
+                log::warn!("Running shell command:{}", args);
+                log::warn!(
                     "consider rewriting in a configuration step and access it here as an env"
                 );
                 // run sh -c over the args and process stdout
@@ -2279,6 +2277,28 @@ pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>
 
     Ok(conf_vars)
 }
+pub(crate) fn load_temp_config(
+    conf_file: &Path,
+    expr_map: &mut HashMap<String, Vec<PathExpr>>,
+    func_map: &mut HashMap<String, Vec<PathExpr>>,
+) -> Result<(), Error> {
+    for LocatedStatement { statement, .. } in parse_tupfile(conf_file)?.iter() {
+        if let Statement::AssignExpr { left, right, assignment_type } = statement {
+            match assignment_type {
+                AssignmentType::Lazy => {
+                    func_map.insert(left.name.clone(), right.clone());
+                }
+                AssignmentType::Immediate => {
+                    expr_map.insert(left.name.clone(), right.clone());
+                }
+                _ => {
+                    panic!("unexpected assignment type in temp config");
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 pub(crate) fn load_config_vars_raw(
     conf_file: &Path,
@@ -2287,10 +2307,10 @@ pub(crate) fn load_config_vars_raw(
     for LocatedStatement { statement, .. } in parse_tupfile(conf_file)?.iter() {
         if let Statement::AssignExpr { left, right, .. } = statement {
             if let Some(rest) = left.name.strip_prefix("CONFIG_") {
-                log::warn!("conf var:{} = {}", rest, right.cat());
+                debug!("conf var:{} = {}", rest, right.cat());
                 conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
             } else {
-                log::warn!("conf var:{} = {}", left.name, right.cat());
+                debug!("conf var:{} = {}", left.name, right.cat());
                 conf_vars.insert(left.name.clone(), tovecstring(right.as_slice()));
             }
         } else if let Statement::Import(e, v) = statement {
@@ -2463,7 +2483,7 @@ impl LocatedStatement {
                 // ignore
             }
             Statement::Define(name, val) => {
-                log::debug!("adding {} to func_map", name);
+                debug!("adding {} to func_map", name);
                 parse_state.func_map.insert(name.to_string(), val.clone());
             }
             Statement::EvalBlock(body) => {
@@ -2601,7 +2621,7 @@ impl LocatedStatement {
 
             let dump_eval_file_name = format!(
                 "tup_eval_block{}.tup",
-                (parse_state.get_current_loc().get_line())
+                parse_state.get_current_loc().get_line()
             );
             let tup_cwd = parse_state.get_tup_base_dir();
             let dump_eval_file_pd = parse_state
@@ -2745,7 +2765,7 @@ impl LocatedStatement {
         assignment_type: &AssignmentType,
     ) {
         let op = assignment_type.to_str();
-        log::info!("assign: {:?} {} {:?}", left.name, op, right);
+        debug!("assign: {:?} {} {:?}", left.name, op, right);
         /*
            With Lazy Assignment (=): The appends are added to the unevaluated value, and everything is evaluated only when the variable is expanded.
         With Eager Assignment (:=): The appends are added to the already evaluated value, and each append operation immediately affects the final value of the variable.
@@ -2839,16 +2859,22 @@ pub struct ResolvedRules {
     resolved_links: Vec<ResolvedLink>,
     resolved_tasks: Vec<ResolvedTask>,
     tupid: TupPathDescriptor,
+    tup_files_read: Vec<PathDescriptor>
 }
 
 impl ResolvedRules {
     /// Empty constructor for `ResolvedRules`
     pub fn new(tupid: TupPathDescriptor) -> ResolvedRules {
-        ResolvedRules{tupid:tupid, ..ResolvedRules::default()}
+        ResolvedRules{tupid, ..ResolvedRules::default()}
     }
     /// get the TupPathDescriptor for the tupfile that generated these rules
     pub fn get_tupid(&self) -> &TupPathDescriptor {
         &self.tupid
+    }
+
+    /// list of tupfiles read by parser while reading a single tupfile
+    pub fn get_tupfiles_read(&self) -> &Vec<PathDescriptor> {
+        &self.tup_files_read
     }
 
     /// set links again after resolving missing inputs to links
@@ -2859,12 +2885,14 @@ impl ResolvedRules {
     pub fn from(
         resolved_links: Vec<ResolvedLink>,
         resolved_tasks: Vec<ResolvedTask>,
-        tupid: TupPathDescriptor
+        tupid: TupPathDescriptor,
+        tup_files_read: Vec<PathDescriptor>,
     ) -> ResolvedRules {
         ResolvedRules {
             resolved_links,
             resolved_tasks,
             tupid,
+            tup_files_read
         }
     }
 
@@ -2883,6 +2911,7 @@ impl ResolvedRules {
         if resolved_rules.tupid == self.tupid {
             self.resolved_links.append(&mut resolved_rules.resolved_links);
             self.resolved_tasks.append(&mut resolved_rules.resolved_tasks);
+            self.tup_files_read.append(&mut resolved_rules.tup_files_read);
              true
         } else {
              false
@@ -3012,12 +3041,22 @@ impl ReadWriteBufferObjects {
         let r = self.get();
         r.get_path(p0).clone()
     }
+    /// Returns full path from root of `p0`
+    pub fn get_abs_path(&self, p0: &PathDescriptor) -> PathBuf {
+        let r = self.get();
+        r.get_root_dir().join(r.get_path_ref(p0))
+    }
 
     /// Return file name of the path with given descriptor
     pub fn get_name(&self, p0: &PathDescriptor) -> String {
         p0.get_file_name().to_string()
     }
-
+    
+    /// return the portion of the path that starts from recursive glob to parent of the glob path
+    pub fn get_recursive_glob_str(&self, p0: &GlobPathDescriptor) -> String {
+        let r = self.get();
+        r.get_recursive_glob_str(p0)
+    }
     /// Return the tup file name corresponding to its descriptor
     pub fn get_tup_file_name(&self, p0: &TupPathDescriptor) -> String {
         p0.get_file_name().to_string()
@@ -3062,11 +3101,18 @@ impl ReadWriteBufferObjects {
         let np = r.get_path(&gd);
         np.clone()
     }
+    
+    /// true if the glob path is recursive
+    pub fn is_recursive_glob(&self, p0: &GlobPathDescriptor) -> bool {
+        let r = self.get();
+        r.is_recursive_glob(p0)
+    }
+    
 
     /// get parent to the glob path
-    pub fn get_glob_parent_id(&self, gd: &GlobPathDescriptor) -> PathDescriptor {
+    pub fn get_glob_prefix(&self, gd: &GlobPathDescriptor) -> PathDescriptor {
         let r = self.get();
-        r.get_parent_id(gd)
+        r.get_glob_prefix(gd)
     }
 
     /// Return the tup folder corresponding to its id
@@ -3130,6 +3176,16 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     /// return outputs gathered by this parser and the relationships to its rule, directory etc
     pub fn get_outs(&self) -> OutputHolder {
         self.get_searcher().get_outs().clone()
+    }
+
+    /// list of other tupfiles read by the parser while parsing a single tupfile
+    pub fn get_tupfiles_read(&self) -> Vec<PathDescriptor> {
+        let cache = self.statement_cache.try_read();
+        if let Some(cache) = cache {
+            cache.keys().cloned().collect()
+        } else {
+            Vec::new()
+        }
     }
 
     /// returned a reference to path searcher
@@ -3381,7 +3437,8 @@ pub fn locate_file<P: AsRef<Path>>(
 
 /// functions for testing transformations
 pub mod testing {
-    use std::collections::HashMap;
+    use log::debug;
+use std::collections::HashMap;
     use std::path::Path;
 
     use crate::decode::DirSearcher;
@@ -3408,12 +3465,12 @@ pub mod testing {
         /// get the variable value as a string
         pub fn get(&self, name: &str) -> Option<Vec<String>> {
             self.expr_map.get(name).and_then(|p| {
-                log::debug!("get var:{}={:?}", name, p);
+                debug!("get var:{}={:?}", name, p);
                 let vs = p
                     .split(|x| matches!(x, PathExpr::Sp1 | PathExpr::NL))
                     .flat_map(|x| x.iter().map(|x| x.cat_ref().trim().to_string()))
                     .collect::<Vec<String>>(); // $(empty substitution depends on this)
-                log::debug!("get var:{}={:?}", name, vs);
+                debug!("get var:{}={:?}", name, vs);
                 Some(vs)
                 //Some(p.into_iter().map(|x| x.cat_ref().to_string()).collect())
             })
@@ -3448,7 +3505,7 @@ pub mod testing {
         statements: Vec<LocatedStatement>,
         conf_map: HashMap<String, Vec<String>>,
     ) -> Result<(Vec<LocatedStatement>, HashMap<String, Vec<String>>), Error> {
-        log::debug!("statements:{:?} in file:{:?}", statements, filename);
+        debug!("statements:{:?} in file:{:?}", statements, filename);
         let mut parse_state = ParseState::new_at(filename);
         //parse_state.set_cwd(filename).unwrap();
         parse_state.conf_map = conf_map;
@@ -3466,4 +3523,62 @@ pub mod testing {
         v.cleanup();
         Ok((v, parse_state.conf_map))
     }
+}
+
+/// sha of a directory is the sha of the list of files in the directory and the current directory
+pub fn compute_dir_sha256(p0: &Path) -> Result<String, Error> {
+    let mut hasher = Sha256::new();
+    let wdir = WalkDir::new(p0);
+    hasher.update(p0.as_os_str().as_encoded_bytes());
+    wdir.max_depth(1).min_depth(1).follow_links(false).into_iter()
+        .filter_map(|e| e.ok()).try_for_each(
+        |entry| {
+            let path = entry.path();
+            hasher.update(path.as_os_str().as_encoded_bytes());
+            Ok(())
+        },
+    )?;
+    let result = hasher.finalize();
+    Ok(encode(result))
+}
+
+/// sha of a glob is the sha of the list of files in the directory that match the glob and the current directory
+pub fn compute_glob_sha256(bo: &impl PathBuffers, p0: &GlobPathDescriptor) -> Result<String, Error> {
+    let glob_path = GlobPath::build_from(&PathDescriptor::default(), p0).unwrap();
+    let root = glob_path.get_non_pattern_abs_path();
+    if !glob_path.has_glob_pattern()  {
+        return Ok(String::new());
+    }
+    let mut hasher = Sha256::new();
+    let parent = root.as_path();
+    hasher.update(parent.as_os_str().as_encoded_bytes());
+    let glob = glob_path.get_glob_desc();
+    let mut set = HashSet::new();
+    DirSearcher::discover_input_files(bo, &[glob_path], &mut set, SelOptions::File, 
+                                      &mut |path: MatchingPath| {
+        hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
+    })?;
+    let result = hasher.finalize();
+    Ok(encode(result))
+}
+
+/// sha of a rglob is the sha of the list of folders in the directory and subdirectories that match the glob  within the glob non pattern prefix directory
+pub fn compute_rglob_sha256(bo: &impl PathBuffers, p0: &GlobPathDescriptor) -> Result<String, Error> {
+    let parent = p0.get_parent_descriptor();
+    let glob_path = GlobPath::build_from(&PathDescriptor::default(), &parent).unwrap();
+    let root = glob_path.get_non_pattern_abs_path();
+    if !glob_path.has_glob_pattern()  {
+        return Ok(String::new());
+    }
+    let mut hasher = Sha256::new();
+    let parent = root.as_path();
+    hasher.update(parent.as_os_str().as_encoded_bytes());
+    let glob = glob_path.get_glob_desc();
+    let mut set = HashSet::new();
+    DirSearcher::discover_input_files(bo, &[glob_path], &mut set, SelOptions::Dir,
+                                      &mut |path: MatchingPath| {
+        hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
+    })?;
+    let result = hasher.finalize();
+    Ok(encode(result))
 }

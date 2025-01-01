@@ -12,7 +12,7 @@ use std::hash::Hash;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use log::{debug, log_enabled};
+use log::{debug};
 use parking_lot::MappedRwLockReadGuard;
 use regex::{Captures, Regex};
 use walkdir::{DirEntry, WalkDir};
@@ -22,10 +22,7 @@ use crate::decode::Index::All;
 use crate::errors::Error::PathSearchError;
 use crate::errors::{Error as Err, Error};
 use crate::parser::reparse_literal_as_input;
-use crate::paths::{
-    ExcludeInputPaths, FormatReplacements, GlobPath, InputResolvedType, InputsAsPaths,
-    MatchingPath, NormalPath, OutputsAsPaths,
-};
+use crate::paths::{ExcludeInputPaths, FormatReplacements, GlobPath, InputResolvedType, InputsAsPaths, MatchingPath, NormalPath, OutputsAsPaths, SelOptions};
 use crate::statements::*;
 use crate::transform::{to_regex, ResolvedRules, TupParser};
 use crate::ReadWriteBufferObjects;
@@ -369,6 +366,91 @@ impl DirSearcher {
             output_holder: OutputHolder::new(),
         }
     }
+
+    /// Walk directory tree from the non pattern prefix to capture all
+    /// file paths that match the first glob pattern in the input array
+    pub(crate) fn discover_input_files(path_buffers: &impl PathBuffers,
+                                       glob_path: &[GlobPath], unique_path_descs: &mut HashSet<PathDescriptor>,
+                                       options: SelOptions,
+                                       mut handle_match : impl FnMut(MatchingPath) -> ()
+    ) -> Result<(), Error> {
+        let mut inserted = false;
+        for glob_path in glob_path {
+            let to_match = glob_path.get_abs_path();
+            debug!(
+                "looking at non pattern base path:{:?} for pattern:{:?}",
+                glob_path.get_non_pattern_abs_path(),
+                to_match
+            );
+
+            let root = path_buffers.get_root_dir();
+            if !glob_path.has_glob_pattern() {
+                let path_desc = glob_path.get_glob_path_desc();
+                let mp_from_root = root.join(to_match.as_path());
+                debug!(
+                    "looking for fixed pattern path {:?} at {:?}",
+                    to_match, mp_from_root
+                );
+                if mp_from_root.is_file() || mp_from_root.is_dir() {
+                    let matching_path = MatchingPath::new(
+                        path_desc,
+                        glob_path.get_non_pattern_prefix_desc().clone(),
+                    );
+                    debug!("mp:{:?}", matching_path);
+                    handle_match(matching_path);
+                    return Ok(());
+                } else {
+                    log::warn!("Could not find path {:?}", mp_from_root);
+                }
+            } else {
+                let non_pattern_prefixh = glob_path.get_non_pattern_abs_path();
+                let prefix_path_from_root = path_buffers.get_root_dir().join(non_pattern_prefixh.as_path());
+                if !prefix_path_from_root.is_dir() {
+                    debug!("base path {:?} is not a directory", non_pattern_prefixh);
+                    continue;
+                }
+                let globs = MyGlob::new_raw(to_match.as_path())?;
+                debug!("glob regex used for finding matches {}", globs.re());
+                debug!("non pattern prefix path for files matching glob: {:?}", non_pattern_prefixh);
+                let mut walkdir = WalkDir::new(prefix_path_from_root);
+                if glob_path.is_recursive_prefix() {
+                    walkdir = walkdir.max_depth(usize::MAX);
+                } else {
+                    walkdir = walkdir.max_depth(1);
+                }
+                let len = root.components().count();
+                let relative_path_on_matching_file_type = |e: DirEntry| {
+                    options.matches(e.file_type()).then(
+                        || e.path().components().skip(len).collect::<PathBuf>())
+                };
+                let filtered_paths = walkdir
+                    .min_depth(1)
+                    .into_iter()
+                    .filter_map(move |e| e.ok().and_then(relative_path_on_matching_file_type))
+                    .filter(|entry| globs.is_match(entry.as_path()));
+                for path in filtered_paths {
+                    let path_desc = path_buffers.add_abs(path.as_path())?;
+                    let captured_globs = globs.group(path.as_path());
+                    debug!("found path {:?} with captures {:?}", path, captured_globs);
+                    if unique_path_descs.insert(path_desc.clone()) {
+                        let matching_path = MatchingPath::with_captures(
+                            path_desc,
+                            glob_path.get_glob_desc(),
+                            captured_globs,
+                            glob_path.get_non_pattern_prefix_desc().clone(),
+                        );
+                        debug!("matching path {:?}", matching_path);
+                        handle_match(matching_path);
+                        inserted = true;
+                    }
+                }
+                if inserted{
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl PathSearcher for DirSearcher {
@@ -388,85 +470,8 @@ impl PathSearcher for DirSearcher {
             pes.extend(matching_outs);
             return Ok(pes);
         }
-        for glob_path in glob_path {
-            let to_match = glob_path.get_abs_path();
-            debug!(
-                "looking at base path:{:?} for pattern:{:?}",
-                glob_path.get_base_abs_path(),
-                to_match
-            );
-
-            let root = path_buffers.get_root_dir();
-            if !glob_path.has_glob_pattern() {
-                let mut pes = Vec::new();
-                let path_desc = glob_path.get_glob_path_desc();
-                let mp_from_root = root.join(to_match.as_path());
-                debug!(
-                    "looking for fixed pattern path {:?} at {:?}",
-                    to_match, mp_from_root
-                );
-                if mp_from_root.is_file() || mp_from_root.is_dir() {
-                    pes.push(MatchingPath::new(
-                        path_desc,
-                        glob_path.get_base_desc().clone(),
-                    ));
-                    if log_enabled!(log::Level::Debug) {
-                        for pe in pes.iter() {
-                            debug!("mp:{:?}", pe);
-                        }
-                    }
-                    return Ok(pes);
-                } else {
-                    log::warn!("Could not find path {:?}", mp_from_root);
-                }
-            } else {
-                let base_path = glob_path.get_base_abs_path();
-                let base_path_from_root = path_buffers.get_root_dir().join(base_path.as_path());
-                if !base_path_from_root.is_dir() {
-                    debug!("base path {:?} is not a directory", base_path);
-                    continue;
-                }
-                let globs = MyGlob::new_raw(to_match.as_path())?;
-                debug!("glob regex used for finding matches {}", globs.re());
-                debug!("base path for files matching glob: {:?}", base_path);
-                let mut walkdir = WalkDir::new(base_path_from_root);
-                if glob_path.is_recursive_prefix() {
-                    walkdir = walkdir.max_depth(usize::MAX);
-                } else {
-                    walkdir = walkdir.max_depth(1);
-                }
-                let len = root.components().count();
-                let relative_path =
-                    |entry: DirEntry| -> PathBuf { entry.path().components().skip(len).collect() };
-
-                let filtered_paths = walkdir
-                    .min_depth(1)
-                    .into_iter()
-                    .filter_map(move |entry| entry.ok().map(relative_path))
-                    .filter(|entry| globs.is_match(entry.as_path()));
-                for path in filtered_paths {
-                    let path_desc = path_buffers.add_abs(path.as_path())?;
-                    let captured_globs = globs.group(path.as_path());
-                    debug!("found path {:?} with captures {:?}", path, captured_globs);
-                    if unique_path_descs.insert(path_desc.clone()) {
-                        pes.push(MatchingPath::with_captures(
-                            path_desc,
-                            glob_path.get_glob_desc(),
-                            captured_globs,
-                            glob_path.get_base_desc().clone(),
-                        ));
-                    }
-                }
-                if log_enabled!(log::Level::Debug) {
-                    for pe in pes.iter() {
-                        debug!("mp_glob:{:?}", pe);
-                    }
-                }
-                if !pes.is_empty() {
-                    break;
-                }
-            }
-        }
+        Self::discover_input_files(path_buffers, glob_path, &mut unique_path_descs,  SelOptions::Either,
+                                   |mp| pes.push(mp))?;
         Ok(pes)
     }
 
@@ -1495,7 +1500,7 @@ impl ResolvePaths for ResolvedLink {
         tup_desc: &TupPathDescriptor,
         path_searcher: &mut impl PathSearcher,
         path_buffers: &impl PathBuffers,
-        _tupfiles_read: &Vec<PathDescriptor>,
+        tupfiles_read: &Vec<PathDescriptor>,
     ) -> Result<ResolvedRules, Err> {
         let mut rlink: ResolvedLink = self.clone();
         rlink.primary_sources.clear();
@@ -1568,7 +1573,7 @@ impl ResolvePaths for ResolvedLink {
         let mut out = OutputHolder::new();
         self.gather_outputs(&mut out, path_buffers)?;
         path_searcher.merge(path_buffers, &mut out)?;
-        Ok(ResolvedRules::from(vec![rlink], vec![], tup_desc.clone()))
+        Ok(ResolvedRules::from(vec![rlink], vec![], tup_desc.clone(), tupfiles_read.clone()))
     }
 }
 
@@ -1751,7 +1756,7 @@ impl LocatedStatement {
             }
         }
 
-        Ok((ResolvedRules::from(deglobbed, tasks, tup_desc.clone()), output))
+        Ok((ResolvedRules::from(deglobbed, tasks, tup_desc.clone(), tupfiles_read.clone()), output))
     }
 }
 

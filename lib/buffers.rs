@@ -22,6 +22,7 @@ use crate::{
     paths::{GlobPath, InputResolvedType, MatchingPath, NormalPath},
     statements::Env,
 };
+use crate::paths::get_non_pattern_prefix;
 
 /// Methods to store and retrieve paths, groups, bins, rules from in-memory buffers
 /// This way we can identify paths /groups/bins and environment by their unique descriptors (ids)
@@ -34,6 +35,14 @@ pub trait PathBuffers {
 
     /// Add a path to a group in this buffer
     fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> GroupPathDescriptor;
+    /// return non pattern prefix in the glob path
+    fn get_glob_prefix(&self, glob_desc: &GlobPathDescriptor) -> PathDescriptor;
+    /// return the portion of path from non pattern prefix to the parent of the glob
+    fn get_recursive_glob_str(&self, p0: &GlobPathDescriptor) -> String;
+    /// return if the glob is recursive
+    fn is_recursive_glob(&self, p0: &GlobPathDescriptor) -> bool;
+    /// return the name of the group from its descriptor removing the non pattern prefix from the path
+    fn get_glob_name(&self, glob_desc: &GlobPathDescriptor) -> String;
 
     /// add a path from root and fetch its unique id
     fn add_abs<P: AsRef<Path>>(&self, path: P) -> Result<PathDescriptor, Error>;
@@ -70,6 +79,9 @@ pub trait PathBuffers {
     fn get_path<'a, 'b>(&'a self, pd: &'b PathDescriptor) -> &'b NormalPath;
     /// return path (raw std::path) from its descriptor
     fn get_path_ref<'a, 'b>(&'a self, pd: &'b PathDescriptor) -> &'b Path;
+    
+    /// return full path from root from its descriptor.
+    fn get_abs_path(&self, pd: &PathDescriptor) -> PathBuf;
 
     /// return relative path from current and base.
     fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> NormalPath;
@@ -474,6 +486,9 @@ impl PathDescriptor {
     pub fn get_file_name(&self) -> Cow<'_, str> {
         (*self).get().get_name()
     }
+    pub fn get_file_name_os_str(&self) -> &OsStr {
+        (*self).get().get_os_str()
+    } 
     /// get parent path descriptor
     pub fn get_parent_descriptor(&self) -> Self {
         if self.to_u64() == 0 {
@@ -937,7 +952,7 @@ impl GeneratedFiles {
         vs: &mut Vec<MatchingPath>,
     ) {
         let mut hs = HashSet::new();
-        let base_path_desc = glob_path.get_base_desc();
+        let base_path_desc = glob_path.get_non_pattern_prefix_desc();
         hs.extend(vs.iter().map(MatchingPath::path_descriptor));
         debug!("looking for globmatches:{:?}", glob_path.get_abs_path());
         let tup_cwd = glob_path.get_tup_dir_desc();
@@ -1189,7 +1204,7 @@ impl OutputHolder {
                 let path_desc: PathDescriptor = glob_path.get_glob_path_desc();
                 self.get().outputs_with_desc(
                     &path_desc,
-                    glob_path.get_base_desc(),
+                    glob_path.get_non_pattern_prefix_desc(),
                     glob_path.get_tup_dir_desc(),
                     &mut vs,
                 );
@@ -1400,6 +1415,46 @@ impl PathBuffers for BufferObjects {
         }
         GroupBufferObject::add_ref(GroupPathEntry::new(pd, pe))
     }
+    
+    /// return the non pattern prefix of the glob
+    fn get_glob_prefix(&self, glob_desc: &GlobPathDescriptor) -> PathDescriptor {
+        get_non_pattern_prefix(glob_desc).0
+    }
+    
+    // return the portion of path from non pattern prefix to the parent of the glob
+    fn get_recursive_glob_str(&self, p0: &GlobPathDescriptor) -> String {
+        let (par, hasglob) = get_non_pattern_prefix(p0);
+        if !hasglob {
+            return "".to_string();
+        }
+        RelativeDirEntry::new(par, p0.get_parent_descriptor()).get_path().to_string().replace(
+            "**","*"
+        )
+    }
+    fn is_recursive_glob(&self, p0: &GlobPathDescriptor) -> bool {
+        let p = p0.get_path_ref();
+        let mut has_rglob = false;
+        for c in p.as_path().components() {
+            if let Component::Normal(c) = c {
+                if c == "**" {
+                    has_rglob = true;
+                    break;
+                }
+            }
+        }
+        has_rglob
+    }
+    
+    /// return the name of the group from its descriptor removing the non pattern prefix from the path
+    fn get_glob_name(&self, glob_desc: &GlobPathDescriptor) -> String {
+        let (par, hasglob) = get_non_pattern_prefix(glob_desc);
+        if hasglob {
+            RelativeDirEntry::new(par, glob_desc.clone()).get_path().to_string()
+        }else {
+            glob_desc.get_file_name().to_string()
+        }
+    }
+    
 
     /// Add a path to buffer and return its unique id in the buffer
     /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
@@ -1483,6 +1538,9 @@ impl PathBuffers for BufferObjects {
 
     fn get_path_ref<'a, 'b>(&'a self, pd: &'b PathDescriptor) -> &'b Path {
         pd.get_path_ref().as_path()
+    }
+    fn get_abs_path(&self, pd: &PathDescriptor) -> PathBuf {
+        self.get_root_dir().join(pd.get_path_ref())
     }
     fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> NormalPath {
         let rel = RelativeDirEntry::new(base.clone(), pd.clone());

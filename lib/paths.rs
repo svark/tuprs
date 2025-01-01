@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
+use std::fs::FileType;
 use std::path::{Path, PathBuf};
 
 use log::debug;
@@ -25,12 +26,11 @@ pub struct NormalPath {
     inner: PathBuf,
 }
 
-impl NormalPath {}
 
 const GLOB_PATTERN_CHARACTERS: &str = "*?[";
 
-/// return the parent directory
-fn get_non_pattern_prefix(glob_path: &PathDescriptor) -> (PathDescriptor, bool) {
+/// return the non pattern prefix of a glob path and a boolean indicating if the path has a glob pattern
+pub fn get_non_pattern_prefix(glob_path: &PathDescriptor) -> (PathDescriptor, bool) {
     let mut prefix = PathDescriptor::default();
     let mut has_glob = false;
     for component in glob_path.components() {
@@ -213,11 +213,27 @@ impl MatchingPath {
 #[derive(Debug, Clone)]
 pub struct GlobPath {
     glob_path_desc: GlobPathDescriptor,
-    base_desc: PathDescriptor,
+    non_pattern_prefix_desc: PathDescriptor,
     tup_cwd: PathDescriptor,
     glob: std::sync::OnceLock<MyGlob>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) enum SelOptions {
+    #[default]
+    File,
+    Dir,
+    Either,
+}
+
+impl SelOptions {
+    pub(crate) fn matches(&self, file_type: FileType) -> bool {
+        match file_type.is_dir() {
+            true => matches!(self, SelOptions::Dir | SelOptions::Either),
+            false => matches!(self, SelOptions::File | SelOptions::Either),
+        }
+    }
+}
 impl GlobPath {
     /// append a relative path to tup_cwd, to construct a new glob search path
     pub fn build_from_relative_desc(
@@ -228,21 +244,22 @@ impl GlobPath {
         ided_path += glob_path;
         Self::build_from(tup_cwd, &ided_path)
     }
-    pub(crate) fn build_from(
+    /// Create a new instance of GlobPath from a glob path descriptor and a parent folder descriptor
+    pub fn build_from(
         tup_cwd: &PathDescriptor,
         glob_path_desc: &PathDescriptor,
     ) -> Result<GlobPath, Error> {
-        let (base_path_desc, _has_glob) = get_non_pattern_prefix(glob_path_desc);
+        let (prefix_path_desc, _has_glob) = get_non_pattern_prefix(glob_path_desc);
         Ok(GlobPath {
             glob_path_desc: glob_path_desc.clone(),
-            base_desc: base_path_desc,
+            non_pattern_prefix_desc: prefix_path_desc,
             tup_cwd: tup_cwd.clone(),
             glob: std::sync::OnceLock::new(),
         })
     }
 
     /// Id to Glob path
-    pub fn get_glob_path_desc(&self) -> PathDescriptor {
+    pub fn get_glob_path_desc(&self) -> GlobPathDescriptor {
         self.glob_path_desc.clone()
     }
     /// Id to the glob path from root
@@ -255,8 +272,8 @@ impl GlobPath {
     }
 
     /// Id of the parent folder corresponding to glob path
-    pub fn get_base_desc(&self) -> &PathDescriptor {
-        &self.base_desc
+    pub fn get_non_pattern_prefix_desc(&self) -> &PathDescriptor {
+        &self.non_pattern_prefix_desc
     }
 
     /// Get Tupfile folder descriptor
@@ -265,16 +282,21 @@ impl GlobPath {
     }
 
     /// parent folder corresponding to glob path
-    pub fn get_base_abs_path(&self) -> &NormalPath {
-        self.base_desc.get_path_ref()
+    pub fn get_non_pattern_abs_path(&self) -> &NormalPath {
+        self.non_pattern_prefix_desc.get_path_ref()
     }
 
     /// Check if the pattern for matching has glob pattern chars such as "*[]"
     pub fn has_glob_pattern(&self) -> bool {
         let gb = self.glob_path_desc.clone();
         //debug!("has_glob_pattern: {:?}", gb);
-        std::iter::once(gb)
-            .chain(self.glob_path_desc.ancestors())
+       Self::path_has_glob(gb)
+    }
+
+    /// Check if the path has a glob pattern
+    pub fn path_has_glob(gb: GlobPathDescriptor) -> bool {
+        std::iter::once(gb.clone())
+            .chain(gb.ancestors())
             .any(|x| {
                 let name = x.as_ref().get_name();
                 GLOB_PATTERN_CHARACTERS.chars().any(|c| name.contains(c))
@@ -612,7 +634,7 @@ pub enum InputResolvedType {
     /// BinEntry contains a bin id and a path (descriptor) that was collected in this bin as  output to some rule
     BinEntry(BinDescriptor, PathDescriptor),
     /// Unresolved file that failed glob match
-    UnResolvedFile(PathDescriptor),
+    UnResolvedFile(GlobPathDescriptor),
     /// Reference to a task
     TaskRef(TaskDescriptor),
 }
@@ -664,7 +686,7 @@ impl InputResolvedType {
     }
     
     /// Fetch Group inputs
-    pub fn get_group_inputs(&self) -> Option<GroupPathDescriptor> {
+    pub fn get_group_input(&self) -> Option<GroupPathDescriptor> {
         match self {
             InputResolvedType::GroupEntry(g, _) => Some(g.clone()),
             InputResolvedType::UnResolvedGroupEntry(g) => Some(g.clone()),
@@ -676,6 +698,7 @@ impl InputResolvedType {
     pub fn get_glob_path_desc(&self) -> Option<GlobPathDescriptor> {
         match self {
             InputResolvedType::Deglob(e) => e.glob_descriptor(),
+            InputResolvedType::UnResolvedFile(g)  if GlobPath::path_has_glob(g.clone()) => Some(g.clone()),
             _ => None,
         }
     }
