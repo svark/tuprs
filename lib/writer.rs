@@ -465,13 +465,7 @@ pub(crate) fn write_statement<T: Write>(
                 write!(writer, " as {}", alias).unwrap();
             }
             write!(writer, "\n").unwrap();
-        } /*Statement::SearchDir(pattern, dirs) => {
-              write!(writer, "vpath ").unwrap();
-              write_pathexprs(writer, pattern);
-              write!(writer, " ").unwrap();
-              write_pathexprs(writer, dirs);
-              write!(writer, "\n").unwrap();
-          }*/
+        } 
         Statement::CachedConfig => {
             write!(writer, ".cached_config\n").unwrap();
         }

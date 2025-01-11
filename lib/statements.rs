@@ -1,13 +1,13 @@
 //! This module has datastructures that capture parsed tupfile expressions
 use crate::buffers::EnvList;
-use std::borrow::Cow;
-use std::fmt::{Display, Formatter, Write};
-use nonempty::{nonempty, NonEmpty};
 use crate::buffers::PathDescriptor;
 use crate::decode::TupLoc;
 use crate::paths::MatchingPath;
 use crate::transform::ParseState;
 use crate::TupPathDescriptor;
+use nonempty::{nonempty, NonEmpty};
+use std::borrow::Cow;
+use std::fmt::{Display, Formatter, Write};
 
 /// TaskTarget encapsulates the target of a task
 #[derive(Debug, Clone, PartialEq)]
@@ -400,7 +400,7 @@ pub(crate) struct IncludedStatements<T> {
     include_trail: NonEmpty<TupLoc>,
 }
 
-impl <T> IncludedStatements<T> {
+impl<T> IncludedStatements<T> {
     pub(crate) fn new(statements: Vec<T>, include_trail: NonEmpty<TupLoc>) -> Self {
         IncludedStatements {
             include_trail,
@@ -411,7 +411,8 @@ impl <T> IncludedStatements<T> {
     pub(crate) fn get_trail_as_string(&self) -> String {
         let string_buffer = String::new();
         self.include_trail
-            .iter().fold(string_buffer, |mut string_builder, t| {
+            .iter()
+            .fold(string_buffer, |mut string_builder, t| {
                 write!(string_builder, "from\n{}", t).unwrap();
                 string_builder
             })
@@ -421,7 +422,7 @@ impl <T> IncludedStatements<T> {
         &self.statements
     }
 
-    pub(crate) fn  push_statement(&mut self, stmt: T) {
+    pub(crate) fn push_statement(&mut self, stmt: T) {
         self.statements.push(stmt);
     }
 }
@@ -432,7 +433,7 @@ pub(crate) enum StatementsInFile {
     Includes(IncludedStatements<StatementsInFile>),
 }
 
-impl From <LocatedStatement> for StatementsInFile {
+impl From<LocatedStatement> for StatementsInFile {
     fn from(stmt: LocatedStatement) -> Self {
         StatementsInFile::Current(stmt)
     }
@@ -453,24 +454,33 @@ impl StatementsInFile {
     pub fn new_current(stmt: LocatedStatement) -> Self {
         StatementsInFile::Current(stmt)
     }
-    pub(crate) fn new_includes_from(tupid: TupPathDescriptor, statements: Vec<LocatedStatement>) -> Self {
-        let tuploc = TupLoc::new(&tupid, &Loc::default()) ;
-        let  non_empty_trail = nonempty![tuploc];
-        StatementsInFile::Includes(
-            IncludedStatements::new(statements.into_iter()
-                                        .map(StatementsInFile::new_current).collect(),
-                                    non_empty_trail
-            )
-        )
+    pub(crate) fn new_includes_from(
+        tupid: TupPathDescriptor,
+        statements: Vec<LocatedStatement>,
+    ) -> Self {
+        let tuploc = TupLoc::new(&tupid, &Loc::default());
+        let non_empty_trail = nonempty![tuploc];
+        StatementsInFile::Includes(IncludedStatements::new(
+            statements
+                .into_iter()
+                .map(StatementsInFile::new_current)
+                .collect(),
+            non_empty_trail,
+        ))
     }
-    pub(crate) fn new_includes_from_with_trail(tuploc: TupLoc, statements: Vec<LocatedStatement>, mut include_trail: NonEmpty<TupLoc>) -> Self {
+    pub(crate) fn new_includes_from_with_trail(
+        tuploc: TupLoc,
+        statements: Vec<LocatedStatement>,
+        mut include_trail: NonEmpty<TupLoc>,
+    ) -> Self {
         include_trail.push(tuploc);
-        StatementsInFile::Includes(
-            IncludedStatements::new(statements.into_iter()
-                                        .map(StatementsInFile::new_current).collect(),
-                                    include_trail
-            )
-        )
+        StatementsInFile::Includes(IncludedStatements::new(
+            statements
+                .into_iter()
+                .map(StatementsInFile::new_current)
+                .collect(),
+            include_trail,
+        ))
     }
 
     pub(crate) fn for_each<F>(&self, mut f: F)
@@ -492,21 +502,21 @@ impl StatementsInFile {
             }
         }
     }
-    
+
     #[allow(dead_code)]
     pub(crate) fn get_context(&self) -> String {
         match self {
             StatementsInFile::Current(l) => {
                 format!("at loc:{}", l.get_loc())
             }
-            StatementsInFile::Includes(i) => {
-                i.get_trail_as_string()
-            }
+            StatementsInFile::Includes(i) => i.get_trail_as_string(),
         }
     }
     pub(crate) fn try_for_each<F>(&self, mut f: F) -> Result<(), crate::errors::Error>
-    where F : FnMut(&LocatedStatement) -> Result<(), crate::errors::Error> {
-         let mut stack = vec![self];
+    where
+        F: FnMut(&LocatedStatement) -> Result<(), crate::errors::Error>,
+    {
+        let mut stack = vec![self];
 
         while let Some(current) = stack.pop() {
             match current {
@@ -523,8 +533,8 @@ impl StatementsInFile {
         Ok(())
     }
     pub(crate) fn len(&self) -> usize {
-       let mut sz = 0;
-        self.for_each(|_| { sz = sz + 1});
+        let mut sz = 0;
+        self.for_each(|_| sz = sz + 1);
         sz
     }
 
@@ -534,7 +544,6 @@ impl StatementsInFile {
             StatementsInFile::Includes(includes) => includes.get_statements().is_empty(),
         }
     }
-
 }
 impl LocatedStatement {
     pub(crate) fn new(stmt: Statement, l: Loc) -> LocatedStatement {
@@ -921,11 +930,13 @@ impl CleanupPaths for StatementsInFile {
     fn cleanup(&mut self) {
         match self {
             StatementsInFile::Current(stmt) => stmt.statement.cleanup(),
-            StatementsInFile::Includes(includes) => includes.statements.iter_mut().for_each(CleanupPaths::cleanup),
+            StatementsInFile::Includes(includes) => includes
+                .statements
+                .iter_mut()
+                .for_each(CleanupPaths::cleanup),
         };
     }
 }
-
 
 impl From<String> for PathExpr {
     fn from(s: String) -> PathExpr {

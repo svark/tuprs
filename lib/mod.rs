@@ -8,13 +8,13 @@ extern crate log;
 extern crate mlua;
 #[macro_use]
 extern crate nom;
+extern crate alloc;
 extern crate nom_locate;
+extern crate nonempty;
 extern crate parking_lot;
 extern crate regex;
 extern crate thiserror;
 extern crate walkdir;
-extern crate alloc;
-extern crate nonempty;
 pub use buffers::BinDescriptor;
 pub use buffers::GeneratedFiles;
 pub use buffers::GroupPathDescriptor;

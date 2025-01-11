@@ -1,5 +1,4 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
-use std::string::String;
 use hex::encode;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -11,6 +10,7 @@ use std::ops::ControlFlow::Continue;
 use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::string::String;
 use std::sync::Arc;
 use std::sync::Once;
 use std::vec::Drain;
@@ -22,10 +22,14 @@ use crate::buffers::{
     GroupPathDescriptor, OutputHolder, PathBuffers, PathDescriptor, RelativeDirEntry,
     RuleDescriptor, TaskDescriptor, TupPathDescriptor,
 };
-use crate::decode::{paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance, TupLoc};
+use crate::decode::{
+    paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathSearcher, PathSearcherLite,
+    ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance, TupLoc,
+};
 use crate::errors::Error::{IoError, RootNotFound};
 use crate::errors::{Error as Err, Error};
 use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
+use crate::paths::SelOptions::Either;
 use crate::paths::{GlobPath, InputResolvedType, InputsAsPaths, SelOptions};
 use crate::paths::{MatchingPath, NormalPath};
 use crate::platform::*;
@@ -470,8 +474,8 @@ impl ParseState {
     pub(crate) fn dump_vars(&self, path: &Path, sha: &str) -> Result<(), Error> {
         use std::io::Write;
         let err_string = format!("Could not write to cached config {:?}", path);
-        let f = File::create(path)
-            .map_err(|e| IoError(e, err_string.clone(), Loc::new(0, 0, 0)))?;
+        let f =
+            File::create(path).map_err(|e| IoError(e, err_string.clone(), Loc::new(0, 0, 0)))?;
         let mut f = BufWriter::new(f);
         writeln!(f, "#tup.config sha:{}", sha).expect(err_string.as_str());
         for (k, v) in self.expr_map.iter() {
@@ -854,7 +858,7 @@ impl StatementsInFile {
                             glob_paths.push(glob_path);
                         }
                         let matches = path_searcher
-                            .discover_paths(path_buffers, glob_paths.as_slice())
+                            .discover_paths(path_buffers, glob_paths.as_slice(), Either)
                             .unwrap_or_else(|_| panic!("error matching glob pattern {}", arg));
 
                         debug!("expand_run num files from glob:{:?}", matches.len());
@@ -1029,7 +1033,7 @@ fn discover_paths_with_pattern(
     glob: &[GlobPath],
     pattern: &str,
 ) -> Result<Vec<MatchingPath>, Error> {
-    let paths = psx.discover_paths(path_buffers, glob)?;
+    let paths = psx.discover_paths(path_buffers, glob, SelOptions::File)?;
     paths_with_pattern(psx.get_root(), &pattern, paths)
 }
 
@@ -1438,12 +1442,15 @@ impl DollarExprs {
                                 });
                             let glob_path = GlobPath::build_from(&dir, &p)
                                 .expect("Failed to build a glob path");
-                            //let glob_paths = vec![glob_path];
                             let glob_path_desc = glob_path.get_glob_path_desc();
                             let rel_path = RelativeDirEntry::new(dir.clone(), glob_path_desc);
                             debug!("rel_path:{:?}", rel_path);
                             let paths = path_searcher
-                                .discover_paths(path_buffers_mut, std::slice::from_ref(&glob_path))
+                                .discover_paths(
+                                    path_buffers_mut,
+                                    std::slice::from_ref(&glob_path),
+                                    Either,
+                                )
                                 .unwrap_or_else(|e| {
                                     log::warn!("Error while globbing {:?}: {}", glob_path, e);
                                     vec![]
@@ -1761,15 +1768,14 @@ impl DollarExprs {
                     let else_part_str = else_part.cat() + "\n";
                     dump_temp_tup(else_part_str.as_bytes(), &dump_else_part_pd);
                     m.switch_tupfile_and_process(&dump_else_part_pd, |m| {
-                        let else_part = parse_statements_until_eof(Span::new(
-                            else_part_str.as_bytes(),
-                        ))
-                        .unwrap_or_else(|e| {
-                            panic!(
+                        let else_part =
+                            parse_statements_until_eof(Span::new(else_part_str.as_bytes()))
+                                .unwrap_or_else(|e| {
+                                    panic!(
                                 "failed to parse else part of if statement: {:?} with error: {}",
                                 else_part, e
                             )
-                        });
+                                });
                         let else_part_statements = m.to_statements_in_file(else_part);
                         Ok(Self::subst_as_statements(
                             m,
@@ -1783,15 +1789,14 @@ impl DollarExprs {
                     let then_part_str = then_part.cat() + "\n";
                     dump_temp_tup(then_part_str.as_bytes(), &dump_else_part_pd);
                     m.switch_tupfile_and_process(&dump_else_part_pd, |m| {
-                        let then_part = parse_statements_until_eof(Span::new(
-                            then_part_str.as_bytes(),
-                        ))
-                        .unwrap_or_else(|e| {
-                            panic!(
+                        let then_part =
+                            parse_statements_until_eof(Span::new(then_part_str.as_bytes()))
+                                .unwrap_or_else(|e| {
+                                    panic!(
                                 "failed to parse then part of if statement: {:?} with error: {}",
                                 then_part_str, e
                             )
-                        });
+                                });
                         let then_part_statements = m.to_statements_in_file(then_part);
                         Ok(Self::subst_as_statements(
                             m,
@@ -2283,7 +2288,12 @@ pub(crate) fn load_temp_config(
     func_map: &mut HashMap<String, Vec<PathExpr>>,
 ) -> Result<(), Error> {
     for LocatedStatement { statement, .. } in parse_tupfile(conf_file)?.iter() {
-        if let Statement::AssignExpr { left, right, assignment_type } = statement {
+        if let Statement::AssignExpr {
+            left,
+            right,
+            assignment_type,
+        } = statement
+        {
             match assignment_type {
                 AssignmentType::Lazy => {
                     func_map.insert(left.name.clone(), right.clone());
@@ -2701,6 +2711,7 @@ impl LocatedStatement {
                 &parse_state.get_tup_base_dir(),
                 &fullp,
             )?],
+            SelOptions::File,
         )?;
         let p = ps.into_iter().next().ok_or_else(|| {
             Error::PathNotFound(
@@ -2713,7 +2724,7 @@ impl LocatedStatement {
             p.path_descriptor_ref(),
             |parse_state| -> Result<StatementsInFile, Error> {
                 if parse_state.read_cached_config() {
-                     Ok(StatementsInFile::default())
+                    Ok(StatementsInFile::default())
                 } else {
                     let include_stmts =
                         get_or_insert_parsed_statements(path_searcher.get_root(), parse_state)?;
@@ -2721,7 +2732,7 @@ impl LocatedStatement {
                     parse_state.write_cached_config();
                     Ok(stat)
                 }
-            }
+            },
         )
     }
 
@@ -2859,13 +2870,17 @@ pub struct ResolvedRules {
     resolved_links: Vec<ResolvedLink>,
     resolved_tasks: Vec<ResolvedTask>,
     tupid: TupPathDescriptor,
-    tup_files_read: Vec<PathDescriptor>
+    tup_files_read: Vec<PathDescriptor>,
+    globs_read: Vec<GlobPathDescriptor>,
 }
 
 impl ResolvedRules {
     /// Empty constructor for `ResolvedRules`
     pub fn new(tupid: TupPathDescriptor) -> ResolvedRules {
-        ResolvedRules{tupid, ..ResolvedRules::default()}
+        ResolvedRules {
+            tupid,
+            ..ResolvedRules::default()
+        }
     }
     /// get the TupPathDescriptor for the tupfile that generated these rules
     pub fn get_tupid(&self) -> &TupPathDescriptor {
@@ -2881,18 +2896,24 @@ impl ResolvedRules {
     pub fn set_resolved_links(&mut self, resolved_links: Vec<ResolvedLink>) {
         self.resolved_links = resolved_links;
     }
+    /// Get the glob's that are read in this tupfile
+    pub fn get_globs_read(&self) -> &Vec<GlobPathDescriptor> {
+        &self.globs_read
+    }
     /// Builds ResolvedRules from a vector of [ResolvedLink]s
     pub fn from(
         resolved_links: Vec<ResolvedLink>,
         resolved_tasks: Vec<ResolvedTask>,
         tupid: TupPathDescriptor,
         tup_files_read: Vec<PathDescriptor>,
+        globs_read: Vec<GlobPathDescriptor>
     ) -> ResolvedRules {
         ResolvedRules {
             resolved_links,
             resolved_tasks,
             tupid,
-            tup_files_read
+            tup_files_read,
+            globs_read
         }
     }
 
@@ -2909,12 +2930,15 @@ impl ResolvedRules {
     /// extend links in `resolved_rules` with those in self
     pub fn extend(&mut self, mut resolved_rules: ResolvedRules) -> bool {
         if resolved_rules.tupid == self.tupid {
-            self.resolved_links.append(&mut resolved_rules.resolved_links);
-            self.resolved_tasks.append(&mut resolved_rules.resolved_tasks);
-            self.tup_files_read.append(&mut resolved_rules.tup_files_read);
-             true
+            self.resolved_links
+                .append(&mut resolved_rules.resolved_links);
+            self.resolved_tasks
+                .append(&mut resolved_rules.resolved_tasks);
+            self.tup_files_read
+                .append(&mut resolved_rules.tup_files_read);
+            true
         } else {
-             false
+            false
         }
     }
     /// add a single link
@@ -3051,7 +3075,7 @@ impl ReadWriteBufferObjects {
     pub fn get_name(&self, p0: &PathDescriptor) -> String {
         p0.get_file_name().to_string()
     }
-    
+
     /// return the portion of the path that starts from recursive glob to parent of the glob path
     pub fn get_recursive_glob_str(&self, p0: &GlobPathDescriptor) -> String {
         let r = self.get();
@@ -3101,13 +3125,12 @@ impl ReadWriteBufferObjects {
         let np = r.get_path(&gd);
         np.clone()
     }
-    
+
     /// true if the glob path is recursive
     pub fn is_recursive_glob(&self, p0: &GlobPathDescriptor) -> bool {
         let r = self.get();
         r.is_recursive_glob(p0)
     }
-    
 
     /// get parent to the glob path
     pub fn get_glob_prefix(&self, gd: &GlobPathDescriptor) -> PathDescriptor {
@@ -3294,17 +3317,14 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         receiver: Receiver<StatementsToResolve>,
         mut f: impl FnMut(ResolvedRules) -> Result<(), Error>,
     ) -> Result<(), crate::errors::ErrorContext> {
-            receiver
-                .iter()
-                .try_for_each( | to_resolve| {
-                    let tup_desc = to_resolve.get_cur_file_desc().clone();
-                    let resolved_rules_ = self
-                        .process_raw_statements(to_resolve)
-                        .map_err(|e| crate::errors::ErrorContext::new(e, tup_desc.clone()))?;
-                    f(resolved_rules_)
-                        .map_err(|e| crate::errors::ErrorContext::new(e, tup_desc))?;
-                    Ok(())
-                })?;
+        receiver.iter().try_for_each(|to_resolve| {
+            let tup_desc = to_resolve.get_cur_file_desc().clone();
+            let resolved_rules_ = self
+                .process_raw_statements(to_resolve)
+                .map_err(|e| crate::errors::ErrorContext::new(e, tup_desc.clone()))?;
+            f(resolved_rules_).map_err(|e| crate::errors::ErrorContext::new(e, tup_desc))?;
+            Ok(())
+        })?;
         drop(receiver);
         Ok(())
     }
@@ -3380,14 +3400,12 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         type R = Result<(), Error>;
         self.with_path_buffers_do(|path_buffers| -> R {
             self.with_path_searcher_do(|path_searcher| -> R {
-                 resolved_rules_vec.iter_mut().try_for_each(|resolved_rules| -> R {
-                    resolved_rules.resolve_paths(
-                    path_searcher,
-                    path_buffers,
-                    &vec![],
-                    )?;
-                     Ok(())
-                })?;
+                resolved_rules_vec
+                    .iter_mut()
+                    .try_for_each(|resolved_rules| -> R {
+                        resolved_rules.resolve_paths(path_searcher, path_buffers, &vec![])?;
+                        Ok(())
+                    })?;
                 Ok(())
             })?;
             Ok(())
@@ -3438,7 +3456,7 @@ pub fn locate_file<P: AsRef<Path>>(
 /// functions for testing transformations
 pub mod testing {
     use log::debug;
-use std::collections::HashMap;
+    use std::collections::HashMap;
     use std::path::Path;
 
     use crate::decode::DirSearcher;
@@ -3530,55 +3548,71 @@ pub fn compute_dir_sha256(p0: &Path) -> Result<String, Error> {
     let mut hasher = Sha256::new();
     let wdir = WalkDir::new(p0);
     hasher.update(p0.as_os_str().as_encoded_bytes());
-    wdir.max_depth(1).min_depth(1).follow_links(false).into_iter()
-        .filter_map(|e| e.ok()).try_for_each(
-        |entry| {
+    wdir.max_depth(1)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .try_for_each(|entry| {
             let path = entry.path();
             hasher.update(path.as_os_str().as_encoded_bytes());
             Ok(())
-        },
-    )?;
+        })?;
     let result = hasher.finalize();
     Ok(encode(result))
 }
 
 /// sha of a glob is the sha of the list of files in the directory that match the glob and the current directory
-pub fn compute_glob_sha256(bo: &impl PathBuffers, p0: &GlobPathDescriptor) -> Result<String, Error> {
+pub fn compute_glob_sha256(
+    ps: &impl PathSearcherLite,
+    bo: &impl PathBuffers,
+    p0: &GlobPathDescriptor,
+) -> Result<String, Error> {
     let glob_path = GlobPath::build_from(&PathDescriptor::default(), p0).unwrap();
     let root = glob_path.get_non_pattern_abs_path();
-    if !glob_path.has_glob_pattern()  {
+    if !glob_path.has_glob_pattern() {
         return Ok(String::new());
     }
     let mut hasher = Sha256::new();
     let parent = root.as_path();
     hasher.update(parent.as_os_str().as_encoded_bytes());
-    let glob = glob_path.get_glob_desc();
     let mut set = HashSet::new();
-    DirSearcher::discover_input_files(bo, &[glob_path], &mut set, SelOptions::File, 
-                                      &mut |path: MatchingPath| {
-        hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
-    })?;
+    ps.discover_paths_with_cb(
+        bo,
+        &[glob_path],
+        &mut |path: MatchingPath| {
+            if set.insert(path.path_descriptor().to_u64()) {
+                hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
+            }
+        },
+        SelOptions::File,
+    )?;
     let result = hasher.finalize();
     Ok(encode(result))
 }
 
 /// sha of a rglob is the sha of the list of folders in the directory and subdirectories that match the glob  within the glob non pattern prefix directory
-pub fn compute_rglob_sha256(bo: &impl PathBuffers, p0: &GlobPathDescriptor) -> Result<String, Error> {
+pub fn compute_rglob_sha256(
+    bo: &impl PathBuffers,
+    p0: &GlobPathDescriptor,
+) -> Result<String, Error> {
     let parent = p0.get_parent_descriptor();
-    let glob_path = GlobPath::build_from(&PathDescriptor::default(), &parent).unwrap();
+    let glob_path = GlobPath::build_from(&PathDescriptor::default(), &parent)?;
     let root = glob_path.get_non_pattern_abs_path();
-    if !glob_path.has_glob_pattern()  {
+    if !glob_path.has_glob_pattern() {
         return Ok(String::new());
     }
     let mut hasher = Sha256::new();
     let parent = root.as_path();
     hasher.update(parent.as_os_str().as_encoded_bytes());
-    let glob = glob_path.get_glob_desc();
-    let mut set = HashSet::new();
-    DirSearcher::discover_input_files(bo, &[glob_path], &mut set, SelOptions::Dir,
-                                      &mut |path: MatchingPath| {
-        hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
-    })?;
+    DirSearcher::discover_input_files(
+        bo,
+        &[glob_path],
+        SelOptions::Dir,
+        &mut |path: MatchingPath| {
+            hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
+        },
+    )?;
     let result = hasher.finalize();
     Ok(encode(result))
 }

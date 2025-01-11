@@ -11,24 +11,20 @@ path = "lib/mod.rs"
 [dependencies]
 nom = "7.1.3"
 nom_locate = "4.2.0"
-thiserror = "2.0.7"
+thiserror = "2.0.9"
 regex = "1.11.1"
 walkdir = "2.5.0"
-bstr = "1.11.1"
+bstr = "1.11.3"
 log = "0.4.22"
 mlua = { version = "0.10.2", features = ["lua54", "vendored"] }
 crossbeam = "0.8.4"
 parking_lot = "0.12.3"
 hashbrown = { version = "0.15.2", features = [] }
 tinyset = "0.5.1"
-sha2 = "0.11.0-pre.4"
+sha2 = "0.10.0"
 hex = "0.4.3"
 nonempty = "0.11.0"
 
 [dev-dependencies]
-env_logger = "0.11.5"
-insta = { version = "1.41.1", features = ["json", "filters"] }
-# lua patch over mlua's lua-src-rs crate that adds add_assign (+=) operator to variables
-# Cargo complains that the patch should appear at the workspace level. But adding here anyway for independent usages.
-[patch.crates-io]
-lua-src = {git = "https://github.com/svark/lua-src-rs"}
+env_logger = "0.11.6"
+insta = { version = "1.42", features = ["json", "filters"] }

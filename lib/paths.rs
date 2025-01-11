@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 use log::debug;
 use regex::Regex;
 
-use crate::buffers::{BufferObjects, GlobPathDescriptor, MyGlob, PathBuffers, PathDescriptor, RelativeDirEntry, TaskDescriptor};
+use crate::buffers::{
+    BufferObjects, GlobPathDescriptor, MyGlob, PathBuffers, PathDescriptor, RelativeDirEntry,
+    TaskDescriptor,
+};
 use crate::decode::{GroupInputs, TupLoc};
 use crate::errors::Error;
 use crate::glob::Candidate;
@@ -25,7 +28,6 @@ use crate::{BinDescriptor, GroupPathDescriptor};
 pub struct NormalPath {
     inner: PathBuf,
 }
-
 
 const GLOB_PATTERN_CHARACTERS: &str = "*?[";
 
@@ -218,20 +220,32 @@ pub struct GlobPath {
     glob: std::sync::OnceLock<MyGlob>,
 }
 
+/// Option to select files or folders or both in PathSearcher's discover method
 #[derive(Debug, Clone, Default)]
-pub(crate) enum SelOptions {
+pub enum SelOptions {
+    /// Allows only files
     #[default]
     File,
+    /// Allow only directories
     Dir,
-    Either,
+    /// Allow both files and directories
+    Either, 
 }
 
 impl SelOptions {
-    pub(crate) fn matches(&self, file_type: FileType) -> bool {
+    pub(crate) fn allows(&self, file_type: FileType) -> bool {
         match file_type.is_dir() {
             true => matches!(self, SelOptions::Dir | SelOptions::Either),
             false => matches!(self, SelOptions::File | SelOptions::Either),
         }
+    }
+    /// Check if this option allows files
+    pub fn allows_file(&self) -> bool {
+        matches!(self, SelOptions::File | SelOptions::Either)
+    }
+    /// Check if this option allows directories
+    pub fn allows_dir(&self) -> bool {
+        matches!(self, SelOptions::Dir | SelOptions::Either)
     }
 }
 impl GlobPath {
@@ -276,6 +290,11 @@ impl GlobPath {
         &self.non_pattern_prefix_desc
     }
 
+    /// returns the depth of the glob path
+    pub fn get_glob_dir_depth(&self) -> usize {
+        self.glob_path_desc.components().count() - self.non_pattern_prefix_desc.components().count()
+    }
+
     /// Get Tupfile folder descriptor
     pub fn get_tup_dir_desc(&self) -> &PathDescriptor {
         &self.tup_cwd
@@ -290,17 +309,15 @@ impl GlobPath {
     pub fn has_glob_pattern(&self) -> bool {
         let gb = self.glob_path_desc.clone();
         //debug!("has_glob_pattern: {:?}", gb);
-       Self::path_has_glob(gb)
+        Self::path_has_glob(gb)
     }
 
     /// Check if the path has a glob pattern
     pub fn path_has_glob(gb: GlobPathDescriptor) -> bool {
-        std::iter::once(gb.clone())
-            .chain(gb.ancestors())
-            .any(|x| {
-                let name = x.as_ref().get_name();
-                GLOB_PATTERN_CHARACTERS.chars().any(|c| name.contains(c))
-            })
+        std::iter::once(gb.clone()).chain(gb.ancestors()).any(|x| {
+            let name = x.as_ref().get_name();
+            GLOB_PATTERN_CHARACTERS.chars().any(|c| name.contains(c))
+        })
     }
 
     fn get_glob(&self) -> &MyGlob {
@@ -684,7 +701,7 @@ impl InputResolvedType {
             InputResolvedType::TaskRef(_) => None,
         }
     }
-    
+
     /// Fetch Group inputs
     pub fn get_group_input(&self) -> Option<GroupPathDescriptor> {
         match self {
@@ -698,7 +715,9 @@ impl InputResolvedType {
     pub fn get_glob_path_desc(&self) -> Option<GlobPathDescriptor> {
         match self {
             InputResolvedType::Deglob(e) => e.glob_descriptor(),
-            InputResolvedType::UnResolvedFile(g)  if GlobPath::path_has_glob(g.clone()) => Some(g.clone()),
+            InputResolvedType::UnResolvedFile(g) if GlobPath::path_has_glob(g.clone()) => {
+                Some(g.clone())
+            }
             _ => None,
         }
     }

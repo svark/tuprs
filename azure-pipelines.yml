@@ -4,14 +4,14 @@
 # https://aka.ms/yaml
 
 trigger:
-- master
+  - master
 
 pool:
   vmImage: 'ubuntu-latest'
 
 steps:
-- script: cargo build
-  displayName: 'build tupparser'
+  - script: cargo build
+    displayName: 'build tupparser'
 
-- script:  cargo test --verbose --all
-  displayName : 'Run tests'
+  - script: cargo test --verbose --all
+    displayName: 'Run tests'

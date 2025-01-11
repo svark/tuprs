@@ -16,7 +16,7 @@ use parking_lot::RwLock;
 use crate::buffers::{BufferObjects, PathBuffers, PathDescriptor};
 use crate::decode::{OutputHandler, PathSearcher};
 use crate::errors::Error as Err;
-use crate::paths::GlobPath;
+use crate::paths::{GlobPath, SelOptions};
 use crate::statements::Statement::Rule;
 use crate::statements::*;
 use crate::transform::{to_pelist, ParseState, ResolvedRules};
@@ -864,6 +864,7 @@ impl<Q: PathSearcher + 'static> UserData for TupScriptContext<Q> {
                     .discover_paths(
                         scriptctx.bo_as_mut().deref(),
                         std::slice::from_ref(glob_path),
+                        SelOptions::File,
                     )
                     .expect("Glob expansion failed")
             };

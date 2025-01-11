@@ -1155,15 +1155,7 @@ fn parse_cached_config_statement(i: Span) -> IResult<Span, LocatedStatement> {
     let (s, _) = multispace0(s)?;
     log::debug!("parsed cached config");
     let offset = i.offset(&s);
-    Ok((
-        s,
-        (
-            Statement::CachedConfig,
-            i.slice(..offset),
-        )
-            .into(),
-    ))
-
+    Ok((s, (Statement::CachedConfig, i.slice(..offset)).into()))
 }
 /// parse a define statement and its body until enddef occurs
 fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {

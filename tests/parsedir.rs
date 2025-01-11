@@ -21,10 +21,7 @@ mod tests {
         let (arts, _rwbuffers) = parse_dir(d.as_path()).expect("failed to parse!");
         let rlinks = arts.iter().map(|x| x.get_resolved_links());
         let mut outs = String::new();
-        let mut strings = rlinks
-            .map(|rl| rl.iter())
-            .flatten()
-            .collect::<Vec<_>>();
+        let mut strings = rlinks.map(|rl| rl.iter()).flatten().collect::<Vec<_>>();
 
         strings.sort_by(|a, b| a.cmp(b));
         let strings = strings
