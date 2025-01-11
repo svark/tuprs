@@ -23,7 +23,7 @@ use crate::buffers::{
     RuleDescriptor, TaskDescriptor, TupPathDescriptor,
 };
 use crate::decode::{
-    paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathSearcher, PathSearcherLite,
+    paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathSearcher, PathDiscovery,
     ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance, TupLoc,
 };
 use crate::errors::Error::{IoError, RootNotFound};
@@ -3564,7 +3564,7 @@ pub fn compute_dir_sha256(p0: &Path) -> Result<String, Error> {
 
 /// sha of a glob is the sha of the list of files in the directory that match the glob and the current directory
 pub fn compute_glob_sha256(
-    ps: &impl PathSearcherLite,
+    ps: &impl PathDiscovery,
     bo: &impl PathBuffers,
     p0: &GlobPathDescriptor,
 ) -> Result<String, Error> {

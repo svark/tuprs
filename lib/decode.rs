@@ -53,7 +53,7 @@ fn perc_group_regex() -> &'static Regex {
 }
 
 /// Lite version of PathSearcher that specifies method to discover paths from glob strings
-pub trait PathSearcherLite {
+pub trait PathDiscovery {
     /// Discover paths from glob string with a callback to process outputs
     fn discover_paths_with_cb(
         &self,
@@ -76,7 +76,7 @@ pub trait PathSearcherLite {
 }
 /// Trait to discover paths from a source (such as a database or directory tree)
 /// Outputs from rules can be added to list of paths searched using `merge` method
-pub trait PathSearcher: PathSearcherLite {
+pub trait PathSearcher: PathDiscovery {
     /// Discover Tuprules.lua or Tuprules.tup in all parent directories of tup_cwd
     fn locate_tuprules(
         &self,
@@ -498,7 +498,7 @@ impl DirSearcher {
     }
 }
 
-impl PathSearcherLite for DirSearcher {
+impl PathDiscovery for DirSearcher {
     /// scan folder tree for paths
     /// This function runs the glob matcher to discover rule inputs by walking from given directory. The paths are returned as descriptors stored in [MatchingPatch]
     /// @tup_cwd is expected to be current tupfile directory under which a rule is found. @glob_path
