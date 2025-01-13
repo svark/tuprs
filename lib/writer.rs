@@ -465,7 +465,7 @@ pub(crate) fn write_statement<T: Write>(
                 write!(writer, " as {}", alias).unwrap();
             }
             write!(writer, "\n").unwrap();
-        } 
+        }
         Statement::CachedConfig => {
             write!(writer, ".cached_config\n").unwrap();
         }

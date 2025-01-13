@@ -364,7 +364,7 @@ impl RelativeDirEntry {
     pub fn components(&self) -> impl Iterator<Item = &PathStep> {
         self.steps.iter()
     }
-    
+
     /// count the number of components in this path
     pub fn count(&self) -> usize {
         self.steps.iter().count()

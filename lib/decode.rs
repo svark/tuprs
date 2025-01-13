@@ -408,11 +408,19 @@ impl DirSearcher {
 
             let root = path_buffers.get_root_dir();
             if !glob_path.has_glob_pattern() {
-                if let Ok(1) = Self::discover_non_glob_match(&mut handle_match, glob_path, to_match, root) {
+                if let Ok(1) =
+                    Self::discover_non_glob_match(&mut handle_match, glob_path, to_match, root)
+                {
                     return Ok(1);
                 }
             } else {
-                count = Self::discover_glob_match(path_buffers, &options, &mut handle_match, glob_path, to_match)?;
+                count = Self::discover_glob_match(
+                    path_buffers,
+                    &options,
+                    &mut handle_match,
+                    glob_path,
+                    to_match,
+                )?;
                 if count > 0 {
                     break;
                 }
@@ -421,9 +429,13 @@ impl DirSearcher {
         Ok(count)
     }
 
-    fn discover_glob_match(path_buffers: &impl PathBuffers, options: &SelOptions,
-                           handle_match: &mut impl FnMut(MatchingPath), glob_path: &GlobPath, to_match: &NormalPath)
-                           -> Result<usize, Error>{
+    fn discover_glob_match(
+        path_buffers: &impl PathBuffers,
+        options: &SelOptions,
+        handle_match: &mut impl FnMut(MatchingPath),
+        glob_path: &GlobPath,
+        to_match: &NormalPath,
+    ) -> Result<usize, Error> {
         let mut unique_path_descs = HashSet::new();
         let mut count = 0;
         let root = path_buffers.get_root_dir();
@@ -437,9 +449,9 @@ impl DirSearcher {
         let globs = MyGlob::new_raw(to_match.as_path())?;
         debug!("glob regex used for finding matches {}", globs.re());
         debug!(
-                    "non pattern prefix path for files matching glob: {:?}",
-                    non_pattern_prefixh
-                );
+            "non pattern prefix path for files matching glob: {:?}",
+            non_pattern_prefixh
+        );
         let mut walkdir = WalkDir::new(prefix_path_from_root);
         if glob_path.is_recursive_prefix() {
             walkdir = walkdir.max_depth(usize::MAX);
@@ -476,18 +488,21 @@ impl DirSearcher {
         Ok(count)
     }
 
-    fn discover_non_glob_match(handle_match: &mut impl FnMut(MatchingPath), glob_path: &GlobPath, to_match: &NormalPath, root: &Path) ->Result<usize, Error> {
+    fn discover_non_glob_match(
+        handle_match: &mut impl FnMut(MatchingPath),
+        glob_path: &GlobPath,
+        to_match: &NormalPath,
+        root: &Path,
+    ) -> Result<usize, Error> {
         let path_desc = glob_path.get_glob_path_desc();
         let mp_from_root = root.join(to_match.as_path());
         debug!(
-                    "looking for fixed pattern path {:?} at {:?}",
-                    to_match, mp_from_root
-                );
+            "looking for fixed pattern path {:?} at {:?}",
+            to_match, mp_from_root
+        );
         if mp_from_root.is_file() || mp_from_root.is_dir() {
-            let matching_path = MatchingPath::new(
-                path_desc,
-                glob_path.get_non_pattern_prefix_desc().clone(),
-            );
+            let matching_path =
+                MatchingPath::new(path_desc, glob_path.get_non_pattern_prefix_desc().clone());
             debug!("mp:{:?}", matching_path);
             handle_match(matching_path);
             Ok(1)
@@ -509,13 +524,15 @@ impl PathDiscovery for DirSearcher {
         glob_path: &[GlobPath],
         mut cb: impl FnMut(MatchingPath),
         sel: SelOptions,
-    ) -> Result<usize, Error>
-    {
+    ) -> Result<usize, Error> {
         let mut matching_outs = self.output_holder.discover_paths(path_buffers, glob_path)?;
         let mut count = 0;
         if !matching_outs.is_empty() {
-            for o in matching_outs.drain(..)  { cb(o); count += 1; }
-             Ok(count)
+            for o in matching_outs.drain(..) {
+                cb(o);
+                count += 1;
+            }
+            Ok(count)
         } else {
             Self::discover_input_files(path_buffers, glob_path, sel, cb)
         }
@@ -1625,7 +1642,7 @@ impl ResolvePaths for ResolvedLink {
             vec![],
             tup_desc.clone(),
             tupfiles_read.clone(),
-            Default::default()
+            Default::default(),
         ))
     }
 }
@@ -1814,7 +1831,13 @@ impl LocatedStatement {
         }
 
         Ok((
-            ResolvedRules::from(deglobbed, tasks, tup_desc.clone(), tupfiles_read.clone(), globs_read),
+            ResolvedRules::from(
+                deglobbed,
+                tasks,
+                tup_desc.clone(),
+                tupfiles_read.clone(),
+                globs_read,
+            ),
             output,
         ))
     }

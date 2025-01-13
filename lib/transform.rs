@@ -23,7 +23,7 @@ use crate::buffers::{
     RuleDescriptor, TaskDescriptor, TupPathDescriptor,
 };
 use crate::decode::{
-    paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathSearcher, PathDiscovery,
+    paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathDiscovery, PathSearcher,
     ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance, TupLoc,
 };
 use crate::errors::Error::{IoError, RootNotFound};
@@ -2906,14 +2906,14 @@ impl ResolvedRules {
         resolved_tasks: Vec<ResolvedTask>,
         tupid: TupPathDescriptor,
         tup_files_read: Vec<PathDescriptor>,
-        globs_read: Vec<GlobPathDescriptor>
+        globs_read: Vec<GlobPathDescriptor>,
     ) -> ResolvedRules {
         ResolvedRules {
             resolved_links,
             resolved_tasks,
             tupid,
             tup_files_read,
-            globs_read
+            globs_read,
         }
     }
 

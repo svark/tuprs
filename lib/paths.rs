@@ -229,7 +229,7 @@ pub enum SelOptions {
     /// Allow only directories
     Dir,
     /// Allow both files and directories
-    Either, 
+    Either,
 }
 
 impl SelOptions {
