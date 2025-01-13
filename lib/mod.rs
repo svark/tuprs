@@ -1,6 +1,5 @@
 //! Crate for parsing a tupfile and thereafter de-globbing and decoding variables in a Tupfile
 #![warn(missing_docs)]
-extern crate crossbeam;
 #[cfg(test)]
 extern crate env_logger;
 extern crate hashbrown;
@@ -15,6 +14,7 @@ extern crate parking_lot;
 extern crate regex;
 extern crate thiserror;
 extern crate walkdir;
+extern crate crossbeam_channel;
 pub use buffers::BinDescriptor;
 pub use buffers::GeneratedFiles;
 pub use buffers::GroupPathDescriptor;

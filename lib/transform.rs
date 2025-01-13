@@ -39,7 +39,7 @@ use crate::statements::PathExpr::DollarExprs as DExpr;
 use crate::statements::*;
 use crate::transform::ParseContext::Expression;
 use crate::writer::{cat_literals, words_from_pelist};
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender};
 use log::debug;
 use nom::AsBytes;
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
