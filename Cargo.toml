@@ -15,7 +15,7 @@ thiserror = "2.0.11"
 regex = "1.11.1"
 walkdir = "2.5.0"
 bstr = "1.11.3"
-log = "0.4.22"
+log = "0.4.25"
 mlua = { version = "0.10.2", features = ["lua54", "vendored"] }
 crossbeam-channel= "0.5.14"
 parking_lot = "0.12.3"
