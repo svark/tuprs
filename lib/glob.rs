@@ -338,7 +338,7 @@ struct GlobOptions {
 impl GlobOptions {
     fn default() -> GlobOptions {
         GlobOptions {
-            case_insensitive: get_platform().eq("win32"),
+            case_insensitive: get_platform().eq("win"),
             literal_separator: false,
             backslash_escape: !is_separator('\\'),
             capture_globs: false,

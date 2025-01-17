@@ -5,7 +5,7 @@ pub(crate) fn get_platform() -> String {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn get_platform() -> String {
-    "win32".to_string()
+    "win".to_string()
 }
 
 #[cfg(target_os = "linux")]
@@ -78,7 +78,7 @@ pub(crate) fn get_arch() -> String {
 
 pub(crate) fn get_uname() -> String {
     match get_platform().as_str() {
-        "win32" => "NT",
+        "win" => "NT",
         "macos" => "Darwin",
         "linux" => "Linux",
         _ => "Unknown",
