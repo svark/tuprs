@@ -16,13 +16,14 @@ use tinyset::Fits64;
 use crate::intern::Intern;
 use crate::paths::get_non_pattern_prefix;
 use crate::{
-    decode::{OutputHandler, RuleFormulaInstance, TaskInstance, TupLoc},
+    decode::{OutputHandler, RuleFormulaInstance, TaskInstance},
     errors::Error,
     glob,
     glob::{GlobBuilder, GlobMatcher},
     paths::{GlobPath, InputResolvedType, MatchingPath, NormalPath},
-    statements::Env,
+    statements::{Env},
 };
+use crate::statements::IncludeTrail;
 
 /// Methods to store and retrieve paths, groups, bins, rules from in-memory buffers
 /// This way we can identify paths /groups/bins and environment by their unique descriptors (ids)
@@ -32,6 +33,9 @@ pub trait PathBuffers {
 
     /// add env var and fetch its descriptor
     fn add_env(&self, e: Cow<Env>) -> EnvDescriptor;
+
+    /// add the reference to rule to buffers and returns its descriptor
+    fn add_rule_pos(&self, e: &IncludeTrail) -> RuleRefDescriptor;
 
     /// Add a path to a group in this buffer
     fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> GroupPathDescriptor;
@@ -452,6 +456,24 @@ impl RuleDescriptor {
         self.get().get_rule_str()
     }
 }
+impl RuleRefDescriptor {
+    pub(crate) fn to_string(&self) -> String {
+        let loc = self.get();
+        format!("{}", loc)
+    }
+    /// return the path to the tupfile where the rule was included
+    pub fn get_tupfile_desc(&self) -> TupPathDescriptor {
+        let t = self.get();
+        t.get_tupfile_desc().clone()
+    }
+    /// return the tup directory where the rule was included
+    pub fn get_tup_dir(&self) -> PathDescriptor {
+        let t = self.get();
+        t.get_tupfile_desc().get_parent_descriptor()
+    }
+    
+}
+
 impl TaskDescriptor {
     pub(crate) fn get_name(&self) -> &str {
         self.get().get_target()
@@ -522,7 +544,7 @@ impl PathDescriptor {
 
     fn prepare_stored_path(&self) -> NormalPath {
         let cap: usize = self.ancestors().count();
-        log::debug!("caching:{:?}", self);
+        debug!("caching:{:?}", self);
         let mut parts = Vec::with_capacity(cap);
         for ancestor in self.components() {
             parts.push(ancestor.as_ref().get_rc_name());
@@ -735,17 +757,20 @@ pub type GlobPathDescriptor = PathDescriptor;
 /// ```BinDescriptor``` is an id given to a  folder where tupfile was found
 pub type BinDescriptor = Descriptor<BinPathEntry>;
 
-/// ```TupPathDescriptor``` is an unique id given to a tupfile
+/// ```TupPathDescriptor``` is a unique id given to a tupfile
 pub type TupPathDescriptor = PathDescriptor;
 
 /// ```RuleDescriptor``` maintains the id of rule based on rules tracked so far in BufferObjects
 pub type RuleDescriptor = Descriptor<RuleFormulaInstance>;
 
+/// ```RuleRefDescriptor``` maintains the location of the rule including all the tupfiles that included it
+pub type RuleRefDescriptor = Descriptor<IncludeTrail>;
 /// ```TaskDescriptor``` maintains the id of task based on tasks tracked so far in BufferObjects
 pub type TaskDescriptor = Descriptor<TaskInstance>;
 
 /// ```EnvDescriptor``` maintains the id of an env variable and its value based on envs tracked so far in ParseState
 pub type EnvDescriptor = Descriptor<Env>;
+
 
 /// path to descriptor(T) `BiMap', path stored is relative to rootdir (.1 in this struct)
 #[derive(Debug, Default, Clone)]
@@ -899,7 +924,7 @@ pub struct GeneratedFiles {
     /// paths accumulated in groups
     groups: HashMap<GroupPathDescriptor, BTreeSet<PathDescriptor>>,
     /// track the parent rule that generates an output file
-    parent_rule: HashMap<PathDescriptor, TupLoc>,
+    parent_rule: HashMap<PathDescriptor, RuleDescriptor>,
 }
 
 impl GeneratedFiles {
@@ -1067,12 +1092,12 @@ impl GeneratedFiles {
     }
 
     /// the parent rule that generates a output file
-    pub(crate) fn get_parent_rule(&self, o: &PathDescriptor) -> Option<&TupLoc> {
+    pub(crate) fn get_parent_rule(&self, o: &PathDescriptor) -> Option<&RuleDescriptor> {
         self.parent_rule.get(o)
     }
 
     /// Add an entry to the set that holds paths
-    fn add_parent_rule(&mut self, pd: PathDescriptor, rule_ref: TupLoc) -> TupLoc {
+    fn add_parent_rule(&mut self, pd: PathDescriptor, rule_ref: RuleDescriptor) -> RuleDescriptor {
         match self.parent_rule.entry(pd) {
             Entry::Occupied(e) => e.get().clone(),
             Entry::Vacant(e) => e.insert(rule_ref).clone(),
@@ -1150,7 +1175,7 @@ impl GeneratedFiles {
     fn merge_parent_rules(
         &mut self,
         path_buffers: &impl PathBuffers,
-        new_parent_rule: &HashMap<PathDescriptor, TupLoc>,
+        new_parent_rule: &HashMap<PathDescriptor, RuleDescriptor>,
         new_path_descs: &BTreeSet<PathDescriptor>,
     ) -> Result<(), Error> {
         for new_path_desc in new_path_descs.iter() {
@@ -1158,22 +1183,18 @@ impl GeneratedFiles {
                 .get(new_path_desc)
                 .expect("parent rule not found");
             debug!(
-                "Setting parent for  path: {:?} to rule:{:?}:{:?}",
+                "Setting parent for  path: {:?} to rule:{}",
                 path_buffers.get_path(new_path_desc),
-                new_parent.get_tupfile_desc().get_path_ref(),
-                new_parent.get_line()
+                new_parent
             );
             match self.parent_rule.entry(new_path_desc.clone()) {
                 Entry::Occupied(pe) => {
                     if pe.get() != new_parent {
                         let old_parent = pe.get();
-                        let old_rule_path = old_parent.get_tupfile_desc().get_path_ref();
-                        let old_rule_line = old_parent.get_line();
                         log::warn!(
-                            "path {:?} is an output of a previous rule at:{:?}:{:?}",
+                            "path {:?} is an output of a previous rule at:{}",
                             path_buffers.get_path(new_path_desc),
-                            old_rule_path,
-                            old_rule_line
+                            old_parent,
                         );
                         return Err(Error::MultipleRulesToSameOutput(
                             new_path_desc.clone(),
@@ -1190,7 +1211,7 @@ impl GeneratedFiles {
         Ok(())
     }
     /// return the map from output file descriptor to the parent rule that generates it.
-    fn get_parent_rules(&self) -> &HashMap<PathDescriptor, TupLoc> {
+    fn get_parent_rules(&self) -> &HashMap<PathDescriptor, RuleDescriptor> {
         &self.parent_rule
     }
 }
@@ -1255,13 +1276,13 @@ impl OutputHandler for OutputHolder {
         RwLockReadGuard::map(self.get(), |x| x.get_children())
     }
 
-    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<TupLoc> {
+    fn get_parent_rule(&self, o: &PathDescriptor) -> Option<RuleDescriptor> {
         let r = self.get();
         r.get_parent_rule(o).map(|x| x.clone())
     }
     fn with_parent_rules<R, F>(&self, mut f: F) -> R
     where
-        F: FnMut(&HashMap<PathDescriptor, TupLoc>) -> R,
+        F: FnMut(&HashMap<PathDescriptor, RuleDescriptor>) -> R,
     {
         let rules = RwLockReadGuard::map(self.get(), |x| x.get_parent_rules());
         f(rules.deref())
@@ -1270,7 +1291,7 @@ impl OutputHandler for OutputHolder {
     fn add_output(&mut self, pd: &PathDescriptor) -> bool {
         self.get_mut().add_output(pd)
     }
-    fn add_parent_rule(&mut self, pd: &PathDescriptor, rule_ref: TupLoc) -> TupLoc {
+    fn add_parent_rule(&mut self, pd: &PathDescriptor, rule_ref: RuleDescriptor) -> RuleDescriptor {
         self.get_mut().add_parent_rule(pd.clone(), rule_ref)
     }
 
@@ -1401,6 +1422,10 @@ impl PathBuffers for BufferObjects {
         let e = e.into_owned();
         debug!("adding env {:?}", e);
         EnvBufferObject::add_ref(e)
+    }
+
+    fn add_rule_pos(&self, e: &IncludeTrail) -> RuleRefDescriptor {
+        RuleRefDescriptor::from(e.clone())
     }
 
     /// Add a path to a group in this buffer
@@ -1574,7 +1599,7 @@ impl PathBuffers for BufferObjects {
             name,
             vec![],
             vec![],
-            TupLoc::default(),
+            Default::default(),
             vec![],
             EnvList::default(),
         );

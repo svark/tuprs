@@ -9,14 +9,11 @@ use std::path::{Path, PathBuf};
 use log::debug;
 use regex::Regex;
 
-use crate::buffers::{
-    BufferObjects, GlobPathDescriptor, MyGlob, PathBuffers, PathDescriptor, RelativeDirEntry,
-    TaskDescriptor,
-};
-use crate::decode::{GroupInputs, TupLoc};
+use crate::buffers::{BufferObjects, GlobPathDescriptor, MyGlob, PathBuffers, PathDescriptor, RelativeDirEntry, RuleRefDescriptor, TaskDescriptor};
+use crate::decode::{GroupInputs};
 use crate::errors::Error;
 use crate::glob::Candidate;
-use crate::statements::PathExpr;
+use crate::statements::{PathExpr};
 use crate::transform::get_parent;
 use crate::{BinDescriptor, GroupPathDescriptor};
 //use tap::Pipe;
@@ -352,12 +349,12 @@ impl GlobPath {
 
 pub(crate) struct OutputsAsPaths {
     outputs: Vec<PathDescriptor>,
-    rule_ref: TupLoc,
+    rule_ref: RuleRefDescriptor,
 }
 
 impl OutputsAsPaths {
     /// Create a new instance of OutputsAsPaths from a list of paths and a rule reference
-    pub(crate) fn new(outputs: Vec<PathDescriptor>, rule_ref: TupLoc) -> Self {
+    pub(crate) fn new(outputs: Vec<PathDescriptor>, rule_ref: RuleRefDescriptor) -> Self {
         Self { outputs, rule_ref }
     }
     fn get_base(&self) -> PathDescriptor {
@@ -598,7 +595,7 @@ impl InputsAsPaths {
             if let &InputResolvedType::GroupEntry(ref grp_desc, _) = x {
                 Some((
                     path_buffers.get_group_name(grp_desc),
-                    (path_buffers.get_path_from(x)),
+                    path_buffers.get_path_from(x),
                 ))
             } else if let &InputResolvedType::UnResolvedGroupEntry(ref grp_desc) = x {
                 let grp_name = path_buffers.get_group_name(grp_desc);

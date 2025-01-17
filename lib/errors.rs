@@ -3,8 +3,9 @@ use std::io::Error as IoErr;
 
 use thiserror::Error as ThisError;
 
-use crate::buffers::{PathDescriptor, TupPathDescriptor};
-use crate::decode::TupLoc;
+use crate::buffers::{PathDescriptor, RuleRefDescriptor, TupPathDescriptor};
+use crate::RuleDescriptor;
+use crate::statements::{TupLoc};
 use crate::statements::Loc;
 
 /// Errors returning during parsing and subst-ing Tupfiles
@@ -21,8 +22,8 @@ pub enum Error {
     #[error("Io Error: {0} for {1}")]
     IoError(IoErr, String, Loc),
     /// Macro with given name could not be found
-    #[error("Unknown macro reference:{0}")]
-    UnknownMacroRef(String, TupLoc),
+    #[error("Unknown macro reference:{0} at {1}")]
+    UnknownMacroRef(String, String),
     /// Dependency cycle  between rules of tupfile because groups refer to one another
     #[error("Dependency cycle between {0}, {1}")]
     DependencyCycle(String, String),
@@ -37,13 +38,11 @@ pub enum Error {
     MultipleGlobMatches(String, TupLoc),
     /// Multiple rules return the same output file
     #[error("Multiple rules writing to same output {0}: current rule: {1}, previous rule: {2}")]
-    MultipleRulesToSameOutput(PathDescriptor, TupLoc, TupLoc),
+    MultipleRulesToSameOutput(PathDescriptor, RuleDescriptor, RuleDescriptor),
     /// Group reference could not resolved
-    #[error("Groups reference {0} could not be resolved at input{0}")]
-    StaleGroupRef(String, TupLoc),
     /// Bin reference could not be resolved
-    #[error("Bin reference {0} could not be resolved at input {0}")]
-    StaleBinRef(String, TupLoc),
+    #[error("Bin reference {0} could not be resolved at input {1}")]
+    StaleBinRef(String, RuleRefDescriptor),
     /// Percentage char in rules could not be resolved
     #[error("%{0} could not be resolved from {2} for rule at: {1}")]
     StalePerc(char, TupLoc, String),
@@ -64,16 +63,11 @@ pub enum Error {
     PathNotFound(String, TupLoc),
     /// Rule creates a directory
     #[error("Output path is a directory: {0} defined at {1}")]
-    OutputIsDir(String, TupLoc),
-    /// input file could not be resolved
-    #[error("Error resolving an input: {0} at {1}")]
-    UnResolvedFile(String, TupLoc),
+    OutputIsDir(String, String),
     /// Path search error
     #[error("Path search error: {0}")]
     PathSearchError(String),
     /// Path search error with context
-    #[error("Path search error: {0} at {1}")]
-    PathSearchErrorCtx(String, TupLoc),
     /// Raw lua errors
     #[error("Lua error: {0}")]
     LuaError(String),
@@ -83,7 +77,7 @@ pub enum Error {
 
     /// negative index specific for word
     #[error("Could not find task by name:{0} at {1}")]
-    TaskNotFound(String, TupLoc),
+    TaskNotFound(String, String),
 
     /// Failure during running a callback to fetch all groupids
     #[error("Call back error: {0}")]

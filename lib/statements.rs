@@ -1,13 +1,56 @@
 //! This module has datastructures that capture parsed tupfile expressions
 use crate::buffers::EnvList;
 use crate::buffers::PathDescriptor;
-use crate::decode::TupLoc;
 use crate::paths::MatchingPath;
 use crate::transform::ParseState;
 use crate::TupPathDescriptor;
 use nonempty::{nonempty, NonEmpty};
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter, Write};
+/// `TupLoc` keeps track of the current file being processed and rule location.
+/// This is mostly useful for error handling to let the user know we ran into problem with a rule at
+/// a particular line
+#[derive(Debug, Default, PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
+pub struct TupLoc {
+    tup_path_desc: TupPathDescriptor,
+    loc: Loc,
+}
+///`Ruleref` constructor and accessors
+impl TupLoc {
+    /// Construct a RuleRef
+    pub fn new(tup_desc: &TupPathDescriptor, loc: &Loc) -> TupLoc {
+        TupLoc {
+            tup_path_desc: tup_desc.clone(),
+            loc: *loc,
+        }
+    }
+
+    /// Line of Tupfile where portion of rule is found
+    pub fn get_line(&self) -> u32 {
+        self.loc.get_line()
+    }
+    /// Get the column of Tupfile where portion of rule is found
+    pub fn get_col(&self) -> u32 {
+        self.loc.get_col()
+    }
+    /// Get the span of the region in Tupfile where rule is found
+    pub fn get_span(&self) -> u32 {
+        self.loc.get_span()
+    }
+
+    pub(crate) fn set_loc(&mut self, loc: Loc) {
+        self.loc = loc;
+    }
+
+    pub(crate) fn get_loc(&self) -> &Loc {
+        &self.loc
+    }
+
+    /// Directory
+    pub fn get_tupfile_desc(&self) -> &TupPathDescriptor {
+        &self.tup_path_desc
+    }
+}
 
 /// TaskTarget encapsulates the target of a task
 #[derive(Debug, Clone, PartialEq)]
@@ -370,9 +413,19 @@ pub(crate) struct Link {
     pub source: Source,
     pub target: Target,
     pub rule_formula: RuleFormula,
-    pub pos: Loc,
+    pub pos: IncludeTrail,
 }
 
+impl From<NonEmpty<TupLoc>> for IncludeTrail {
+    fn from(value: NonEmpty<TupLoc>) -> Self {
+        IncludeTrail(value)
+    }
+}
+impl From<Vec<TupLoc>> for IncludeTrail {
+    fn from(value: Vec<TupLoc>) -> Self {
+        IncludeTrail(NonEmpty::from_vec(value).unwrap())
+    }
+}
 /// Implement Display for a location useful for displaying error  s
 impl Display for Loc {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -393,24 +446,45 @@ pub struct LocatedStatement {
     pub(crate) loc: Loc,
 }
 
+/// Stack of included tupfiles and the location until the statement is found
+#[derive(Clone, Debug, PartialEq, Default, Eq, Hash, Ord, PartialOrd)]
+pub struct IncludeTrail(NonEmpty<TupLoc>);
+
+impl Display for IncludeTrail {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut iter = self.0.iter();
+        write!(f, "at {}", iter.next().unwrap())?;
+        for t in iter {
+            write!(f, "\tfrom\n{}", t)?;
+        }
+        Ok(())
+    }
+}
+
+impl IncludeTrail {
+    /// tupfile that is being processed 
+    pub fn get_tupfile_desc(&self) -> &TupPathDescriptor {
+        &self.0[0].get_tupfile_desc()
+    }
+}
 /// Statements with their location in a tupfile or its includes at any depth
 #[derive(PartialEq, Debug, Clone, Default)]
 pub(crate) struct IncludedStatements<T> {
     statements: Vec<T>,
-    include_trail: NonEmpty<TupLoc>,
+    include_trail: IncludeTrail
 }
 
 impl<T> IncludedStatements<T> {
     pub(crate) fn new(statements: Vec<T>, include_trail: NonEmpty<TupLoc>) -> Self {
         IncludedStatements {
-            include_trail,
+            include_trail: IncludeTrail(include_trail),
             statements,
         }
     }
 
     pub(crate) fn get_trail_as_string(&self) -> String {
         let string_buffer = String::new();
-        self.include_trail
+        self.include_trail.0
             .iter()
             .fold(string_buffer, |mut string_builder, t| {
                 write!(string_builder, "from\n{}", t).unwrap();

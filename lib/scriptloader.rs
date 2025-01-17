@@ -11,6 +11,7 @@ use mlua::{HookTriggers, IntoLua, Lua, MultiValue, StdLib, Value, Variadic, VmSt
 use mlua::{UserData, UserDataMethods};
 //use mlua::prelude::LuaUserDataRefMut;
 use nom::{AsBytes, InputTake};
+use nonempty::nonempty;
 use parking_lot::RwLock;
 
 use crate::buffers::{BufferObjects, PathBuffers, PathDescriptor};
@@ -53,7 +54,7 @@ A forwarding wrapper around tup.frule. Except for the 3-argument version, inputs
 tup.foreach_rule(inputs, command)
 tup.foreach_rule(inputs, command, outputs)
 Returns: table of strings
-A forwarding wrapper around tup.frule. inputs and outputs must always be tables, and command must be a string. For each input INPUT, runs tup.frule with an input table containing INPUT and inputs.extra_inputs if present. Returns the aggregate result of all tup.frule calls.
+A forwarding wrapper around tup.frule. inputs and outputs must always be tables, and command must be a string. For each input, runs tup.frule with an input table containing INPUT and inputs.extra_inputs if present. Returns the aggregate result of all tup.frule calls.
 
 tup.export(variable)
 Returns: none
@@ -356,11 +357,12 @@ impl<Q: PathSearcher> TupScriptContext<Q> {
         let source = inp.build_foreach();
         let rule_formula = rule_command.build();
         let target = out.build();
+        let cur_file_desc = self.parse_state.get_cur_file_desc();
         let l = Link {
             source,
             target,
             rule_formula,
-            pos: Loc::new(lineno, 0, 0),
+            pos: nonempty![TupLoc::new(cur_file_desc, &Loc::new(lineno, 0, 0))].into(),
         };
         let env = self.parse_state.cur_env_desc.clone();
         let tupfiles_read = self.parse_state.get_tupfiles_read();
@@ -402,11 +404,12 @@ impl<Q: PathSearcher> TupScriptContext<Q> {
         let source = inp.build();
         let rule_formula = rule_command.build();
         let target = out.build();
+        let cur_file_desc = self.parse_state.get_cur_file_desc();
         let l = Link {
             source,
             target,
             rule_formula,
-            pos: Loc::new(lineno, 0, 0),
+            pos: nonempty![TupLoc::new(cur_file_desc, &Loc::new(lineno, 0, 0))].into(),
         };
         let env = self.parse_state.cur_env_desc.clone();
         let tupfiles_read = self.parse_state.get_tupfiles_read();

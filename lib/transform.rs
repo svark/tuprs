@@ -24,7 +24,7 @@ use crate::buffers::{
 };
 use crate::decode::{
     paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathDiscovery, PathSearcher,
-    ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance, TupLoc,
+    ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance
 };
 use crate::errors::Error::{IoError, RootNotFound};
 use crate::errors::{Error as Err, Error};
@@ -183,6 +183,9 @@ pub(crate) struct ParseState {
     pub(crate) cur_tupfile_loc_stack: NonEmpty<TupLoc>,
 }
 
+impl ParseState {
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CallArgsMap {
     // call args
@@ -307,6 +310,11 @@ impl ParseState {
             self.get_include_path().clone(),
         )
     }
+    
+    pub(crate) fn get_include_trail(&self) -> IncludeTrail{
+        self.cur_tupfile_loc_stack.clone().into()
+    }
+    
 
     fn get_cached_config(&self) -> &Vec<(TupPathDescriptor, PathDescriptor)> {
         &self.cached_config
@@ -433,6 +441,17 @@ impl ParseState {
             let fullpath = self.get_cur_file().with_extension("temp-config.tup");
             if std::fs::exists(fullpath.as_path()).unwrap_or(false) {
                 debug!("reading cached config from {:?}", fullpath);
+                let cached_config_metadata  = std::fs::metadata(fullpath.as_path())
+                    .map_err(|e| IoError(e, "Could not read metadata".to_string(), Loc::default()))?;
+                let cached_config_modified = cached_config_metadata.modified().unwrap();
+
+                let tupfile_metadata = std::fs::metadata(self.get_cur_file())
+                    .map_err(|e| IoError(e, "Could not read metadata".to_string(), Loc::default()))?;
+                let tupfile_modified = tupfile_metadata.modified().unwrap();
+                if cached_config_modified < tupfile_modified {
+                    debug!("cached config is older than tupfile");
+                    return Ok(false);
+                }
                 let (line, header) = self.read_cached_config_at(&fullpath)?;
                 if line.trim() == header {
                     do_read = true;
@@ -2191,7 +2210,7 @@ impl ExpandMacro for Link {
         let mut source = self.source.clone();
         let mut target = self.target.clone();
         let mut desc = self.rule_formula.get_description().cloned();
-        let pos = self.pos;
+        let pos = self.pos.clone();
         let mut formulae = Vec::new();
         for pathexpr in self.rule_formula.formula.iter() {
             match pathexpr {
@@ -2212,7 +2231,7 @@ impl ExpandMacro for Link {
                     } else {
                         return Err(Err::UnknownMacroRef(
                             name.clone(),
-                            TupLoc::new(m.get_cur_file_desc(), &pos),
+                            pos.to_string()
                         ));
                     }
                 }
@@ -2259,17 +2278,10 @@ fn tovecstring(right: &[PathExpr]) -> Vec<String> {
 }
 
 /// load config vars from tup.config file
-/// Also sets TUP_PLATFORM and TUP_ARCH if they are not set in the config file
+/// Also sets TUP_PLATFORM and TUP_ARCH if they are not set in the config-file
 /// File format is similar to tupfile, but it may not exist
 pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>, Error> {
     let mut conf_vars = HashMap::new();
-    if conf_file.is_file() {
-        load_config_vars_raw(conf_file.as_path(), &mut conf_vars)?;
-    }
-    // @(TUP_PLATFORM)
-    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
-    //     @(TUP_ARCH)
-    //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
     if !conf_vars.contains_key("TUP_PLATFORM") {
         conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform().into()]);
     }
@@ -2279,6 +2291,13 @@ pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>
     if !conf_vars.contains_key("TUP_UNAME") {
         conf_vars.insert("TUP_UNAME".to_owned(), vec![get_uname().into()]);
     }
+    if conf_file.is_file() {
+        load_config_vars_raw(conf_file.as_path(), &mut conf_vars)?;
+    }
+    // @(TUP_PLATFORM)
+    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
+    //     @(TUP_ARCH)
+    //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
 
     Ok(conf_vars)
 }
@@ -2314,27 +2333,39 @@ pub(crate) fn load_config_vars_raw(
     conf_file: &Path,
     conf_vars: &mut HashMap<String, Vec<String>>,
 ) -> Result<(), Error> {
-    for LocatedStatement { statement, .. } in parse_tupfile(conf_file)?.iter() {
-        if let Statement::AssignExpr { left, right, .. } = statement {
-            if let Some(rest) = left.name.strip_prefix("CONFIG_") {
-                debug!("conf var:{} = {}", rest, right.cat());
-                conf_vars.insert(rest.to_string(), tovecstring(right.as_slice()));
-            } else {
-                debug!("conf var:{} = {}", left.name, right.cat());
-                conf_vars.insert(left.name.clone(), tovecstring(right.as_slice()));
-            }
-        } else if let Statement::Import(e, v) = statement {
+    let bo = BufferObjects::new(conf_file.parent().unwrap());
+    let cur_file_desc = bo.add_abs(conf_file.file_name().unwrap()).expect("message");
+    let cvars = HashMap::new();
+    let mut parse_state = ParseState::new(
+        &cvars,
+        cur_file_desc,
+        Vec::new(),
+        Arc::new(RwLock::new(HashMap::new())),
+        Arc::from(bo),
+    );
+    let db_path_searcher = DirSearcher::new_at(conf_file.parent().unwrap());
+    let located_statements = parse_tupfile(conf_file)?;
+    for located_statement in located_statements.into_iter() {
+        if let Statement::AssignExpr { .. } = located_statement.get_statement() {
+            located_statement.subst(&mut parse_state, &db_path_searcher)?;
+        } else if let Statement::Import(_, _) = located_statement.get_statement() {
             // import the environment variable `e` into the tupfile as `e` with the value `v` if environment variable `e` is not set.
             // this is not used as  env var but as a variable .
-
-            if let Ok(val) = std::env::var(e) {
-                conf_vars.insert(e.clone(), vec![val]);
-            } else if let Some(val) = v.clone() {
-                if !val.is_empty() {
-                    conf_vars.insert(e.clone(), vec![val]);
-                }
-            }
+            located_statement.subst(&mut parse_state, &db_path_searcher)?;
         }
+    }
+    for (k, v) in parse_state.expr_map.iter() {
+        let vec1 = tovecstring(v);
+        debug!("adding {:?} to conf_vars with val:{:?}", k, vec1);
+        conf_vars.insert(k.clone(), vec1);
+    }
+    for (k, v) in parse_state.func_map.iter() {
+        let vec2 = tovecstring(v);
+        debug!("adding {:?} to conf_vars with val:{:?}", k, vec2);
+        conf_vars.insert(k.clone(), vec2);
+    }
+    for (k, v) in parse_state.get_envs() {
+        conf_vars.insert(k, vec![v]);
     }
     Ok(())
 }
@@ -2357,7 +2388,7 @@ impl SubstPEs for Link {
             source: self.source.subst_pe(m, path_searcher),
             target: self.target.subst_pe(m, path_searcher),
             rule_formula: self.rule_formula.subst_pe(m, path_searcher),
-            pos: self.pos,
+            pos: m.get_include_trail(),
         }
     }
 }
@@ -2567,7 +2598,7 @@ impl LocatedStatement {
     fn subst_task(
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
-        loc: &Loc,
+        _loc: &Loc,
         t: &TaskDetail,
     ) {
         let name = t.get_target();
@@ -2575,7 +2606,8 @@ impl LocatedStatement {
         let recipe = t.get_body();
         let search_dirs = t.get_search_dirs();
         debug!("adding task:{} with deps:{:?}", name.as_str(), &deps);
-        let tup_loc = TupLoc::new(&parse_state.get_cur_file_desc(), loc);
+        let rule_ref = parse_state.get_include_trail();
+        let rule_ref =  parse_state.get_path_buffers().add_rule_pos(&rule_ref);
         let tup_dir = parse_state.get_tup_dir_desc();
         let deps = deps.subst_pe(parse_state, path_searcher);
         // each line of the recipe has the same parse state as the task
@@ -2590,7 +2622,7 @@ impl LocatedStatement {
             &name.as_str(),
             deps.clone(),
             recipe.clone(),
-            tup_loc,
+            rule_ref,
             search_dirs.clone(),
             env_desc,
         );
@@ -2692,7 +2724,7 @@ impl LocatedStatement {
         debug!("found in current file:{:?}", parse_state.get_cur_file());
         let cur_tup_dir = parse_state.get_tup_dir_desc();
         let pscat = Path::new(scat.as_str());
-        debug!("longp:{:?}, pscat:{:?}", cur_tup_dir, pscat);
+        debug!("base path:{:?}, addendum:{:?}", cur_tup_dir, pscat);
         let fullp = cur_tup_dir.join(pscat).map_err(|_| {
             Error::PathNotFound(
                 pscat.to_string_lossy().to_string(),
@@ -2768,7 +2800,7 @@ impl LocatedStatement {
         )))
     }
 
-    fn subst_assign(
+    pub(crate) fn subst_assign(
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
         left: &Ident,
@@ -2968,7 +3000,7 @@ impl ResolvedRules {
         while let Some(x) = link_iter.next() {
             end_index += 1;
             if let Some(nx) = link_iter.peek() {
-                if nx.get_tup_loc().get_tupfile_desc() != x.get_tup_loc().get_tupfile_desc() {
+                if nx.get_rule_ref().get_tupfile_desc() != x.get_rule_ref().get_tupfile_desc() {
                     out.push(&self.resolved_links[start_index..end_index]);
                     start_index = end_index;
                 }
@@ -3568,7 +3600,7 @@ pub fn compute_glob_sha256(
     bo: &impl PathBuffers,
     p0: &GlobPathDescriptor,
 ) -> Result<String, Error> {
-    let glob_path = GlobPath::build_from(&PathDescriptor::default(), p0).unwrap();
+    let glob_path = GlobPath::build_from(&PathDescriptor::default(), p0)?;
     let root = glob_path.get_non_pattern_abs_path();
     if !glob_path.has_glob_pattern() {
         return Ok(String::new());

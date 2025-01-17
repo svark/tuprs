@@ -14,7 +14,7 @@ use nom::error::{context, ErrorKind, VerboseErrorKind};
 use nom::multi::{many0, many1, many_till};
 use nom::number::Endianness;
 use nom::sequence::{delimited, preceded, terminated};
-use nom::IResult as nomIResult;
+use nom::{IResult as nomIResult};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take, take_while},
@@ -1416,7 +1416,7 @@ pub(crate) fn parse_rule(i: Span) -> IResult<Span, LocatedStatement> {
                     ),
                     target: from_output(output, secondary_output, v1, v2),
                     rule_formula,
-                    pos: Loc::from(i.slice(..offset)),
+                    .. Default::default()
                 },
                 crate::buffers::EnvList::default(),
                 Vec::new(),
@@ -1492,7 +1492,7 @@ pub(crate) fn parse_macroassignment(i: Span) -> IResult<Span, LocatedStatement> 
                     ),
                     target: from_output(output, secondary_output, group, bin),
                     rule_formula,
-                    pos: Loc::from(i.slice(..offset)),
+                    .. Default::default()
                 },
             ),
             i.slice(..offset),
