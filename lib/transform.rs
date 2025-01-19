@@ -3354,7 +3354,8 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             let resolved_rules_ = self
                 .process_raw_statements(to_resolve)
                 .map_err(|e| crate::errors::ErrorContext::new(e, tup_desc.clone()))?;
-            f(resolved_rules_).map_err(|e| crate::errors::ErrorContext::new(e, tup_desc))?;
+            f(resolved_rules_).map_err(|e| 
+                crate::errors::ErrorContext::new(e, tup_desc))?;
             Ok(())
         })?;
         drop(receiver);

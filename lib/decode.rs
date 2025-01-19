@@ -1516,6 +1516,7 @@ impl ResolvePaths for ResolvedLink {
         let mut rlink: ResolvedLink = self.clone();
         rlink.primary_sources.clear();
         rlink.secondary_sources.clear();
+        let mut unique_deglobbed = HashSet::new();
         for i in self.primary_sources.iter() {
             match i {
                 InputResolvedType::UnResolvedFile(p) => {
@@ -1543,6 +1544,11 @@ impl ResolvePaths for ResolvedLink {
                             g,
                             rlink.get_rule_ref()
                         );
+                    }
+                }
+                InputResolvedType::Deglob(mp) => {
+                    if unique_deglobbed.insert(mp.clone()) {
+                        rlink.primary_sources.push(i.clone());
                     }
                 }
                 _ => rlink.primary_sources.push(i.clone()),
@@ -1686,13 +1692,14 @@ impl LocatedStatement {
             }
 
             let rule_ref = path_buffers.add_rule_pos(rule_position);
-            let inpdec = reparsed_primary.decode(
+            let mut inpdec = reparsed_primary.decode(
                 &tup_cwd,
                 path_searcher,
                 path_buffers,
                 &rule_ref,
                 &search_dirs,
             )?;
+            let mut unique_deglobbed = HashSet::new();
             let secondinpdec = reparsed_secondary.decode(
                 &tup_cwd,
                 path_searcher,
@@ -1713,6 +1720,14 @@ impl LocatedStatement {
             for input_glob_desc in inpdec.iter().filter_map(|x| x.get_glob_path_desc()) {
                 globs_read.push(input_glob_desc);
             }
+            inpdec.retain_mut(|x|  {
+                if let Some(mp) = x.get_glob_path_desc() {
+                    if !unique_deglobbed.insert(mp.clone()) {
+                        return false;
+                    }
+                }
+                true
+            });
             if for_each {
                 for input in inpdec {
                     if input.is_unresolved() {
