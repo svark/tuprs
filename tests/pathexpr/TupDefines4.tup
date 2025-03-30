@@ -1,5 +1,5 @@
 DEBUG =1
-ifdef CVAR
+ifdef CONFIG_CVAR
 PRVSRCS=impl/*.cxx
 endif
 SRCS=*.cxx $(PRVSRCS)

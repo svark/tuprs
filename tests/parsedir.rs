@@ -30,7 +30,7 @@ mod tests {
             .collect::<Vec<_>>();
         outs.pop();
 
-        insta::with_settings!({filters => vec![(r"env: Descriptor\(([^=]+)=((?:[^()]*\([^()]*\))*[^()]*)\)",r"env: Descriptor($1)")]},
+        insta::with_settings!({filters => vec![(r"env: EnvDescriptor\(Descriptor\(([^=]+)=((?:[^()]*\([^()]*\))*[^()]*)\)\)",r"env: EnvDescriptor($1)")]},
             {insta::assert_json_snapshot!(strings);}
         );
     }
@@ -48,7 +48,7 @@ mod tests {
                 outs.push(r.human_readable());
             }
         }
-        insta::with_settings!({filters => vec![(r"env: Descriptor\(([^=]+)=((?:[^()]*\([^()]*\))*[^()]*)\)",r"env: Descriptor($1)")]}, {
+        insta::with_settings!({filters => vec![(r"env: EnvDescriptor\(Descriptor\(([^=]+)=((?:[^()]*\([^()]*\))*[^()]*)\)\)",r"env: EnvDescriptor($1)")]}, {
             if cfg!(target_os = "windows") {
                 insta::assert_json_snapshot!("windows_script", outs);
             } else {
@@ -149,11 +149,11 @@ mod tests {
         let tupconf = d.join("Tupfile4.config");
         let conf_map = load_conf_vars(tupconf).expect("conf var open error from tupdata1.txt");
         assert_eq!(
-            conf_map.get("PLATFORM").and_then(|x| x.first()),
+            conf_map.get("CONFIG_PLATFORM").and_then(|x| x.first()),
             Some(&"win64".to_owned())
         );
         assert_eq!(
-            conf_map.get("CVAR").and_then(|x| x.first()),
+            conf_map.get("CONFIG_CVAR").and_then(|x| x.first()),
             Some(&"1".to_owned())
         );
 

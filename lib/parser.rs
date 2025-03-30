@@ -25,7 +25,7 @@ use nom::{character, Err};
 use nom::{AsBytes, Offset, Slice};
 use nom_locate::LocatedSpan;
 
-use crate::buffers::PathDescriptor;
+use tuppaths::descs::PathDescriptor;
 use crate::statements::Level;
 use crate::statements::*;
 
@@ -953,7 +953,7 @@ fn parse_export(i: Span) -> IResult<Span, LocatedStatement> {
 //   The import directive sets a variable inside the Tupfile that has the value of the environment variable.
 // If the environment variable is unset, the default value is used instead if provided.
 // This introduces a dependency from the environment variable to the Tupfile,
-// so that if the environment variable changes, the Tupfile is re-parsed. For example:
+// so that if the environment variable changes, the Tupfile is reparsed. For example:
 //
 // import CC=gcc
 // : foreach *.c |> $(CC) -c %f -o %o |> %B.o

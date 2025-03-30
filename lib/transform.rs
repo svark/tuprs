@@ -16,11 +16,14 @@ use std::sync::Once;
 use std::vec::Drain;
 
 use nonempty::{nonempty, NonEmpty};
-
+use crate::GroupPathDescriptor;
+use crate::PathDescriptor;
+use crate::RelativeDirEntry;
+use crate::{TupPathDescriptor, GlobPathDescriptor};
 use crate::buffers::{
-    BufferObjects, EnvDescriptor, EnvList, GenBufferObject, GlobPathDescriptor, GroupBufferObject,
-    GroupPathDescriptor, OutputHolder, PathBuffers, PathDescriptor, RelativeDirEntry,
-    RuleDescriptor, TaskDescriptor, TupPathDescriptor,
+    BufferObjects, EnvDescriptor, EnvList, GenBufferObject, GroupBufferObject,
+    OutputHolder, PathBuffers, 
+    RuleDescriptor, TaskDescriptor,
 };
 use crate::decode::{
     paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathDiscovery, PathSearcher,
@@ -29,10 +32,11 @@ use crate::decode::{
 use crate::errors::Error::{IoError, RootNotFound};
 use crate::errors::{Error as Err, Error};
 use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
-use crate::paths::SelOptions::Either;
-use crate::paths::{GlobPath, InputResolvedType, InputsAsPaths, SelOptions};
-use crate::paths::{MatchingPath, NormalPath};
-use crate::platform::*;
+use tuppaths::paths::SelOptions::Either;
+use crate::ruleio::{InputsAsPaths};
+use crate::buffers::{GlobPath, InputResolvedType,  SelOptions};
+use tuppaths::paths::{get_parent, get_parent_with_fsep, MatchingPath, NormalPath};
+use tupcompat::platform::*;
 use crate::scriptloader::parse_script;
 use crate::statements::DollarExprs;
 use crate::statements::PathExpr::DollarExprs as DExpr;
@@ -413,7 +417,7 @@ impl ParseState {
     pub(crate) fn get_env_value(&self, key: &str) -> Option<String> {
         self.cur_env_desc
             .find_key(key)
-            .map(|env| env.get().get_val_str().to_string())
+            .map(|env| env.get_val_str().to_string())
     }
     // add to load dir
     pub(crate) fn add_load_dir(&mut self, p0: PathDescriptor) {
@@ -2247,28 +2251,6 @@ impl ExpandMacro for Link {
     }
 }
 /// parent folder path for a given tupfile
-pub fn get_parent(cur_file: &Path) -> Cow<Path> {
-    if cur_file.eq(OsStr::new("/"))
-        || cur_file.eq(OsStr::new("."))
-        || cur_file.as_os_str().is_empty()
-    {
-        return Cow::Owned(PathBuf::from("."));
-    }
-    let p = cur_file
-        .parent()
-        .unwrap_or_else(|| panic!("unable to find parent folder for tup file:{:?}", cur_file));
-    if p.as_os_str().is_empty() {
-        Cow::Owned(PathBuf::from("."))
-    } else {
-        Cow::Borrowed(p)
-    }
-}
-
-/// parent folder path as a string slice
-pub fn get_parent_with_fsep<P: AsRef<Path>>(cur_file: P) -> NormalPath {
-    NormalPath::new_from_cow_path(cur_file.as_ref().parent().unwrap().into())
-}
-
 /// strings in pathexpr that are space separated
 fn tovecstring(right: &[PathExpr]) -> Vec<String> {
     right
@@ -2846,7 +2828,7 @@ impl StatementsInFile {
                     IncludedStatements::new(Vec::new(), parse_state.get_include_path().clone());
                 let include_stats = i.get_statements().iter().try_fold(
                     include_statements,
-                    |mut stats, statement| {
+                    |mut stats, statement| -> Result<IncludedStatements<StatementsInFile>, Error> {
                         let newstats = statement.subst(parse_state, path_searcher)?;
                         if !newstats.is_empty() {
                             stats.push_statement(newstats);
@@ -3193,11 +3175,11 @@ impl ReadWriteBufferObjects {
 
     /// Return the environment variable corresponding to its id
     pub fn get_env_name(&self, e: &EnvDescriptor) -> String {
-        e.get().get_key_str().to_string()
+        e.get_key_str().to_string()
     }
     /// Return the value of the environment variable corresponding to its id
     pub fn get_env_value(&self, e: &EnvDescriptor) -> String {
-        e.get().get_val_str().to_string()
+        e.get_val_str().to_string()
     }
 
     /// get a reportable version of error for display
@@ -3586,11 +3568,10 @@ pub fn compute_dir_sha256(p0: &Path) -> Result<String, Error> {
         .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
-        .try_for_each(|entry| {
+        .for_each(|entry| {
             let path = entry.path();
             hasher.update(path.as_os_str().as_encoded_bytes());
-            Ok(())
-        })?;
+        });
     let result = hasher.finalize();
     Ok(encode(result))
 }

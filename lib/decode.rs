@@ -17,21 +17,24 @@ use parking_lot::MappedRwLockReadGuard;
 use regex::{Captures, Regex};
 use walkdir::{DirEntry, WalkDir};
 
-use crate::buffers::{BinDescriptor, EnvList, GlobPathDescriptor, GroupPathDescriptor, MyGlob, OutputHolder, OutputType, PathBuffers, PathDescriptor, RelativeDirEntry, RuleDescriptor, RuleRefDescriptor, TaskDescriptor, TupPathDescriptor};
+use crate::buffers::{EnvList, InputResolvedType, MyGlob, OutputHolder, OutputType, PathBuffers, RuleDescriptor, RuleRefDescriptor, TaskDescriptor};
+use crate::{TupPathDescriptor, GroupPathDescriptor};
 use crate::decode::Index::All;
 use crate::errors::Error::PathSearchError;
 use crate::errors::{Error as Err, Error};
 use crate::parser::reparse_literal_as_input;
-use crate::paths::SelOptions::Either;
-use crate::paths::{
-    ExcludeInputPaths, FormatReplacements, GlobPath, InputResolvedType, InputsAsPaths,
-    MatchingPath, NormalPath, OutputsAsPaths, SelOptions,
+use tuppaths::paths::SelOptions::Either;
+use crate::ruleio::{FormatReplacements, InputsAsPaths, OutputsAsPaths};
+use tuppaths::paths::{
+    GlobPath,
+    MatchingPath, NormalPath, SelOptions,
 };
 use crate::statements::*;
 use crate::transform::{to_regex, ResolvedRules, TupParser};
 use crate::ReadWriteBufferObjects;
 use std::sync::OnceLock;
 use nonempty::nonempty;
+use crate::{BinDescriptor, GlobPathDescriptor, PathDescriptor, RelativeDirEntry};
 
 static PERC_INP_REGEX: OnceLock<Regex> = OnceLock::new();
 static PERC_BIN_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -48,6 +51,39 @@ fn perc_bin_regex() -> &'static Regex {
 fn perc_group_regex() -> &'static Regex {
     PERC_GRP_REGEX.get_or_init(|| Regex::new(r"%<([^>]+)>").expect("Failed to create regex"))
 }
+
+pub(crate) trait ExcludeInputPaths {
+    fn exclude(
+        &self,
+        deglobbed: Vec<InputResolvedType>,
+        path_buffers: &impl PathBuffers,
+    ) -> Vec<InputResolvedType>;
+}
+
+impl ExcludeInputPaths for PathExpr {
+    fn exclude(
+        &self,
+        deglobbed: Vec<InputResolvedType>,
+        path_buffers: &impl PathBuffers,
+    ) -> Vec<InputResolvedType> {
+        match self {
+            PathExpr::ExcludePattern(patt) => {
+                let re = Regex::new(patt).ok();
+                if let Some(ref re) = re {
+                    let matches = |i: &InputResolvedType| {
+                        let s = path_buffers.get_input_path_name(i);
+                        re.captures(s.as_str()).is_some()
+                    };
+                    deglobbed.into_iter().filter(|x| !matches(x)).collect()
+                } else {
+                    deglobbed
+                }
+            }
+            _ => deglobbed,
+        }
+    }
+}
+
 
 /// Lite version of PathSearcher that specifies method to discover paths from glob strings
 pub trait PathDiscovery {
@@ -463,7 +499,7 @@ impl DirSearcher {
 
 impl PathDiscovery for DirSearcher {
     /// scan folder tree for paths
-    /// This function runs the glob matcher to discover rule inputs by walking from given directory. The paths are returned as descriptors stored in [MatchingPatch]
+    /// This function runs the glob matcher to discover rule inputs by walking from given directory. The paths are returned as descriptors stored in [MatchingPath]
     /// @tup_cwd is expected to be current tupfile directory under which a rule is found. @glob_path
     /// Also calls the next in chain of searchers
     fn discover_paths_with_cb(

@@ -3,8 +3,9 @@ use std::io::Error as IoErr;
 
 use thiserror::Error as ThisError;
 
-use crate::buffers::{PathDescriptor, RuleRefDescriptor, TupPathDescriptor};
-use crate::RuleDescriptor;
+use tuppaths::descs::{PathDescriptor, TupPathDescriptor};
+use crate::buffers::{RuleRefDescriptor};
+use crate::buffers::RuleDescriptor;
 use crate::statements::{TupLoc};
 use crate::statements::Loc;
 
@@ -86,6 +87,10 @@ pub enum Error {
     /// Failure during parsing Tupfile.
     #[error("Error parsing {0}: {1}")]
     ParseFailure(String, Box<Error>),
+
+    /// Path errors such as glob error, or missing file
+    #[error("Error {0}")]
+    PathError(#[from] tuppaths::errors::Error),
 }
 
 /// Error along with the tupfile path where it occurred

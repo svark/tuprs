@@ -1,7 +1,7 @@
 //! This module has datastructures that capture parsed tupfile expressions
 use crate::buffers::EnvList;
-use crate::buffers::PathDescriptor;
-use crate::paths::MatchingPath;
+use crate::PathDescriptor;
+use tuppaths::paths::MatchingPath;
 use crate::transform::ParseState;
 use crate::TupPathDescriptor;
 use nonempty::{nonempty, NonEmpty};
