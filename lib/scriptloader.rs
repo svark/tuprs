@@ -10,7 +10,7 @@ use mlua::Error::SyntaxError;
 use mlua::{HookTriggers, IntoLua, Lua, MultiValue, StdLib, Value, Variadic, VmState};
 use mlua::{UserData, UserDataMethods};
 //use mlua::prelude::LuaUserDataRefMut;
-use nom::{AsBytes, InputTake};
+use nom::{AsBytes, Input};
 use nonempty::nonempty;
 use parking_lot::RwLock;
 

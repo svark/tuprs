@@ -207,12 +207,12 @@ impl Loc {
     }
 }
 
-impl From<crate::parser::Span<'_>> for Loc {
-    fn from(span: crate::parser::Span) -> Loc {
+impl From<crate::parser::InputRange<'_>> for Loc {
+    fn from(span: crate::parser::InputRange) -> Loc {
         Loc::new(
             span.location_line(),
-            span.get_column() as _,
-            span.fragment().len() as _,
+            span.get_column()  as _,
+            span.fragment_len() as _,
         )
     }
 }

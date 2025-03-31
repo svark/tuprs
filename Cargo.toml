@@ -9,8 +9,9 @@ name = "tupparser"
 path = "lib/mod.rs"
 
 [dependencies]
-nom = "7.1.3"
-nom_locate = "4.2.0"
+nom = "8.0.0"
+nom_locate = "5.0.0"
+nom-language = "0.1.0"
 thiserror = "2.0.12"
 regex = "1.11.1"
 walkdir = "2.5.0"

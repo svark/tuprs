@@ -7,6 +7,7 @@ extern crate log;
 extern crate mlua;
 #[macro_use]
 extern crate nom;
+extern crate nom_language;
 extern crate alloc;
 extern crate nom_locate;
 extern crate nonempty;
