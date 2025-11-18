@@ -857,69 +857,78 @@ pub(crate) trait CleanupPaths {
 
 impl CleanupPaths for Vec<PathExpr> {
     fn cleanup(&mut self) {
-        // first check if there are any cleanup operations to be done
+        // Early return for empty collections
         if self.is_empty() {
             return;
         }
-        let mut needs_cleanup = self.iter().zip(self.iter().skip(1)).any(|(cur, next)| {
-            // Merge adjacent literals, quoted strings and remove spaces, newlines that appear more than once
-            match (cur, next) {
-                (PathExpr::Quoted(_), PathExpr::Quoted(_)) => true,
-                (PathExpr::Literal(_), PathExpr::Literal(_)) => true,
-                (PathExpr::NL, PathExpr::NL) => true,
-                (PathExpr::NL, PathExpr::Sp1) => true,
-                (PathExpr::Sp1, PathExpr::NL) => true,
-                (PathExpr::Sp1, PathExpr::Sp1) => true,
-                _ => false,
-            }
+
+        // Check if cleanup is needed
+        let needs_adjacent_merging = self.iter().zip(self.iter().skip(1)).any(|(cur, next)| {
+            matches!(
+                (cur, next),
+                (PathExpr::Quoted(_), PathExpr::Quoted(_))
+                | (PathExpr::Literal(_), PathExpr::Literal(_))
+                | (PathExpr::NL, PathExpr::NL)
+                | (PathExpr::NL, PathExpr::Sp1)
+                | (PathExpr::Sp1, PathExpr::NL)
+                | (PathExpr::Sp1, PathExpr::Sp1)
+            )
         });
-        if !needs_cleanup {
-            needs_cleanup = self.iter().find(|x| x.is_empty()) != None;
-            if needs_cleanup {
-                log::debug!("removing empty string in pelist");
-            }
+
+        let has_empty_literals = self.iter().any(|x| x.is_empty());
+
+        if !needs_adjacent_merging && !has_empty_literals {
+            return;
         }
-        if needs_cleanup {
-            let newpesall = self.iter().fold(Vec::new(), |mut acc, pe| {
-                // Merge adjacent literals, quoted strings and remove spaces, newlines that appear more than once
-                match pe {
-                    PathExpr::Quoted(vs) => {
-                        if let Some(PathExpr::Quoted(last)) = acc.last_mut() {
-                            let mut vec = vs.clone();
-                            vec.cleanup();
-                            last.extend(vec);
-                        } else {
-                            acc.push(pe.clone());
-                        }
-                    }
-                    PathExpr::Literal(s) => {
-                        if let Some(PathExpr::Literal(last)) = acc.last_mut() {
-                            last.push_str(s);
-                        } else if !s.is_empty() {
-                            acc.push(pe.clone());
-                        }
-                    }
-                    PathExpr::NL => {
-                        if matches!(acc.last(), Some(PathExpr::NL)) {
-                        } else {
-                            acc.push(pe.clone());
-                        }
-                    }
-                    PathExpr::Sp1 => {
-                        if matches!(acc.last(), Some(PathExpr::Sp1) | Some(PathExpr::NL)) {
-                            // acc.push(pe.clone());
-                        } else {
-                            acc.push(pe.clone());
-                        }
-                    }
-                    _ => {
+
+        if has_empty_literals {
+            log::debug!("removing empty string in pelist");
+        }
+
+        // Perform the cleanup using fold to merge adjacent elements
+        let result = self.iter().fold(Vec::new(), |mut acc, pe| {
+            match pe {
+                PathExpr::Quoted(vs) => {
+                    if let Some(PathExpr::Quoted(last)) = acc.last_mut() {
+                        // Recursively clean up the quoted vector and extend
+                        let mut vec = vs.clone();
+                        vec.cleanup();
+                        last.extend(vec);
+                    } else {
                         acc.push(pe.clone());
                     }
-                };
-                acc
-            });
-            *self = newpesall;
-        }
+                },
+                PathExpr::Literal(s) => {
+                    if let Some(PathExpr::Literal(last)) = acc.last_mut() {
+                        // Merge with previous literal
+                        last.push_str(s);
+                    } else if !s.is_empty() {
+                        // Only add non-empty literals
+                        acc.push(pe.clone());
+                    }
+                },
+                PathExpr::NL => {
+                    // Avoid duplicate newlines
+                    if !matches!(acc.last(), Some(PathExpr::NL)) {
+                        acc.push(pe.clone());
+                    }
+                },
+                PathExpr::Sp1 => {
+                    // Skip if previous is a space or newline
+                    if !matches!(acc.last(), Some(PathExpr::Sp1) | Some(PathExpr::NL)) {
+                        acc.push(pe.clone());
+                    }
+                },
+                _ => {
+                    // Keep everything else as is
+                    acc.push(pe.clone());
+                }
+            };
+            acc
+        });
+
+        // Replace the original vector with the cleaned one
+        *self = result;
     }
 }
 impl CleanupPaths for RuleFormula {
