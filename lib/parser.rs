@@ -1184,6 +1184,89 @@ fn parse_cached_config_statement(i: Span) -> IResult<Span, LocatedStatement> {
     let offset = i.offset(&s);
     Ok((s, (Statement::CachedConfig, span(i, offset)).into()))
 }
+
+/// parse alternative make-like rule blocks:
+/// define_rule <targets> [<group>] : <deps> \n
+///   <rule_definition_here> \n
+/// endef
+fn parse_define_rule_block(i: Span, for_each: bool) -> IResult<Span, LocatedStatement> {
+    let s0 = i;
+    // keyword
+    let (s, _) = if for_each {
+        tag("define_foreach_rule").parse(i)?
+    } else {
+        tag("define_rule").parse(i)?
+    };
+    let (s, _) = sp1(s)?;
+
+    // Parse primary outputs until ':' or until we hit a group '<'
+    let (s, (primary_out, brk)) = parse_pelist_till_delim_with_ws(s, ":", &BRKTOKSIO)?;
+    // If we broke due to '<', parse group and then the ':'
+    let (s, group) = if brk == '<' {
+        let (s, g) = parse_pathexpr_group(s)?;
+        let (s, _) = tag(":").parse(s)?;
+        (s, Some(g))
+    } else {
+        (s, None)
+    };
+
+    // deps until end of line
+    let (s, (mut deps, _)) = parse_pelist_till_line_end_with_ws(s)?;
+
+    // Cleanup outputs/deps and strip a leading 'foreach' from outputs for foreach variant
+    let mut primary_out = primary_out;
+    primary_out.cleanup();
+    deps.cleanup();
+    if for_each {
+        if let Some(PathExpr::Literal(s0)) = primary_out.first() {
+            if s0 == "foreach" {
+                primary_out.remove(0);
+                if let Some(PathExpr::Sp1) = primary_out.first() {
+                    primary_out.remove(0);
+                }
+            }
+        }
+    }
+    // body until endef
+    let (s, (mut body_lines, _)) = context(
+        "define rule body",
+        cut(many_till(
+            parse_pelist_till_line_end_with_ws.map(|r| r.0),
+            preceded(space0, tag("endef")),
+        )),
+    ).parse(s)?;
+
+    // Cleanup and join body lines with NL separators, flattening into single Vec<PathExpr>
+    body_lines.iter_mut().for_each(CleanupPaths::cleanup);
+    let mut formula: Vec<PathExpr> = Vec::new();
+    let mut first = true;
+    for mut line in body_lines.into_iter() {
+        // skip empty/whitespace-only lines
+        if line.is_empty() || !line.iter().any(|t| !t.is_ws()) {
+            continue;
+        }
+        if !first {
+            formula.push(PathExpr::NL);
+        }
+        first = false;
+        formula.append(&mut line);
+    }
+
+    // Build rule
+    let link = Link {
+        source: from_input(deps, for_each, Vec::new()),
+        target: from_output(primary_out, Vec::new(), group, None),
+        rule_formula: RuleFormula::new_from_parts(None, formula),
+        .. Default::default()
+    };
+    let offset = s0.offset(&s);
+    let (s, _) = multispace0(s)?;
+    Ok((s, (Statement::Rule(link, crate::buffers::EnvList::default(), Vec::new()), span(s0, offset)).into()))
+}
+
+fn parse_define_rule(i: Span) -> IResult<Span, LocatedStatement> { parse_define_rule_block(i, false) }
+
+fn parse_define_foreach_rule(i: Span) -> IResult<Span, LocatedStatement> { parse_define_rule_block(i, true) }
 /// parse a define statement and its body until enddef occurs
 fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
     let s = i;
@@ -1539,6 +1622,8 @@ pub(crate) fn parse_statement(i: Span) -> IResult<Span, LocatedStatement> {
         complete(parse_comment),
         complete(parse_include),
         complete(parse_include_rules),
+        complete(parse_define_foreach_rule),
+        complete(parse_define_rule),
         complete(parse_assignment_expr),
         complete(parse_message),
         complete(parse_rule),
