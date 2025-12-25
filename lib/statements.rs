@@ -848,7 +848,7 @@ pub(crate) trait Cat {
 }
 
 pub(crate) trait CatRef {
-    fn cat_ref(&self) -> Cow<str>;
+    fn cat_ref(&self) -> Cow<'_, str>;
 }
 
 pub(crate) trait CleanupPaths {

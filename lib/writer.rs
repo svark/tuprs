@@ -511,7 +511,7 @@ impl Cat for &Vec<PathExpr> {
 }
 
 impl CatRef for PathExpr {
-    fn cat_ref(&self) -> Cow<str> {
+    fn cat_ref(&self) -> Cow<'_, str> {
         match self {
             PathExpr::Literal(x) => Cow::Borrowed(x.as_str()),
             _ => {
@@ -524,7 +524,7 @@ impl CatRef for PathExpr {
 }
 
 impl CatRef for &[PathExpr] {
-    fn cat_ref(&self) -> Cow<str> {
+    fn cat_ref(&self) -> Cow<'_, str> {
         if self.is_empty() {
             Cow::Borrowed("")
         } else if self.len() == 1 {
