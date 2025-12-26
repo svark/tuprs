@@ -36,10 +36,17 @@ fn parse_define_foreach_rule_basic() {
     let _ = fs::create_dir_all(&tupdir);
     let tupfile = tupdir.join("Tupfile");
     let mut f = fs::File::create(&tupfile).unwrap();
-    write!(f, "define_foreach_rule foreach out%1.txt : in%1.txt\n\techo %f > %o\nendef\n").unwrap();
+    write!(
+        f,
+        "define_foreach_rule foreach out%1.txt : in%1.txt\n\techo %f > %o\nendef\n"
+    )
+    .unwrap();
     drop(f);
     let stmts = parse_tupfile(&tupfile).expect("parse error");
     let strings = convert_to_str(&stmts);
     assert_eq!(strings.len(), 1);
-    assert_eq!(strings[0].trim(), ":foreach  in%1.txt |> echo %f > %o |> out%1.txt");
+    assert_eq!(
+        strings[0].trim(),
+        ":foreach  in%1.txt |> echo %f > %o |> out%1.txt"
+    );
 }

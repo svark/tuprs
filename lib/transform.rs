@@ -15,40 +15,39 @@ use std::sync::Arc;
 use std::sync::Once;
 use std::vec::Drain;
 
-use nonempty::{nonempty, NonEmpty};
-use crate::GroupPathDescriptor;
-use crate::PathDescriptor;
-use crate::RelativeDirEntry;
-use crate::{TupPathDescriptor, GlobPathDescriptor};
 use crate::buffers::{
-    BufferObjects, EnvDescriptor, EnvList, GenBufferObject, GroupBufferObject,
-    OutputHolder, PathBuffers, 
-    RuleDescriptor, TaskDescriptor,
+    BufferObjects, EnvDescriptor, EnvList, GenBufferObject, GroupBufferObject, OutputHolder,
+    PathBuffers, RuleDescriptor, TaskDescriptor,
 };
+use crate::buffers::{GlobPath, InputResolvedType, SelOptions};
 use crate::decode::{
     paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathDiscovery, PathSearcher,
-    ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance
+    ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance,
 };
 use crate::errors::Error::{IoError, RootNotFound};
 use crate::errors::{Error as Err, Error};
 use crate::parser::{parse_statements_until_eof, parse_tupfile, Span};
-use tuppaths::paths::SelOptions::Either;
-use crate::ruleio::{InputsAsPaths};
-use crate::buffers::{GlobPath, InputResolvedType,  SelOptions};
-use tuppaths::paths::{get_parent, get_parent_with_fsep, MatchingPath, NormalPath};
-use tupcompat::platform::*;
+use crate::ruleio::InputsAsPaths;
 use crate::scriptloader::parse_script;
 use crate::statements::DollarExprs;
 use crate::statements::PathExpr::DollarExprs as DExpr;
 use crate::statements::*;
 use crate::transform::ParseContext::Expression;
 use crate::writer::{cat_literals, words_from_pelist};
+use crate::GroupPathDescriptor;
+use crate::PathDescriptor;
+use crate::RelativeDirEntry;
+use crate::{GlobPathDescriptor, TupPathDescriptor};
 use crossbeam_channel::{Receiver, Sender};
 use log::debug;
 use nom::AsBytes;
+use nonempty::{nonempty, NonEmpty};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use sha2::{Digest, Sha256};
 use std::io::{self, BufReader, Read};
+use tupcompat::platform::*;
+use tuppaths::paths::SelOptions::Either;
+use tuppaths::paths::{get_parent, get_parent_with_fsep, MatchingPath, NormalPath};
 use walkdir::WalkDir;
 
 fn dump_temp_tup(contents: &[u8], tuprun_pd: &PathDescriptor) {
@@ -187,8 +186,7 @@ pub(crate) struct ParseState {
     pub(crate) cur_tupfile_loc_stack: NonEmpty<TupLoc>,
 }
 
-impl ParseState {
-}
+impl ParseState {}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CallArgsMap {
@@ -314,11 +312,10 @@ impl ParseState {
             self.get_include_path().clone(),
         )
     }
-    
-    pub(crate) fn get_include_trail(&self) -> IncludeTrail{
+
+    pub(crate) fn get_include_trail(&self) -> IncludeTrail {
         self.cur_tupfile_loc_stack.clone().into()
     }
-    
 
     fn get_cached_config(&self) -> &Vec<(TupPathDescriptor, PathDescriptor)> {
         &self.cached_config
@@ -445,12 +442,15 @@ impl ParseState {
             let fullpath = self.get_cur_file().with_extension("temp-config.tup");
             if std::fs::exists(fullpath.as_path()).unwrap_or(false) {
                 debug!("reading cached config from {:?}", fullpath);
-                let cached_config_metadata  = std::fs::metadata(fullpath.as_path())
-                    .map_err(|e| IoError(e, "Could not read metadata".to_string(), Loc::default()))?;
+                let cached_config_metadata =
+                    std::fs::metadata(fullpath.as_path()).map_err(|e| {
+                        IoError(e, "Could not read metadata".to_string(), Loc::default())
+                    })?;
                 let cached_config_modified = cached_config_metadata.modified().unwrap();
 
-                let tupfile_metadata = std::fs::metadata(self.get_cur_file())
-                    .map_err(|e| IoError(e, "Could not read metadata".to_string(), Loc::default()))?;
+                let tupfile_metadata = std::fs::metadata(self.get_cur_file()).map_err(|e| {
+                    IoError(e, "Could not read metadata".to_string(), Loc::default())
+                })?;
                 let tupfile_modified = tupfile_metadata.modified().unwrap();
                 if cached_config_modified < tupfile_modified {
                     debug!("cached config is older than tupfile");
@@ -2233,10 +2233,7 @@ impl ExpandMacro for Link {
                         r.cleanup();
                         formulae.append(&mut r);
                     } else {
-                        return Err(Err::UnknownMacroRef(
-                            name.clone(),
-                            pos.to_string()
-                        ));
+                        return Err(Err::UnknownMacroRef(name.clone(), pos.to_string()));
                     }
                 }
                 _ => formulae.push(pathexpr.clone()),
@@ -2589,7 +2586,7 @@ impl LocatedStatement {
         let search_dirs = t.get_search_dirs();
         debug!("adding task:{} with deps:{:?}", name.as_str(), &deps);
         let rule_ref = parse_state.get_include_trail();
-        let rule_ref =  parse_state.get_path_buffers().add_rule_pos(&rule_ref);
+        let rule_ref = parse_state.get_path_buffers().add_rule_pos(&rule_ref);
         let tup_dir = parse_state.get_tup_dir_desc();
         let deps = deps.subst_pe(parse_state, path_searcher);
         // each line of the recipe has the same parse state as the task
@@ -3336,8 +3333,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             let resolved_rules_ = self
                 .process_raw_statements(to_resolve)
                 .map_err(|e| crate::errors::ErrorContext::new(e, tup_desc.clone()))?;
-            f(resolved_rules_).map_err(|e| 
-                crate::errors::ErrorContext::new(e, tup_desc))?;
+            f(resolved_rules_).map_err(|e| crate::errors::ErrorContext::new(e, tup_desc))?;
             Ok(())
         })?;
         drop(receiver);

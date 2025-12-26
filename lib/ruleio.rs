@@ -1,12 +1,12 @@
 //! This module contains the `InputsAsPaths` and `OutputsAsPaths` structs, which are used to manage
 //! inputs and outputs for rules in a build system.
-use alloc::borrow::Cow;
-use std::collections::BTreeMap;
-use log::debug;
-use tuppaths::descs::{PathDescriptor, RelativeDirEntry};
-use tuppaths::paths::{MatchingPath, NormalPath};
 use crate::buffers::{InputResolvedType, PathBuffers, RuleRefDescriptor};
 use crate::decode::GroupInputs;
+use alloc::borrow::Cow;
+use log::debug;
+use std::collections::BTreeMap;
+use tuppaths::descs::{PathDescriptor, RelativeDirEntry};
+use tuppaths::paths::{MatchingPath, NormalPath};
 
 /// `OutputsAsPaths` represents resolved outputs to pass to a rule
 pub struct OutputsAsPaths {

@@ -3,11 +3,11 @@ use std::io::Error as IoErr;
 
 use thiserror::Error as ThisError;
 
-use tuppaths::descs::{PathDescriptor, TupPathDescriptor};
-use crate::buffers::{RuleRefDescriptor};
 use crate::buffers::RuleDescriptor;
-use crate::statements::{TupLoc};
+use crate::buffers::RuleRefDescriptor;
 use crate::statements::Loc;
+use crate::statements::TupLoc;
+use tuppaths::descs::{PathDescriptor, TupPathDescriptor};
 
 /// Errors returning during parsing and subst-ing Tupfiles
 #[non_exhaustive]

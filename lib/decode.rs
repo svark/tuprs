@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::{BTreeSet};
+use std::collections::BTreeSet;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
@@ -17,24 +17,24 @@ use parking_lot::MappedRwLockReadGuard;
 use regex::{Captures, Regex};
 use walkdir::{DirEntry, WalkDir};
 
-use crate::buffers::{EnvList, InputResolvedType, MyGlob, OutputHolder, OutputType, PathBuffers, RuleDescriptor, RuleRefDescriptor, TaskDescriptor};
-use crate::{TupPathDescriptor, GroupPathDescriptor};
+use crate::buffers::{
+    EnvList, InputResolvedType, MyGlob, OutputHolder, OutputType, PathBuffers, RuleDescriptor,
+    RuleRefDescriptor, TaskDescriptor,
+};
 use crate::decode::Index::All;
 use crate::errors::Error::PathSearchError;
 use crate::errors::{Error as Err, Error};
 use crate::parser::reparse_literal_as_input;
-use tuppaths::paths::SelOptions::Either;
 use crate::ruleio::{FormatReplacements, InputsAsPaths, OutputsAsPaths};
-use tuppaths::paths::{
-    GlobPath,
-    MatchingPath, NormalPath, SelOptions,
-};
 use crate::statements::*;
 use crate::transform::{to_regex, ResolvedRules, TupParser};
 use crate::ReadWriteBufferObjects;
-use std::sync::OnceLock;
-use nonempty::nonempty;
 use crate::{BinDescriptor, GlobPathDescriptor, PathDescriptor, RelativeDirEntry};
+use crate::{GroupPathDescriptor, TupPathDescriptor};
+use nonempty::nonempty;
+use std::sync::OnceLock;
+use tuppaths::paths::SelOptions::Either;
+use tuppaths::paths::{GlobPath, MatchingPath, NormalPath, SelOptions};
 
 static PERC_INP_REGEX: OnceLock<Regex> = OnceLock::new();
 static PERC_BIN_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -84,7 +84,6 @@ impl ExcludeInputPaths for PathExpr {
     }
 }
 
-
 /// Lite version of PathSearcher that specifies method to discover paths from glob strings
 pub trait PathDiscovery {
     /// Discover paths from glob string with a callback to process outputs
@@ -126,7 +125,6 @@ pub trait PathSearcher: PathDiscovery {
     /// Merge outputs from previous outputs
     fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error>;
 }
-
 
 /// `RuleFormulaInstance` stores both rule formula and its whereabouts(`TupLoc`) in a Tupfile
 /// Caller locations are stored in the linked list
@@ -271,9 +269,17 @@ impl TaskInstance {
         self.task_loc.get_tupfile_desc().get_parent_descriptor()
     }
 
+    /// descriptor of tup file  containing the task
+    pub fn get_tupfile_desc(&self) -> TupPathDescriptor {
+        self.get_task_loc().get_tupfile_desc()
+    }
+
     /// folder containing the task
     pub fn get_parent(&self) -> NormalPath {
-        self.get_task_loc().get_tupfile_desc().get_path_ref().clone()
+        self.get_task_loc()
+            .get_tupfile_desc()
+            .get_path_ref()
+            .clone()
     }
 }
 
@@ -283,9 +289,11 @@ impl Display for TupLoc {
     }
 }
 
-
 impl RuleFormulaInstance {
-    pub(crate) fn new(rule_formula: RuleFormula, rule_ref: RuleRefDescriptor) -> RuleFormulaInstance {
+    pub(crate) fn new(
+        rule_formula: RuleFormula,
+        rule_ref: RuleRefDescriptor,
+    ) -> RuleFormulaInstance {
         RuleFormulaInstance {
             rule_formula,
             rule_ref,
@@ -325,6 +333,10 @@ pub trait OutputHandler {
     ) -> MappedRwLockReadGuard<'_, HashMap<PathDescriptor, Vec<PathDescriptor>>>;
     /// the parent rule that generates an output file
     fn get_parent_rule(&self, o: &PathDescriptor) -> Option<RuleDescriptor>;
+
+    /// the parent task that generates an output file
+    fn get_parent_task(&self, o: &PathDescriptor) -> Option<TaskDescriptor>;
+
     /// parent rule of each output path
     fn with_parent_rules<R, F>(&self, f: F) -> R
     where
@@ -1436,18 +1448,15 @@ impl GatherOutputs for ResolvedLink {
         let mut children = Vec::new();
         for path_desc in self.get_targets() {
             let path = path_buffers.get_path(path_desc);
-            debug!(
-                "adding parent for: {:?} to {}",
-                path,
-                rule_ref,
-            );
+            debug!("adding parent for: {:?} to {}", path, rule_ref,);
             if path.as_path().is_dir() {
                 return Err(Err::OutputIsDir(
                     path_buffers.get_path(path_desc).to_string(),
                     rule_ref.to_string(),
                 ));
             }
-            let rule_inserted = output_handler.add_parent_rule(path_desc, self.get_rule_desc().clone());
+            let rule_inserted =
+                output_handler.add_parent_rule(path_desc, self.get_rule_desc().clone());
             if rule_inserted.ne(self.get_rule_desc()) {
                 return Err(Err::MultipleRulesToSameOutput(
                     path_desc.clone(),
@@ -1646,11 +1655,11 @@ struct RuleContext<'a, 'c, 'd> {
     tupfiles_read: &'d [TupPathDescriptor],
 }
 
-impl<'a, 'c, 'd> RuleContext<'a,'c, 'd> {
+impl<'a, 'c, 'd> RuleContext<'a, 'c, 'd> {
     fn get_rule_formula(&self) -> &RuleFormula {
         self.rule_formula
     }
-    fn get_rule_ref(&self) -> &RuleRefDescriptor{
+    fn get_rule_ref(&self) -> &RuleRefDescriptor {
         &self.rule_ref
     }
     fn get_target(&self) -> &Target {
@@ -1703,7 +1712,7 @@ impl LocatedStatement {
                     env,
                     search_dirs,
                 ),
-            loc:_,
+            loc: _,
         } = self
         {
             let mut reparsed_primary = Vec::new();
@@ -1756,7 +1765,7 @@ impl LocatedStatement {
             for input_glob_desc in inpdec.iter().filter_map(|x| x.get_glob_path_desc()) {
                 globs_read.push(input_glob_desc);
             }
-            inpdec.retain_mut(|x|  {
+            inpdec.retain_mut(|x| {
                 if let Some(mp) = x.get_glob_path_desc() {
                     if !unique_deglobbed.insert(mp.clone()) {
                         return false;
@@ -1767,10 +1776,12 @@ impl LocatedStatement {
             if for_each {
                 for input in inpdec {
                     if input.is_unresolved() {
-                        log::warn!("Unresolved input files found : {:?} for rule:{:?} at  {}",
+                        log::warn!(
+                            "Unresolved input files found : {:?} for rule:{:?} at  {}",
                             input,
                             resolver.get_rule_formula(),
-                            &rule_ref);
+                            &rule_ref
+                        );
                         continue;
                     }
                     let delink = get_deglobbed_rule(
@@ -1799,7 +1810,7 @@ impl LocatedStatement {
         } = self
         {
             let tup_loc = &TupLoc::new(tup_desc, loc);
-            let include_trail  = IncludeTrail::from(nonempty![tup_loc.clone()]);
+            let include_trail = IncludeTrail::from(nonempty![tup_loc.clone()]);
             let rule_desc = path_buffers.add_rule_pos(&include_trail);
             let name = task_detail.get_target();
             let deps = task_detail.get_deps();
@@ -1815,8 +1826,13 @@ impl LocatedStatement {
                 let env = task_inst.get_env_list();
                 let mut resolved_deps = Vec::new();
                 for dep in deps.iter() {
-                    let dep =
-                        dep.decode(&tup_cwd, path_searcher, path_buffers, &rule_desc, &search_dirs)?;
+                    let dep = dep.decode(
+                        &tup_cwd,
+                        path_searcher,
+                        path_buffers,
+                        &rule_desc,
+                        &search_dirs,
+                    )?;
                     resolved_deps.extend(dep);
                 }
                 let resolved_task = ResolvedTask::new(

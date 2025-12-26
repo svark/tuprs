@@ -1,12 +1,12 @@
 //! This module has datastructures that capture parsed tupfile expressions
 use crate::buffers::EnvList;
-use crate::PathDescriptor;
-use tuppaths::paths::MatchingPath;
 use crate::transform::ParseState;
+use crate::PathDescriptor;
 use crate::TupPathDescriptor;
 use nonempty::{nonempty, NonEmpty};
 use std::borrow::Cow;
 use std::fmt::{Display, Formatter, Write};
+use tuppaths::paths::MatchingPath;
 /// `TupLoc` keeps track of the current file being processed and rule location.
 /// This is mostly useful for error handling to let the user know we ran into problem with a rule at
 /// a particular line
@@ -211,7 +211,7 @@ impl From<crate::parser::InputRange<'_>> for Loc {
     fn from(span: crate::parser::InputRange) -> Loc {
         Loc::new(
             span.location_line(),
-            span.get_column()  as _,
+            span.get_column() as _,
             span.fragment_len() as _,
         )
     }
@@ -462,7 +462,7 @@ impl Display for IncludeTrail {
 }
 
 impl IncludeTrail {
-    /// tupfile that is being processed 
+    /// tupfile that is being processed
     pub fn get_tupfile_desc(&self) -> &TupPathDescriptor {
         &self.0[0].get_tupfile_desc()
     }
@@ -471,7 +471,7 @@ impl IncludeTrail {
 #[derive(PartialEq, Debug, Clone, Default)]
 pub(crate) struct IncludedStatements<T> {
     statements: Vec<T>,
-    include_trail: IncludeTrail
+    include_trail: IncludeTrail,
 }
 
 impl<T> IncludedStatements<T> {
@@ -484,7 +484,8 @@ impl<T> IncludedStatements<T> {
 
     pub(crate) fn get_trail_as_string(&self) -> String {
         let string_buffer = String::new();
-        self.include_trail.0
+        self.include_trail
+            .0
             .iter()
             .fold(string_buffer, |mut string_builder, t| {
                 write!(string_builder, "from\n{}", t).unwrap();
@@ -867,11 +868,11 @@ impl CleanupPaths for Vec<PathExpr> {
             matches!(
                 (cur, next),
                 (PathExpr::Quoted(_), PathExpr::Quoted(_))
-                | (PathExpr::Literal(_), PathExpr::Literal(_))
-                | (PathExpr::NL, PathExpr::NL)
-                | (PathExpr::NL, PathExpr::Sp1)
-                | (PathExpr::Sp1, PathExpr::NL)
-                | (PathExpr::Sp1, PathExpr::Sp1)
+                    | (PathExpr::Literal(_), PathExpr::Literal(_))
+                    | (PathExpr::NL, PathExpr::NL)
+                    | (PathExpr::NL, PathExpr::Sp1)
+                    | (PathExpr::Sp1, PathExpr::NL)
+                    | (PathExpr::Sp1, PathExpr::Sp1)
             )
         });
 
@@ -897,7 +898,7 @@ impl CleanupPaths for Vec<PathExpr> {
                     } else {
                         acc.push(pe.clone());
                     }
-                },
+                }
                 PathExpr::Literal(s) => {
                     if let Some(PathExpr::Literal(last)) = acc.last_mut() {
                         // Merge with previous literal
@@ -906,19 +907,19 @@ impl CleanupPaths for Vec<PathExpr> {
                         // Only add non-empty literals
                         acc.push(pe.clone());
                     }
-                },
+                }
                 PathExpr::NL => {
                     // Avoid duplicate newlines
                     if !matches!(acc.last(), Some(PathExpr::NL)) {
                         acc.push(pe.clone());
                     }
-                },
+                }
                 PathExpr::Sp1 => {
                     // Skip if previous is a space or newline
                     if !matches!(acc.last(), Some(PathExpr::Sp1) | Some(PathExpr::NL)) {
                         acc.push(pe.clone());
                     }
-                },
+                }
                 _ => {
                     // Keep everything else as is
                     acc.push(pe.clone());

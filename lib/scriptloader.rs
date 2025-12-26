@@ -16,12 +16,12 @@ use parking_lot::RwLock;
 
 use crate::buffers::{BufferObjects, PathBuffers};
 use crate::decode::{OutputHandler, PathSearcher};
-use tuppaths::descs::PathDescriptor;
 use crate::errors::Error as Err;
-use tuppaths::paths::{GlobPath, SelOptions};
 use crate::statements::Statement::Rule;
 use crate::statements::*;
 use crate::transform::{to_pelist, ParseState, ResolvedRules};
+use tuppaths::descs::PathDescriptor;
+use tuppaths::paths::{GlobPath, SelOptions};
 
 static LINENO: &'static str = "lineno";
 static CURDIR: &'static str = "curdir";

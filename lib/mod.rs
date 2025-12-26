@@ -7,46 +7,46 @@ extern crate log;
 extern crate mlua;
 #[macro_use]
 extern crate nom;
-extern crate nom_language;
 extern crate alloc;
+extern crate crossbeam_channel;
+extern crate nom_language;
 extern crate nom_locate;
 extern crate nonempty;
 extern crate parking_lot;
 extern crate regex;
 extern crate thiserror;
-extern crate walkdir;
-extern crate crossbeam_channel;
-extern crate tuppaths;
 extern crate tupcompat;
-pub use tuppaths::descs::BinDescriptor;
+extern crate tuppaths;
+extern crate walkdir;
+pub use buffers::EnvDescriptor;
 pub use buffers::GeneratedFiles;
-pub use tuppaths::descs::GroupPathDescriptor;
-pub use tuppaths::descs::GlobPathDescriptor;
+pub use buffers::RuleDescriptor;
 pub use buffers::RuleRefDescriptor;
 pub use buffers::TaskDescriptor;
-pub use buffers::EnvDescriptor;
-pub use buffers::RuleDescriptor;
-pub use tuppaths::descs::PathSym;
-pub use tuppaths::descs::TupPathDescriptor;
-pub use tuppaths::descs::RelativeDirEntry;
 pub use decode::ResolvedLink;
 pub use transform::load_conf_vars_relative_to;
 pub use transform::locate_file;
 pub use transform::ReadWriteBufferObjects;
 pub use transform::ResolvedRules;
 pub use transform::TupParser;
+pub use tuppaths::descs::BinDescriptor;
+pub use tuppaths::descs::GlobPathDescriptor;
+pub use tuppaths::descs::GroupPathDescriptor;
 pub use tuppaths::descs::PathDescriptor;
+pub use tuppaths::descs::PathSym;
+pub use tuppaths::descs::RelativeDirEntry;
+pub use tuppaths::descs::TupPathDescriptor;
 
 pub mod buffers;
 pub mod decode;
 pub mod errors;
 /// Parser for tupfiles
 pub mod parser;
+pub mod ruleio;
 mod scriptloader;
 pub mod statements;
 pub mod transform;
 pub mod writer;
-pub mod ruleio;
 
 #[test]
 fn test_parse() {

@@ -1,4 +1,10 @@
 //! Module to hold buffers of tupfile paths, bins, groups which can be referenced by their descriptors
+use crate::statements::IncludeTrail;
+use crate::{
+    decode::{OutputHandler, RuleFormulaInstance, TaskInstance},
+    errors::Error,
+    statements::Env,
+};
 use log::{debug, log_enabled};
 use parking_lot::{MappedRwLockReadGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::borrow::Cow;
@@ -6,23 +12,20 @@ use std::cmp::Ordering;
 use std::collections::{hash_map::Entry, BTreeSet, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
-use std::ops::{Deref};
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tinyset::Fits64;
-use tuppaths::glob::{GlobBuilder, GlobMatcher};
-use tuppaths::glob;
-use tuppaths::intern::Intern;
-pub use tuppaths::paths::{GlobPath, MatchingPath, NormalPath};
-use tuppaths::descs::{PathDescriptor, GroupPathDescriptor, GlobPathDescriptor, BinDescriptor, TupPathDescriptor, GroupPathEntry, Descriptor, DirEntry, BinPathEntry, RelativeDirEntry};
-use tuppaths::paths::get_non_pattern_prefix;
-use crate::{
-    decode::{OutputHandler, RuleFormulaInstance, TaskInstance},
-    errors::Error,
-    statements::Env,
+use tuppaths::descs::{
+    BinDescriptor, BinPathEntry, Descriptor, DirEntry, GlobPathDescriptor, GroupPathDescriptor,
+    GroupPathEntry, PathDescriptor, RelativeDirEntry, TupPathDescriptor,
 };
-use crate::statements::IncludeTrail;
+use tuppaths::glob;
+use tuppaths::glob::{GlobBuilder, GlobMatcher};
+use tuppaths::intern::Intern;
+use tuppaths::paths::get_non_pattern_prefix;
 pub use tuppaths::paths::SelOptions;
+pub use tuppaths::paths::{GlobPath, MatchingPath, NormalPath};
 
 /// Methods to store and retrieve paths, groups, bins, rules from in-memory buffers
 /// This way we can identify paths /groups/bins and environment by their unique descriptors (ids)
@@ -127,14 +130,14 @@ pub trait PathBuffers {
 pub struct RuleDescriptor(Descriptor<RuleFormulaInstance>);
 
 /// ```RuleRefDescriptor``` maintains the location of the rule including all the tupfiles that included it
-#[derive(Debug, Clone,  Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct RuleRefDescriptor(Descriptor<IncludeTrail>);
 /// ```TaskDescriptor``` maintains the id of task based on tasks tracked so far in BufferObjects
-#[derive(Debug, Clone,  Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct TaskDescriptor(Descriptor<TaskInstance>);
 
 /// ```EnvDescriptor``` maintains the id of an env variable and its value based on envs tracked so far in ParseState
-#[derive(Debug, Clone,  Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct EnvDescriptor(Descriptor<Env>);
 
 impl RuleDescriptor {
@@ -216,8 +219,7 @@ impl From<Descriptor<Env>> for EnvDescriptor {
     }
 }
 impl RuleRefDescriptor {
-
-    pub (crate) fn get(&self) -> &Descriptor<IncludeTrail> {
+    pub(crate) fn get(&self) -> &Descriptor<IncludeTrail> {
         &self.0
     }
     pub(crate) fn to_string(&self) -> String {
@@ -234,7 +236,6 @@ impl RuleRefDescriptor {
         let t = self.get();
         t.get().get_tupfile_desc().get_parent_descriptor()
     }
-
 }
 
 impl TaskDescriptor {
@@ -245,7 +246,6 @@ impl TaskDescriptor {
         self.get().get().get_target()
     }
 }
-
 
 /// path to descriptor(T) `BiMap', path stored is relative to rootdir (.1 in this struct)
 #[derive(Debug, Default, Clone)]
@@ -476,7 +476,6 @@ impl InputResolvedType {
     }
 }
 
-
 /// Wrapper over outputs
 #[derive(Default, Debug, Clone)]
 pub struct OutputHolder(Arc<RwLock<GeneratedFiles>>);
@@ -520,6 +519,8 @@ pub struct GeneratedFiles {
     groups: HashMap<GroupPathDescriptor, BTreeSet<PathDescriptor>>,
     /// track the parent rule that generates an output file
     parent_rule: HashMap<PathDescriptor, RuleDescriptor>,
+    /// track the parent task that generates an output file
+    parent_task: HashMap<PathDescriptor, TaskDescriptor>,
 }
 
 impl GeneratedFiles {
@@ -689,6 +690,10 @@ impl GeneratedFiles {
     /// the parent rule that generates a output file
     pub(crate) fn get_parent_rule(&self, o: &PathDescriptor) -> Option<&RuleDescriptor> {
         self.parent_rule.get(o)
+    }
+    
+    pub(crate) fn get_parent_task(&self, o: &PathDescriptor) -> Option<&TaskDescriptor> {
+        self.parent_task.get(o)
     }
 
     /// Add an entry to the set that holds paths
@@ -874,6 +879,10 @@ impl OutputHandler for OutputHolder {
     fn get_parent_rule(&self, o: &PathDescriptor) -> Option<RuleDescriptor> {
         let r = self.get();
         r.get_parent_rule(o).map(|x| x.clone())
+    }
+    fn get_parent_task(&self, o: &PathDescriptor) -> Option<TaskDescriptor> {
+        let r = self.get();
+        r.get_parent_task(o).cloned()
     }
     fn with_parent_rules<R, F>(&self, mut f: F) -> R
     where
