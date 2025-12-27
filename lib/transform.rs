@@ -11,8 +11,7 @@ use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::string::String;
-use std::sync::Arc;
-use std::sync::Once;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::vec::Drain;
 
 use crate::buffers::{
@@ -79,23 +78,22 @@ pub fn compute_sha256<P: AsRef<Path>>(path: P) -> io::Result<String> {
     Ok(encode(result))
 }
 
+fn cached_config_write_set() -> &'static Mutex<HashSet<PathBuf>> {
+    static REGISTRY: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
 fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     let shell = {
-        static SHELL: RwLock<Option<OsString>> = RwLock::new(None);
-        static START: Once = Once::new();
+        static SHELL: OnceLock<OsString> = OnceLock::new();
 
-        START.call_once(|| {
-            let mut shell = SHELL.write();
-            *shell = Some(
-                std::env::var_os("SHELL").unwrap_or_else(|| OsString::from(String::from("sh"))),
-            );
-        });
-
-        SHELL.read()
+        SHELL.get_or_init(|| {
+            std::env::var_os("SHELL")
+                .unwrap_or_else(|| OsString::from("sh"))
+        })
     };
 
-    let mut command = std::process::Command::new(shell.as_ref().unwrap());
-
+    let mut command = std::process::Command::new(shell);
     command.arg("-c");
     command.arg(cmd);
 
@@ -483,12 +481,18 @@ impl ParseState {
             if tup.ne(self.get_cur_file_desc()) {
                 continue;
             }
-            let path = p.get_path_ref();
-            debug!("writing cached config to {:?}", path);
             let cur_file = self.get_cur_file();
             //let extn = cur_file.extension().unwrap_or_default();
             let fullpath = cur_file.with_extension("temp-config.tup");
-            debug!("writing cached config to {:?}", fullpath);
+            let should_write = cached_config_write_set().lock().map(|mut r| {
+                r.insert(fullpath.clone())
+            }).unwrap_or(false);
+            if !should_write {
+                debug!("cached config already written for {:?}", fullpath);
+                continue;
+            }
+            let path = p.get_path_ref();
+            debug!("writing cached config to {:?}", path);
             let _ = get_sha256_hash(&cur_file)
                 .and_then(|hash| self.dump_vars(&fullpath, hash.as_str()));
         }
