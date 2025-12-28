@@ -1,0 +1,6 @@
+---
+source: tuprs/tests/parsedir.rs
+expression: "v2.get(\"IB2_SRCS\").unwrap().join(\" \")"
+snapshot_kind: text
+---
+ib2.h

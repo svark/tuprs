@@ -87,6 +87,7 @@ mod tests {
         insta::assert_snapshot!(v2.get("FILES_JOINED").unwrap().join(" "));
         insta::assert_snapshot!(v2.get("FILES_JOINED_STRIPPED").unwrap().join(" "));
         insta::assert_snapshot!(v2.get("OBJS").unwrap().join(" "));
+        insta::assert_snapshot!(v2.get("IB2_SRCS").unwrap().join(" "));
     }
 
     #[test]

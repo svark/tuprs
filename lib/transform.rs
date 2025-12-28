@@ -13,6 +13,7 @@ use std::process::Stdio;
 use std::string::String;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::vec::Drain;
+use std::process::ExitStatus;
 
 use crate::buffers::{
     BufferObjects, EnvDescriptor, EnvList, GenBufferObject, GroupBufferObject, OutputHolder,
@@ -98,6 +99,42 @@ fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     command.arg(cmd);
 
     command
+}
+
+fn normalize_shell_args(args: String) -> String {
+    // Match GNU make behavior: collapse $$ to a single $ before invoking the shell.
+    args.replace("$$", "$")
+}
+
+fn describe_exit_status(status: &ExitStatus) -> String {
+    status
+        .code()
+        .map(|c| format!("exit code {}", c))
+        .unwrap_or_else(|| "terminated by signal".to_owned())
+}
+
+#[cfg(test)]
+mod shell_arg_tests {
+    use super::{describe_exit_status, normalize_shell_args};
+    use std::process::Command;
+
+    #[test]
+    fn collapses_double_dollars() {
+        assert_eq!(normalize_shell_args("echo $$PWD".to_owned()), "echo $PWD");
+        assert_eq!(normalize_shell_args("$$$$".to_owned()), "$$");
+        assert_eq!(normalize_shell_args("$a $$ $".to_owned()), "$a $ $");
+    }
+
+    #[test]
+    fn reports_exit_code_string() {
+        let status = if cfg!(windows) {
+            Command::new("cmd").args(["/C", "exit", "9"]).status()
+        } else {
+            Command::new("sh").args(["-c", "exit 9"]).status()
+        }
+        .expect("failed to run test command");
+        assert!(describe_exit_status(&status).contains("9"));
+    }
 }
 fn value_is_non_empty(s: &Vec<String>) -> bool {
     let len = s.len();
@@ -1866,33 +1903,44 @@ impl DollarExprs {
             }
             DollarExprs::Shell(cmd) => {
                 let subst_val = cmd.subst_pe(m, path_searcher);
-                let args = subst_val.cat();
+                let args = normalize_shell_args(subst_val.cat());
+                let loc = m.get_include_path_str();
                 log::warn!("Running shell command:{}", args);
                 log::warn!(
                     "consider rewriting in a configuration step and access it here as an env"
                 );
                 // run sh -c over the args and process stdout
-                let child = shell(args).stdout(Stdio::piped()).spawn();
-                let outstr = {
-                    child
-                        .map_err(|e| {
-                            Error::new_path_search_error(format!("failed to spawn shell: {}", e))
-                        })
-                        .and_then(|ch| {
-                            ch.wait_with_output()
-                                .map_err(|e| {
-                                    Error::new_path_search_error(format!(
-                                        "failed to get output :{}",
-                                        e
-                                    ))
-                                })
-                                .and_then(|output| -> Result<String, Error> {
-                                    Ok(std::str::from_utf8(output.stdout.as_bytes())
-                                        .unwrap_or("")
-                                        .to_owned())
-                                })
-                        })
-                        .unwrap_or(String::new())
+                let outstr = match shell(args.clone()).stdout(Stdio::piped()).spawn() {
+                    Ok(ch) => match ch.wait_with_output() {
+                        Ok(output) => {
+                            if !output.status.success() {
+                                let status = describe_exit_status(&output.status);
+                                let stderr = String::from_utf8_lossy(&output.stderr);
+                                log::error!(
+                                    "{}: shell command `{}` failed with {}{}",
+                                    loc,
+                                    args,
+                                    status,
+                                    if stderr.trim().is_empty() {
+                                        "".to_owned()
+                                    } else {
+                                        format!(": {}", stderr.trim())
+                                    }
+                                );
+                            }
+                            std::str::from_utf8(output.stdout.as_bytes())
+                                .unwrap_or("")
+                                .to_owned()
+                        }
+                        Err(e) => {
+                            log::error!("{}: failed to get output for `{}`: {}", loc, args, e);
+                            String::new()
+                        }
+                    },
+                    Err(e) => {
+                        log::error!("{}: failed to spawn shell `{}`: {}", loc, args, e);
+                        String::new()
+                    }
                 };
                 debug!("shell evaluated to {}", outstr);
 
