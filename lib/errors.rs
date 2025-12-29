@@ -7,7 +7,8 @@ use crate::buffers::RuleDescriptor;
 use crate::buffers::RuleRefDescriptor;
 use crate::statements::Loc;
 use crate::statements::TupLoc;
-use tuppaths::descs::{PathDescriptor, TupPathDescriptor};
+use tuppaths::descs::{PathDescriptor};
+/// Error along with the tupfile path where it occurred
 
 /// Errors returning during parsing and subst-ing Tupfiles
 #[non_exhaustive]
@@ -91,33 +92,10 @@ pub enum Error {
     /// Path errors such as glob error, or missing file
     #[error("Error {0}")]
     PathError(#[from] tuppaths::errors::Error),
-}
 
-/// Error along with the tupfile path where it occurred
-pub struct ErrorContext {
-    e: Error,
-    p: TupPathDescriptor,
-}
-
-impl ErrorContext {
-    ///Create a new error context
-    pub fn new(e: Error, p: TupPathDescriptor) -> Self {
-        Self { e, p }
-    }
-
-    /// tupfile path descriptor where this error occurred
-    pub fn get_tup_descriptor(&self) -> &TupPathDescriptor {
-        &self.p
-    }
-    /// error reference held with this context
-    pub fn get_error_ref(&self) -> &Error {
-        &self.e
-    }
-
-    /// pass the error out of self
-    pub fn get_error(self) -> Error {
-        self.e
-    }
+    /// Wrapped error with context
+    #[error("Error {0} during \n {1}")]
+    WithContext(Box<Error>, String),
 }
 
 impl Error {
@@ -129,5 +107,9 @@ impl Error {
     /// Create an error from outside this library, when invoking a callback
     pub fn new_callback_error(error_str: String) -> Error {
         Error::CallBackError(error_str.to_string())
+    }
+    /// Wrap an error with context
+    pub fn with_context(e: Error, context: String) -> Error {
+        Error::WithContext(Box::new(e), context)
     }
 }

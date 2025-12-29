@@ -40,7 +40,7 @@ pub trait PathBuffers {
     fn add_rule_pos(&self, e: &IncludeTrail) -> RuleRefDescriptor;
 
     /// Add a path to a group in this buffer
-    fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> GroupPathDescriptor;
+    fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> Result<GroupPathDescriptor, Error>;
     /// return non pattern prefix in the glob path
     fn get_glob_prefix(&self, glob_desc: &GlobPathDescriptor) -> PathDescriptor;
     /// return the portion of path from non pattern prefix to the parent of the glob
@@ -691,7 +691,7 @@ impl GeneratedFiles {
     pub(crate) fn get_parent_rule(&self, o: &PathDescriptor) -> Option<&RuleDescriptor> {
         self.parent_rule.get(o)
     }
-    
+
     pub(crate) fn get_parent_task(&self, o: &PathDescriptor) -> Option<&TaskDescriptor> {
         self.parent_task.get(o)
     }
@@ -1032,20 +1032,13 @@ impl PathBuffers for BufferObjects {
     }
 
     /// Add a path to a group in this buffer
-    fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> GroupPathDescriptor {
+    fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> Result<GroupPathDescriptor, Error> {
         let mut pd = tup_cwd.clone();
         if pe.contains("/") || pe.contains("\\") {
-            let res = tup_cwd.join(pe).unwrap_or_else(|e| {
-                panic!(
-                    "unable to join {} with {} due to {}",
-                    tup_cwd.get_path_ref(),
-                    pe,
-                    e
-                )
-            });
+            let res = tup_cwd.join(pe)?;
             pd = res.get_parent_descriptor();
         }
-        GroupBufferObject::add_ref(GroupPathEntry::new(pd, pe))
+        Ok(GroupBufferObject::add_ref(GroupPathEntry::new(pd, pe)))
     }
 
     /// return the non pattern prefix of the glob
@@ -1090,11 +1083,7 @@ impl PathBuffers for BufferObjects {
         }
     }
 
-    /// Add a path to buffer and return its unique id in the buffer
-    /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
-    fn add_abs<P: AsRef<Path>>(&self, p: P) -> Result<PathDescriptor, Error> {
-        self.path_bo.add(p)
-    }
+
 
     /// Add a path to buffer and return its unique id in the buffer
     fn add_path_from<P: AsRef<Path>>(
@@ -1102,7 +1091,6 @@ impl PathBuffers for BufferObjects {
         tup_cwd: &PathDescriptor,
         path: P,
     ) -> Result<PathDescriptor, Error> {
-        //self.path_bo.add_relative(tup_cwd, path.as_ref())
         let joined_path = tup_cwd.join(path.as_ref());
         joined_path.map_err(Into::into)
     }
@@ -1116,18 +1104,23 @@ impl PathBuffers for BufferObjects {
         RuleBufferObject::add_ref(r).into()
     }
 
-    ///  add a tup file path to the buffer and return its descriptor
-    fn add_tup(&self, p: &Path) -> TupPathDescriptor {
-        if p.is_absolute() {
+    /// Add a path to buffer and return its unique id in the buffer
+    /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
+    fn add_abs<P:AsRef<Path>>(&self, p:P) -> Result<TupPathDescriptor,Error> {
+        if p.as_ref().is_absolute() {
             let num_base_comps = self.path_bo.get_root_dir().components().count();
-            let p: PathBuf = p.components().skip(num_base_comps).collect();
+            let p: PathBuf = p.as_ref().components().skip(num_base_comps).collect();
             self.path_bo.add(p.as_path())
         } else {
             self.path_bo.add(p)
         }
-        .expect(
+    }
+    ///  add a tup file path to the buffer and return its descriptor
+    fn add_tup(&self, p: &Path) -> TupPathDescriptor {
+       self.add_abs(p)
+       .expect(
             format!(
-                "unable to add tup path {}. Root and Prefix components are not supported",
+                "unable to add  path {}. Root and Prefix components are not supported",
                 p.display()
             )
             .as_str(),

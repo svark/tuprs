@@ -565,8 +565,17 @@ impl ParseState {
         &self.tup_files_read
     }
     pub(crate) fn add_path_to_tupfiles_read(&mut self, p0: PathBuf) {
-        let id = self.path_buffers.add_abs(p0).unwrap();
-        self.tup_files_read.push(id);
+        match self.path_buffers.add_abs(p0.clone()) {
+            Ok(id) => self.tup_files_read.push(id),
+            Err(e) => {
+                // Log with context instead of panicking; this is best-effort bookkeeping
+                let e = Err::with_context(
+                    e,
+                    format!("while adding absolute path {:?} to list of tupfiles read", p0),
+                );
+                log::error!("{}", e);
+            }
+        }
     }
 
     pub(crate) fn get_statements_from_cache(
@@ -910,7 +919,17 @@ impl StatementsInFile {
                     let arg = arg_expr.cat_ref();
                     let arg = arg.trim();
                     if arg.contains('*') {
-                        let p = path_buffers.add_path_from(&parse_state.get_tup_dir_desc(), arg)?;
+                        let p = path_buffers
+                            .add_path_from(&parse_state.get_tup_dir_desc(), arg)
+                            .map_err(|e| Err::with_context(
+                                e,
+                                format!(
+                                    "while joining '{}' with base {:?} in run script expansion at {}",
+                                    arg,
+                                    parse_state.get_tup_dir_desc(),
+                                    loc
+                                ),
+                            ))?;
                         let glob_path = GlobPath::build_from(&parse_state.get_tup_dir_desc(), &p)?;
                         let glob_path_desc = glob_path.get_glob_path_desc();
                         let rel_path =
@@ -982,8 +1001,17 @@ impl StatementsInFile {
                     );
                     }
                     let tup_run_file_name = format!("tup_run_output_temp{}.tup", loc.get_line());
-                    let tuprun_pd =
-                        path_buffers.add_path_from(&tup_cwd, tup_run_file_name.as_str())?;
+                    let tuprun_pd = path_buffers
+                        .add_path_from(&tup_cwd, tup_run_file_name.as_str())
+                        .map_err(|e| Err::with_context(
+                            e,
+                            format!(
+                                "while joining '{}' with base {:?} to dump tup run output at {}",
+                                tup_run_file_name,
+                                tup_cwd,
+                                loc
+                            ),
+                        ))?;
                     dump_temp_tup(contents.as_slice(), &tuprun_pd);
                     let lstmts = parse_state.switch_tupfile_and_process(&tuprun_pd, |ps| {
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_slice()))
@@ -1427,7 +1455,8 @@ impl DollarExprs {
                 let dump_file_pd = m
                     .get_path_buffers()
                     .add_path_from(&m.get_tup_dir_desc(), dump_file_name.as_str())
-                    .unwrap();
+                    .unwrap_or_else(|e| panic!("Unable to join paths due to {} joining : {} called from {}",
+                                               e, dump_file_name, m.get_include_path_str()));
                 dump_temp_tup(body_str.as_bytes(), &dump_file_pd);
 
                 m.switch_tupfile_and_process(&dump_file_pd, |ps| -> Result<Vec<PathExpr>, Error> {
@@ -2365,7 +2394,16 @@ pub(crate) fn load_config_vars_raw(
     conf_vars: &mut HashMap<String, Vec<String>>,
 ) -> Result<(), Error> {
     let bo = BufferObjects::new(conf_file.parent().unwrap());
-    let cur_file_desc = bo.add_abs(conf_file.file_name().unwrap()).expect("message");
+    let cur_file_desc = bo
+        .add_abs(conf_file.file_name().unwrap())
+        .map_err(|e| Err::with_context(
+            e,
+            format!(
+                "while adding absolute path for config file {:?} relative to {:?}",
+                conf_file.file_name().unwrap(),
+                conf_file.parent().unwrap()
+            ),
+        ))?;
     let cvars = HashMap::new();
     let mut parse_state = ParseState::new(
         &cvars,
@@ -2567,9 +2605,22 @@ impl LocatedStatement {
             Statement::CachedConfig => {
                 let p = parse_state.get_cur_file();
                 let conf_path = p.with_extension("temp-config.tup");
-                let filepathbo = parse_state
-                    .with_path_buffers_do(|bo| bo.add_abs(conf_path.to_string_lossy().as_ref()))
-                    .ok();
+                let filepathbo = parse_state.with_path_buffers_do(|bo| {
+                    match bo.add_abs(conf_path.to_string_lossy().as_ref()) {
+                        Ok(pd) => Some(pd),
+                        Err(e) => {
+                            let e = Err::with_context(
+                                e,
+                                format!(
+                                    "while adding absolute path for cached config {:?}",
+                                    conf_path
+                                ),
+                            );
+                            log::error!("{}", e);
+                            None
+                        }
+                    }
+                });
                 parse_state.set_cached_config(filepathbo.clone());
             }
         }
@@ -3379,14 +3430,20 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         &mut self,
         receiver: Receiver<StatementsToResolve>,
         mut f: impl FnMut(ResolvedRules) -> Result<(), Error>,
-    ) -> Result<(), crate::errors::ErrorContext> {
+    ) -> Result<(), Error> {
         receiver.iter().try_for_each(|to_resolve| {
             let tup_desc = to_resolve.get_cur_file_desc().clone();
             let resolved_rules_ = self
                 .process_raw_statements(to_resolve)
-                .map_err(|e| crate::errors::ErrorContext::new(e, tup_desc.clone()))?;
-            f(resolved_rules_).map_err(|e| crate::errors::ErrorContext::new(e, tup_desc))?;
-            Ok(())
+                .map_err(|e| Err::with_context(e, format!(
+                    "while processing statements for tupfile {:?}",
+                    tup_desc
+                )))?;
+            f(resolved_rules_).map_err(|e| Err::with_context(e, format!(
+                "while consuming resolved rules for tupfile {:?}",
+                tup_desc
+            )))?;
+            Ok::<(), Error>(())
         })?;
         drop(receiver);
         Ok(())
