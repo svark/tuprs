@@ -187,6 +187,10 @@ impl RuleFormulaInstance {
             .get_tupfile_desc()
             .get_parent_descriptor()
     }
+    /// Descriptor of tup file containing the rule
+    pub fn get_tup_file_desc(&self) -> TupPathDescriptor {
+        self.get_rule_ref().get_tupfile_desc().clone()
+    }
 
     /// Display string that appears in the console as the rule is run
     pub fn get_display_str(&self) -> String {
