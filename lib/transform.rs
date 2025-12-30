@@ -51,13 +51,10 @@ use tuppaths::paths::{get_parent, get_parent_with_fsep, MatchingPath, NormalPath
 use walkdir::WalkDir;
 
 fn dump_temp_tup(contents: &[u8], tuprun_pd: &PathDescriptor) {
-    if log::log_enabled!(log::Level::Debug) {
-        // write contents to a file for the user to inspect
-        let path = tuprun_pd.get_path_ref().as_path();
-        let mut f = File::create(path).expect("Could not write to tup_run_output.tup");
-        f.write_all(contents)
-            .expect(&format!("Could not write to {}", path.display()));
-    }
+    let path = tuprun_pd.get_path_ref().as_path();
+    let mut f = File::create(path).expect("Could not write to tup_run_output.tup");
+    f.write_all(contents)
+        .expect(&format!("Could not write to {}", path.display()));
 }
 
 /// Compute SHA-256 hash of a file, fails with io error if file cannot be read
@@ -2753,7 +2750,7 @@ impl LocatedStatement {
                 .add_path_from(&tup_cwd, dump_eval_file_name)?;
             dump_temp_tup(body_str.as_bytes(), &dump_eval_file_pd);
 
-            return parse_state.switch_tupfile_and_process(&dump_eval_file_pd, |ps| {
+            let res =  parse_state.switch_tupfile_and_process(&dump_eval_file_pd, |ps| {
                 debug!("evaluating block: {:?}", body_str.as_str());
                 let lines = parse_statements_until_eof(Span::new(body_str.as_bytes()))
                     .unwrap_or_else(|e| panic!("failed to parse eval block: {:?}", e));
@@ -2767,6 +2764,8 @@ impl LocatedStatement {
                     Ok(stmts)
                 }
             });
+            std::fs::remove_file(dump_eval_file_pd.get_path_ref()).ok();
+            return res;
         }
         Ok(StatementsInFile::default())
     }
