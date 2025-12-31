@@ -33,7 +33,7 @@ use crate::statements::DollarExprs;
 use crate::statements::PathExpr::DollarExprs as DExpr;
 use crate::statements::*;
 use crate::transform::ParseContext::Expression;
-use crate::writer::{cat_literals, words_from_pelist};
+use crate::writer::{cat_literals, for_each_word_in_pelist, words_from_pelist};
 use crate::GroupPathDescriptor;
 use crate::PathDescriptor;
 use crate::RelativeDirEntry;
@@ -45,16 +45,38 @@ use nonempty::{nonempty, NonEmpty};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use sha2::{Digest, Sha256};
 use std::io::{self, BufReader, Read};
+use log::Level::Debug;
 use tupcompat::platform::*;
 use tuppaths::paths::SelOptions::Either;
 use tuppaths::paths::{get_parent, get_parent_with_fsep, MatchingPath, NormalPath};
 use walkdir::WalkDir;
+
+struct TempFile {
+    pd: PathDescriptor
+}
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if !log::log_enabled!(Debug) {
+            std::fs::remove_file(self.pd.get_path_ref()).unwrap_or_default();
+        }
+    }
+}
 
 fn dump_temp_tup(contents: &[u8], tuprun_pd: &PathDescriptor) {
     let path = tuprun_pd.get_path_ref().as_path();
     let mut f = File::create(path).expect("Could not write to tup_run_output.tup");
     f.write_all(contents)
         .expect(&format!("Could not write to {}", path.display()));
+}
+impl TempFile {
+    fn new(contents: &[u8], tuprun_pd: &PathDescriptor) -> Self {
+        dump_temp_tup(contents, tuprun_pd);
+        TempFile{ pd: tuprun_pd.clone()}
+    }
+}
+
+fn temp_file_name(prefix: &str, line: u32) -> String {
+    format!("{}-{}.{}", prefix, line, "-temp.tup")
 }
 
 /// Compute SHA-256 hash of a file, fails with io error if file cannot be read
@@ -212,8 +234,16 @@ pub(crate) struct ParseState {
     /// history of included files parsed so far
     pub(crate) tup_files_read: Vec<TupPathDescriptor>,
     /// cached config information that stores substituted parse state to a config file
-    /// Only absolute paths (from build root) must be present such files
+    /// Only absolute paths (from build root) must be present such files or lazy assignments
     pub(crate) cached_config: Vec<(TupPathDescriptor, PathDescriptor)>,
+    /// tupfiles that requested cached config output
+    pub(crate) cached_config_roots: HashSet<TupPathDescriptor>,
+    /// variable -> origin tupfile
+    pub(crate) var_origin: HashMap<String, TupPathDescriptor>,
+    /// include edges observed while parsing (child -> parents)
+    pub(crate) include_parents: HashMap<TupPathDescriptor, HashSet<TupPathDescriptor>>,
+    /// map temp Tupfiles (generated during substitution) back to the owning Tupfile
+    pub(crate) temp_var_owners: HashMap<TupPathDescriptor, TupPathDescriptor>,
     /// current tupfile active stack.
     pub(crate) cur_tupfile_loc_stack: NonEmpty<TupLoc>,
 }
@@ -352,8 +382,59 @@ impl ParseState {
     fn get_cached_config(&self) -> &Vec<(TupPathDescriptor, PathDescriptor)> {
         &self.cached_config
     }
+    fn var_owner_desc(&self, desc: &TupPathDescriptor) -> TupPathDescriptor {
+        self.temp_var_owners
+            .get(desc)
+            .cloned()
+            .unwrap_or_else(|| desc.clone())
+    }
+    fn var_owner(&self) -> TupPathDescriptor {
+        self.var_owner_desc(self.get_cur_file_desc())
+    }
+    fn note_included_file(&mut self, child: &TupPathDescriptor, parent: &TupPathDescriptor) {
+        if child == parent {
+            return;
+        }
+        self.include_parents
+            .entry(child.clone())
+            .or_default()
+            .insert(parent.clone());
+    }
+    fn is_ancestor(&self, ancestor: &TupPathDescriptor, desc: &TupPathDescriptor) -> bool {
+        let mut stack = vec![desc.clone()];
+        let mut seen = HashSet::new();
+        while let Some(node) = stack.pop() {
+            if !seen.insert(node.clone()) {
+                continue;
+            }
+            if &node == ancestor {
+                return true;
+            }
+            if let Some(parents) = self.include_parents.get(&node) {
+                for p in parents {
+                    stack.push(p.clone());
+                }
+            }
+        }
+        false
+    }
+    fn should_include_var(&self, var: &str, root: &TupPathDescriptor) -> bool {
+        match self.var_origin.get(var) {
+            Some(origin) => self.is_ancestor(root, origin),
+            None => false,
+        }
+    }
+    fn register_temp_owner(&mut self, temp: &TupPathDescriptor) {
+        let owner = self.var_owner();
+        self.temp_var_owners.insert(temp.clone(), owner);
+    }
+    fn mark_var_in_current_file(&mut self, var: &str) {
+        let tup_path_desc: TupPathDescriptor = self.var_owner();
+        self.var_origin.insert(var.to_string(), tup_path_desc);
+    }
     fn set_cached_config(&mut self, path: Option<PathDescriptor>) {
         let tup_path_desc: TupPathDescriptor = self.get_cur_file_desc().clone();
+        self.cached_config_roots.insert(tup_path_desc.clone());
         path.map(|p| (tup_path_desc, p))
             .iter()
             .for_each(|(tup, p)| {
@@ -527,12 +608,18 @@ impl ParseState {
             }
             let path = p.get_path_ref();
             debug!("writing cached config to {:?}", path);
+            let root = self.var_owner();
             let _ = get_sha256_hash(&cur_file)
-                .and_then(|hash| self.dump_vars(&fullpath, hash.as_str()));
+                .and_then(|hash| self.dump_vars(&fullpath, hash.as_str(), |var| {
+                    self.should_include_var(var, &root)
+                }));
         }
     }
     // Dump all variable to a file
-    pub(crate) fn dump_vars(&self, path: &Path, sha: &str) -> Result<(), Error> {
+    pub(crate) fn dump_vars<F>(&self, path: &Path, sha: &str, include: F) -> Result<(), Error>
+    where
+        F: Fn(&str) -> bool,
+    {
         use std::io::Write;
         let err_string = format!("Could not write to cached config {:?}", path);
         let f =
@@ -540,12 +627,18 @@ impl ParseState {
         let mut f = BufWriter::new(f);
         writeln!(f, "#tup.config sha:{}", sha).expect(err_string.as_str());
         for (k, v) in self.expr_map.iter() {
+            if !include(k) {
+                continue;
+            }
             let res = writeln!(f, "{}:={}", k, v.cat());
             if let Err(e) = res {
                 return Err(IoError(e, err_string, Loc::new(0, 0, 0)));
             }
         }
         for (k, v) in self.func_map.iter() {
+            if !include(k) {
+                continue;
+            }
             let res = writeln!(f, "{}={}", k, v.cat());
             if let Err(e) = res {
                 return Err(IoError(
@@ -690,11 +783,13 @@ impl ParseState {
 
     pub fn push_tup(&mut self, tupfile: &PathDescriptor) -> Result<bool, Error> {
         let old_tupfile = self.get_cur_file_desc().clone();
-        if tupfile.eq(&self.get_cur_file_desc()) {
+        let new_tupfile = tupfile.clone();
+        if new_tupfile.eq(&self.get_cur_file_desc()) {
             return Ok(false);
         }
-        self.push_trail(tupfile);
-        self.set_cwd(tupfile, &old_tupfile)?;
+        self.note_included_file(&new_tupfile, &old_tupfile);
+        self.push_trail(&new_tupfile);
+        self.set_cwd(&new_tupfile, &old_tupfile)?;
         Ok(true)
     }
     pub fn pop_tup(&mut self) -> Result<(), Error> {
@@ -741,6 +836,7 @@ impl ParseState {
     }
 
     pub(crate) fn append_assign_lazy(&mut self, v: &str, val: Vec<PathExpr>) {
+        self.mark_var_in_current_file(v);
         if let Some(vals) = self.func_map.get_mut(v) {
             if !vals.is_empty() {
                 vals.push(PathExpr::Sp1);
@@ -774,6 +870,7 @@ impl ParseState {
         right: Vec<PathExpr>,
         path_searcher: &impl PathSearcher,
     ) {
+        self.mark_var_in_current_file(v);
         let val = self.eval_right(&right, path_searcher);
         if let Some(vals) = self.expr_map.get_mut(v) {
             if log::log_enabled!(log::Level::Debug) {
@@ -801,6 +898,7 @@ impl ParseState {
         path_searcher: &impl PathSearcher,
     ) {
         debug!("assigning {:?} to {:?}", v, right);
+        self.mark_var_in_current_file(v);
         let val = self.eval_right(&right, path_searcher);
         if let Some(vals) = self.expr_map.get_mut(v) {
             if log::log_enabled!(log::Level::Debug) {
@@ -820,6 +918,7 @@ impl ParseState {
         self.func_map.remove(v);
     }
     pub(crate) fn assign_lazy(&mut self, v: &str, right: Vec<PathExpr>) {
+        self.mark_var_in_current_file(v);
         if let Some(vals) = self.func_map.get_mut(v) {
             debug!(
                 "overwrite {:?} having existing value:{:?} with {:?}",
@@ -1009,7 +1108,8 @@ impl StatementsInFile {
                                 loc
                             ),
                         ))?;
-                    dump_temp_tup(contents.as_slice(), &tuprun_pd);
+                    parse_state.register_temp_owner(&tuprun_pd);
+                    let _tempfile = TempFile::new(contents.as_slice(), &tuprun_pd);
                     let lstmts = parse_state.switch_tupfile_and_process(&tuprun_pd, |ps| {
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_slice()))
                             .expect(
@@ -1437,7 +1537,7 @@ impl DollarExprs {
                 body
             }
             DollarExprs::ForEach(var, list, body) => {
-                let mut list = list.subst_pe(m, path_searcher);
+                let list = list.subst_pe(m, path_searcher);
                 if list.is_empty() {
                     log::warn!("Empty suffix values for {} in {:?}", var, m.get_cur_file());
                     return vec![];
@@ -1445,16 +1545,15 @@ impl DollarExprs {
                 //let body = body.subst_pe(m);
                 let body_str = body.cat() + "\n";
                 debug!("eval foreach body as statements:\n{:?}", body_str);
-                let dump_file_name = format!(
-                    "tup_foreach_body{}.tup.temp",
-                    m.get_current_loc().get_line()
-                );
+                let dump_file_name =
+                    temp_file_name("tup_foreach_body", m.get_current_loc().get_line());
                 let dump_file_pd = m
                     .get_path_buffers()
                     .add_path_from(&m.get_tup_dir_desc(), dump_file_name.as_str())
                     .unwrap_or_else(|e| panic!("Unable to join paths due to {} joining : {} called from {}",
                                                e, dump_file_name, m.get_include_path_str()));
-                dump_temp_tup(body_str.as_bytes(), &dump_file_pd);
+                m.register_temp_owner(&dump_file_pd);
+                let _tempfile = TempFile::new(body_str.as_bytes(), &dump_file_pd);
 
                 m.switch_tupfile_and_process(&dump_file_pd, |ps| -> Result<Vec<PathExpr>, Error> {
                     let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
@@ -1464,8 +1563,7 @@ impl DollarExprs {
                     let mut vs_updated = Vec::new();
                     let stmts_in_file = ps.to_statements_in_file(stmts);
 
-                    for l in list.iter_mut() {
-                        if let PathExpr::Literal(ref s) = l {
+                    let f = |s: String| {
                             let oldval = ps.expr_map.insert(var.clone(), vec![s.clone().into()]);
 
                             let mut vs = DollarExprs::subst_as_statements(
@@ -1490,8 +1588,9 @@ impl DollarExprs {
                             } else {
                                 ps.expr_map.remove(var);
                             }
-                        }
-                    }
+                    };
+                    for_each_word_in_pelist(list.as_slice(), f);
+
                     if vs_updated.ends_with(&[PathExpr::Sp1])
                         || vs_updated.ends_with(&[PathExpr::NL])
                     {
@@ -1586,6 +1685,16 @@ impl DollarExprs {
                         for f in needle.iter() {
                             if let PathExpr::Literal(ref f) = f {
                                 if s.contains(f.as_str()) {
+                                    return true;
+                                }
+                            }
+                            else if let PathExpr::DeGlob(ref f) = f {
+                                if s.contains(f.get_path_ref().to_string_lossy().as_ref()) {
+                                    return true;
+                                }
+                            }
+                            else if let  PathExpr::Quoted( ref f) = f {
+                                if s.contains(&f.cat()) {
                                     return true;
                                 }
                             }
@@ -1850,14 +1959,15 @@ impl DollarExprs {
                     "tup_if_else_part{}.tup.temp",
                     m.get_current_loc().get_line()
                 );
-                let dump_else_part_pd = m
+                let dump_if_else_pd = m
                     .get_path_buffers()
                     .add_path_from(&m.get_tup_dir_desc(), dump_else_part_file_name.as_str())
                     .unwrap();
+                m.register_temp_owner(&dump_if_else_pd);
                 if cond.is_empty() {
                     let else_part_str = else_part.cat() + "\n";
-                    dump_temp_tup(else_part_str.as_bytes(), &dump_else_part_pd);
-                    m.switch_tupfile_and_process(&dump_else_part_pd, |m| {
+                    let _tempfile = TempFile::new(else_part_str.as_bytes(), &dump_if_else_pd);
+                    m.switch_tupfile_and_process(&dump_if_else_pd, |m| {
                         let else_part =
                             parse_statements_until_eof(Span::new(else_part_str.as_bytes()))
                                 .unwrap_or_else(|e| {
@@ -1876,12 +1986,12 @@ impl DollarExprs {
                     })
                     .unwrap_or_default()
                 } else {
-                    let then_part_str = then_part.cat() + "\n";
-                    dump_temp_tup(then_part_str.as_bytes(), &dump_else_part_pd);
-                    m.switch_tupfile_and_process(&dump_else_part_pd, |m| {
-                        let then_part =
-                            parse_statements_until_eof(Span::new(then_part_str.as_bytes()))
-                                .unwrap_or_else(|e| {
+                let then_part_str = then_part.cat() + "\n";
+                let _tempfile = TempFile::new(then_part_str.as_bytes(), &dump_if_else_pd);
+                m.switch_tupfile_and_process(&dump_if_else_pd, |m| {
+                    let then_part =
+                        parse_statements_until_eof(Span::new(then_part_str.as_bytes()))
+                            .unwrap_or_else(|e| {
                                     panic!(
                                 "failed to parse then part of if statement: {:?} with error: {}",
                                 then_part_str, e
@@ -1902,16 +2012,19 @@ impl DollarExprs {
                 debug!("eval before subst: {:?}", pes);
                 // let subst_val = pes.subst_pe(m, path_searcher);
                 if m.parse_context == Expression {
-                    let mut val = pes.cat();
-                    val.push('\n');
-                    debug!("evaluating {}", val);
-                    let dump_eval_file_name =
-                        format!("tup_eval{}.tup.temp", m.get_current_loc().get_line());
-                    let dump_eval_file_pd = m
-                        .get_path_buffers()
-                        .add_path_from(&m.get_tup_dir_desc(), dump_eval_file_name.as_str())
-                        .unwrap();
-                    dump_temp_tup(val.as_bytes(), &dump_eval_file_pd);
+                let mut val = pes.cat();
+                val.push('\n');
+                debug!("evaluating {}", val);
+                let dump_eval_file_name = temp_file_name(
+                    "tup_eval",
+                    m.get_current_loc().get_line(),
+                );
+                let dump_eval_file_pd = m
+                    .get_path_buffers()
+                    .add_path_from(&m.get_tup_dir_desc(), dump_eval_file_name.as_str())
+                    .unwrap();
+                    m.register_temp_owner(&dump_eval_file_pd);
+                    let _tempfile = TempFile::new(val.as_bytes(), &dump_eval_file_pd);
                     m.switch_tupfile_and_process(&dump_eval_file_pd, |m| {
                         let stmts = parse_statements_until_eof(Span::new(val.as_bytes()))
                             .unwrap_or_else(|e| {
@@ -2591,6 +2704,7 @@ impl LocatedStatement {
             }
             Statement::Define(name, val) => {
                 debug!("adding {} to func_map", name);
+                parse_state.mark_var_in_current_file(name.as_str());
                 parse_state.func_map.insert(name.to_string(), val.clone());
             }
             Statement::EvalBlock(body) => {
@@ -2748,7 +2862,8 @@ impl LocatedStatement {
             let dump_eval_file_pd = parse_state
                 .get_path_buffers()
                 .add_path_from(&tup_cwd, dump_eval_file_name)?;
-            dump_temp_tup(body_str.as_bytes(), &dump_eval_file_pd);
+            parse_state.register_temp_owner(&dump_eval_file_pd);
+            let _tempfile = TempFile::new(body_str.as_bytes(), &dump_eval_file_pd);
 
             let res =  parse_state.switch_tupfile_and_process(&dump_eval_file_pd, |ps| {
                 debug!("evaluating block: {:?}", body_str.as_str());
@@ -2764,7 +2879,6 @@ impl LocatedStatement {
                     Ok(stmts)
                 }
             });
-            std::fs::remove_file(dump_eval_file_pd.get_path_ref()).ok();
             return res;
         }
         Ok(StatementsInFile::default())
@@ -3031,13 +3145,17 @@ impl ResolvedRules {
     }
 
     /// Return the number of resolved links.
-    pub fn len(&self) -> usize {
+    pub fn rules_len(&self) -> usize {
         self.resolved_links.len()
+    }
+    /// Return the number of resolved tasks.
+    pub fn tasks_len(&self) -> usize {
+        self.resolved_tasks.len()
     }
 
     /// checks if there are no links found
     pub fn is_empty(&self) -> bool {
-        self.resolved_links.is_empty()
+        self.resolved_links.is_empty() && self.resolved_tasks.is_empty()
     }
 
     /// extend links in `resolved_rules` with those in self

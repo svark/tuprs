@@ -1784,7 +1784,7 @@ impl LocatedStatement {
                 globs_read.push(input_glob_desc);
             }
             inpdec.retain_mut(|x| {
-                if let Some(mp) = x.get_glob_path_desc() {
+                if let Some(mp) = x.get_resolved_path_desc() {
                     if !unique_deglobbed.insert(mp.clone()) {
                         return false;
                     }
@@ -1863,6 +1863,9 @@ impl LocatedStatement {
             }
         }
 
+        globs_read.sort();
+        globs_read.dedup();
+
         Ok((
             ResolvedRules::from(
                 deglobbed,
@@ -1890,7 +1893,7 @@ impl ResolvePaths for StatementsInFile {
             let (art, _) =
                 stmt.resolve_paths(tup_desc, path_searcher, path_buffers, other_tupfiles_read)?;
             debug!("{:?}", art);
-            resolved_rules.extend(art);
+            if !art.is_empty() {resolved_rules.extend(art);}
             Ok(())
         })?;
         Ok(resolved_rules)

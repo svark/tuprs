@@ -62,7 +62,7 @@ pub(crate) fn write_pathexprs<T: Write>(writer: &mut BufWriter<T>, pathexprs: &[
 pub(crate) fn write_pathexprs_lit<T: Write>(writer: &mut BufWriter<T>, pathexprs: &[PathExpr]) {
     pathexprs
         .iter()
-        .filter(|x| matches!(x, &PathExpr::Literal(_)))
+        .filter(|x| matches!(x, &PathExpr::Literal(_) | &PathExpr::DeGlob(_)))
         .for_each(|pathexpr| {
             write_pathexpr(writer, pathexpr);
         })
@@ -503,6 +503,17 @@ pub(crate) fn words_from_pelist(pelist: &[PathExpr]) -> Vec<String> {
         .map(|x| cat_literals(x))
         .collect()
 }
+
+pub(crate) fn for_each_word_in_pelist<F>(pelist: &[PathExpr], f: F)
+where
+    F: FnMut(String),
+{
+    pelist
+        .split(|x| matches!(x, PathExpr::Sp1 | PathExpr::NL))
+        .map(|x| cat_literals(x))
+        .for_each(f);
+}
+
 
 impl Cat for &Vec<PathExpr> {
     fn cat(self) -> String {
