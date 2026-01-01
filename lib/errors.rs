@@ -85,10 +85,6 @@ pub enum Error {
     #[error("Call back error: {0}")]
     CallBackError(String),
 
-    /// Failure during parsing Tupfile.
-    #[error("Error parsing {0}: {1}")]
-    ParseFailure(String, Box<Error>),
-
     /// Path errors such as glob error, or missing file
     #[error("Error {0}")]
     PathError(#[from] tuppaths::errors::Error),

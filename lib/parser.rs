@@ -2022,7 +2022,7 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
         contents.push(b'\n');
     }
     parse_statements_until_eof(Span::new(contents.as_bytes())).map_err(|e| {
-        crate::errors::Error::ParseFailure(filename.to_string_lossy().to_string(), Box::new(e))
+        crate::errors::Error::with_context(e, format!("Parsing :{}", filename.to_string_lossy().to_string()))
     })
 }
 
