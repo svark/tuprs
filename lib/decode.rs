@@ -123,6 +123,9 @@ pub trait PathSearcher: PathDiscovery {
 
     /// Merge outputs from previous outputs
     fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error>;
+    
+    /// return underlying implentation's is_dir status and a token i64
+    fn is_dir(&self, pd: &PathDescriptor) -> (bool, i64);
 }
 
 /// `RuleFormulaInstance` stores both rule formula and its whereabouts(`TupLoc`) in a Tupfile
@@ -565,6 +568,15 @@ impl PathSearcher for DirSearcher {
 
     fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error> {
         OutputHandler::merge(&mut self.output_holder, p, o)
+    }
+    fn is_dir(&self, pd: &PathDescriptor) -> (bool, i64) {
+        
+        if self.get_root().join(pd.get_path_ref()).is_dir()
+        {
+            (true, pd.to_u64().cast_signed())
+        }else {
+            (false,0)
+        }
     }
 }
 

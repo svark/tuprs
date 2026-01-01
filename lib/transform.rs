@@ -222,7 +222,8 @@ pub(crate) struct ParseState {
     /// Macro assignments waiting for subst
     pub(crate) rule_map: HashMap<String, Link>,
     /// preload these dirs
-    pub(crate) load_dirs: Vec<PathDescriptor>,
+    /// directories to search for sources (descriptor + db id)
+    pub(crate) load_dirs: Vec<LoadDirEntry>,
     /// current state of env variables to be passed to rules for execution
     pub(crate) cur_env_desc: EnvList,
     /// Cache of statements from previously read Tupfiles
@@ -244,6 +245,18 @@ pub(crate) struct ParseState {
     pub(crate) tempfile_owner_map: HashMap<TupPathDescriptor, TupPathDescriptor>,
     /// current tupfile active stack.
     pub(crate) cur_tupfile_loc_stack: NonEmpty<TupLoc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LoadDirEntry {
+    pub(crate) pd: PathDescriptor,
+    pub(crate) dbid: i64,
+}
+
+impl LoadDirEntry {
+    pub(crate) fn new(pd: PathDescriptor, dbid: i64) -> Self {
+        Self { pd, dbid }
+    }
 }
 
 impl ParseState {}
@@ -504,9 +517,9 @@ impl ParseState {
             .map(|env| env.get_val_str().to_string())
     }
     // add to load dir
-    pub(crate) fn add_load_dir(&mut self, p0: PathDescriptor) {
-        if !self.load_dirs.contains(&p0) {
-            self.load_dirs.push(p0);
+    pub(crate) fn add_load_dir(&mut self, dir_pd: PathDescriptor, dbid: i64) {
+        if !self.load_dirs.iter().any(|d| d.dbid == dbid) {
+            self.load_dirs.push(LoadDirEntry::new(dir_pd, dbid));
         }
     }
 
@@ -1004,9 +1017,9 @@ impl StatementsInFile {
                         let rel_path =
                             RelativeDirEntry::new(parse_state.get_tup_dir_desc(), glob_path_desc);
                         let mut glob_paths = vec![glob_path];
-                        for dir_desc in parse_state.load_dirs.iter() {
+                        for dir in parse_state.load_dirs.iter() {
                             let glob_path =
-                                GlobPath::build_from_relative_desc(dir_desc, &rel_path)?;
+                                GlobPath::build_from_relative_desc(&dir.pd, &rel_path)?;
                             glob_paths.push(glob_path);
                         }
                         let matches = path_searcher
@@ -1485,13 +1498,13 @@ impl DollarExprs {
                 let filter: Vec<PathExpr> = filter.subst_pe(m, path_searcher);
                 debug!("body to filter-out:{:?} using pattern:{:?}", body, filter);
                 let filtered_tokens = body.split(PathExpr::is_ws).filter(|&target| {
-                    if !filter
+                    if filter
                         .iter()
                         .any(|f| Self::pelist_check_is_match(target, f))
                     {
-                        true
-                    } else {
                         false
+                    } else {
+                        true
                     }
                 });
                 let mut first = true;
@@ -2750,11 +2763,16 @@ impl LocatedStatement {
             l = l.expand(parse_state)?; // expand all nested macro refs
         }
         let env_desc = parse_state.cur_env_desc.clone();
+        let load_dirs: Vec<PathDescriptor> = parse_state
+            .load_dirs
+            .iter()
+            .map(|d| d.pd.clone())
+            .collect();
         Ok(StatementsInFile::new_current(LocatedStatement::new(
             Statement::Rule(
                 l.subst_pe(parse_state, path_searcher),
                 env_desc,
-                parse_state.load_dirs.clone(),
+                load_dirs,
             ),
             loc,
         )))
@@ -2868,12 +2886,17 @@ impl LocatedStatement {
         let dirs = dir.split(":").collect::<Vec<_>>();
         let tup_cwd = parse_state.get_tup_base_dir();
         for dir in dirs.into_iter() {
-            let dirid = parse_state.path_buffers.add_path_from(&tup_cwd, dir);
-            let dirid = dirid.map_err(|_| {
+            if dir.trim().is_empty() {
+                continue;
+            }
+            let dirid_pd = parse_state.path_buffers.add_path_from(&tup_cwd, dir);
+            let dirid_pd = dirid_pd.map_err(|_| {
                 Error::PathNotFound(dir.to_string(), parse_state.get_current_tup_loc().clone())
             })?;
-            {
-                parse_state.add_load_dir(dirid);
+            // verify it's a directory and store db id for faster lookups
+            let (is_dir, dbid) = path_searcher.is_dir(&dirid_pd);
+            if is_dir {
+                parse_state.add_load_dir(dirid_pd, dbid);
             }
         }
         Ok(())
