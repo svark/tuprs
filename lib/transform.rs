@@ -238,12 +238,10 @@ pub(crate) struct ParseState {
     pub(crate) cached_config: Vec<(TupPathDescriptor, PathDescriptor)>,
     /// tupfiles that requested cached config output
     pub(crate) cached_config_roots: HashSet<TupPathDescriptor>,
-    /// variable -> origin tupfile
-    pub(crate) var_origin: HashMap<String, TupPathDescriptor>,
     /// include edges observed while parsing (child -> parents)
-    pub(crate) include_parents: HashMap<TupPathDescriptor, HashSet<TupPathDescriptor>>,
+    pub(crate) include_parent_map: HashMap<TupPathDescriptor, HashSet<TupPathDescriptor>>,
     /// map temp Tupfiles (generated during substitution) back to the owning Tupfile
-    pub(crate) temp_var_owners: HashMap<TupPathDescriptor, TupPathDescriptor>,
+    pub(crate) tempfile_owner_map: HashMap<TupPathDescriptor, TupPathDescriptor>,
     /// current tupfile active stack.
     pub(crate) cur_tupfile_loc_stack: NonEmpty<TupLoc>,
 }
@@ -367,6 +365,10 @@ impl ParseState {
             ..ParseState::default()
         }
     }
+    pub(crate) fn get_var_keys(&self) -> HashSet<String> {
+        self.expr_map.keys().chain(self.func_map.keys()).cloned().collect()
+    }
+
     pub(crate) fn to_statements_in_file(&self, stmts: Vec<LocatedStatement>) -> StatementsInFile {
         StatementsInFile::new_includes_from_with_trail(
             self.get_current_tup_loc().clone(),
@@ -382,55 +384,27 @@ impl ParseState {
     fn get_cached_config(&self) -> &Vec<(TupPathDescriptor, PathDescriptor)> {
         &self.cached_config
     }
-    fn var_owner_desc(&self, desc: &TupPathDescriptor) -> TupPathDescriptor {
-        self.temp_var_owners
+    fn owner_for_desc(&self, desc: &TupPathDescriptor) -> TupPathDescriptor {
+        self.tempfile_owner_map
             .get(desc)
             .cloned()
             .unwrap_or_else(|| desc.clone())
     }
-    fn var_owner(&self) -> TupPathDescriptor {
-        self.var_owner_desc(self.get_cur_file_desc())
+    fn current_owner(&self) -> TupPathDescriptor {
+        self.owner_for_desc(self.get_cur_file_desc())
     }
-    fn note_included_file(&mut self, child: &TupPathDescriptor, parent: &TupPathDescriptor) {
+    fn record_include_edge(&mut self, child: &TupPathDescriptor, parent: &TupPathDescriptor) {
         if child == parent {
             return;
         }
-        self.include_parents
+        self.include_parent_map
             .entry(child.clone())
             .or_default()
             .insert(parent.clone());
     }
-    fn is_ancestor(&self, ancestor: &TupPathDescriptor, desc: &TupPathDescriptor) -> bool {
-        let mut stack = vec![desc.clone()];
-        let mut seen = HashSet::new();
-        while let Some(node) = stack.pop() {
-            if !seen.insert(node.clone()) {
-                continue;
-            }
-            if &node == ancestor {
-                return true;
-            }
-            if let Some(parents) = self.include_parents.get(&node) {
-                for p in parents {
-                    stack.push(p.clone());
-                }
-            }
-        }
-        false
-    }
-    fn should_include_var(&self, var: &str, root: &TupPathDescriptor) -> bool {
-        match self.var_origin.get(var) {
-            Some(origin) => self.is_ancestor(root, origin),
-            None => false,
-        }
-    }
     fn register_temp_owner(&mut self, temp: &TupPathDescriptor) {
-        let owner = self.var_owner();
-        self.temp_var_owners.insert(temp.clone(), owner);
-    }
-    fn mark_var_in_current_file(&mut self, var: &str) {
-        let tup_path_desc: TupPathDescriptor = self.var_owner();
-        self.var_origin.insert(var.to_string(), tup_path_desc);
+        let owner = self.current_owner();
+        self.tempfile_owner_map.insert(temp.clone(), owner);
     }
     fn set_cached_config(&mut self, path: Option<PathDescriptor>) {
         let tup_path_desc: TupPathDescriptor = self.get_cur_file_desc().clone();
@@ -590,7 +564,7 @@ impl ParseState {
         read().unwrap_or_default()
     }
 
-    pub(crate) fn write_cached_config(&mut self) {
+    pub(crate) fn write_cached_config(&mut self, keys_so_far: HashSet<String>) {
         let mut c = self.get_cached_config().iter();
         while let Some((tup, p)) = c.next() {
             if tup.ne(self.get_cur_file_desc()) {
@@ -607,12 +581,14 @@ impl ParseState {
                 continue;
             }
             let path = p.get_path_ref();
-            debug!("writing cached config to {:?}", path);
-            let root = self.var_owner();
+            debug!("writing cached config to {:?} for tup: {:?}", path, tup);
             let _ = get_sha256_hash(&cur_file)
-                .and_then(|hash| self.dump_vars(&fullpath, hash.as_str(), |var| {
-                    self.should_include_var(var, &root)
-                }));
+                .and_then(|hash| {
+                    self.dump_vars(&fullpath, hash.as_str(), |var| {
+                        // write only new keys
+                        !keys_so_far.contains(var)
+                    })
+                });
         }
     }
     // Dump all variable to a file
@@ -787,7 +763,7 @@ impl ParseState {
         if new_tupfile.eq(&self.get_cur_file_desc()) {
             return Ok(false);
         }
-        self.note_included_file(&new_tupfile, &old_tupfile);
+        self.record_include_edge(&new_tupfile, &old_tupfile);
         self.push_trail(&new_tupfile);
         self.set_cwd(&new_tupfile, &old_tupfile)?;
         Ok(true)
@@ -836,7 +812,6 @@ impl ParseState {
     }
 
     pub(crate) fn append_assign_lazy(&mut self, v: &str, val: Vec<PathExpr>) {
-        self.mark_var_in_current_file(v);
         if let Some(vals) = self.func_map.get_mut(v) {
             if !vals.is_empty() {
                 vals.push(PathExpr::Sp1);
@@ -870,7 +845,6 @@ impl ParseState {
         right: Vec<PathExpr>,
         path_searcher: &impl PathSearcher,
     ) {
-        self.mark_var_in_current_file(v);
         let val = self.eval_right(&right, path_searcher);
         if let Some(vals) = self.expr_map.get_mut(v) {
             if log::log_enabled!(log::Level::Debug) {
@@ -898,7 +872,6 @@ impl ParseState {
         path_searcher: &impl PathSearcher,
     ) {
         debug!("assigning {:?} to {:?}", v, right);
-        self.mark_var_in_current_file(v);
         let val = self.eval_right(&right, path_searcher);
         if let Some(vals) = self.expr_map.get_mut(v) {
             if log::log_enabled!(log::Level::Debug) {
@@ -918,7 +891,6 @@ impl ParseState {
         self.func_map.remove(v);
     }
     pub(crate) fn assign_lazy(&mut self, v: &str, right: Vec<PathExpr>) {
-        self.mark_var_in_current_file(v);
         if let Some(vals) = self.func_map.get_mut(v) {
             debug!(
                 "overwrite {:?} having existing value:{:?} with {:?}",
@@ -929,6 +901,7 @@ impl ParseState {
             debug!("no previous value for {:?} so assigning lazily", v);
             self.func_map.insert(v.to_string(), right);
         }
+        self.expr_map.remove(v);
     }
 
     pub(crate) fn append_assign(
@@ -2704,7 +2677,6 @@ impl LocatedStatement {
             }
             Statement::Define(name, val) => {
                 debug!("adding {} to func_map", name);
-                parse_state.mark_var_in_current_file(name.as_str());
                 parse_state.func_map.insert(name.to_string(), val.clone());
             }
             Statement::EvalBlock(body) => {
@@ -2953,10 +2925,11 @@ impl LocatedStatement {
                 if parse_state.read_cached_config() {
                     Ok(StatementsInFile::default())
                 } else {
+                    let keys_so_far = parse_state.get_var_keys();
                     let include_stmts =
                         get_or_insert_parsed_statements(path_searcher.get_root(), parse_state)?;
                     let stat = include_stmts.subst(parse_state, path_searcher)?;
-                    parse_state.write_cached_config();
+                    parse_state.write_cached_config(keys_so_far);
                     Ok(stat)
                 }
             },
