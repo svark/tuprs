@@ -212,7 +212,7 @@ impl Default for ParseContext {
 
 /// ParseState holds maps tracking current state of variable replacements as we read a tupfile
 #[derive(Debug, Clone, Default)]
-pub(crate) struct ParseState {
+    pub(crate) struct ParseState {
     /// tupfile variables to be substituted
     pub(crate) expr_map: HashMap<String, Vec<PathExpr>>,
     // defined functions
@@ -515,6 +515,9 @@ impl ParseState {
         self.cur_env_desc
             .find_key(key)
             .map(|env| env.get_val_str().to_string())
+    }
+    fn unique_load_dirs(&self) -> impl Iterator<Item = &LoadDirEntry> {
+        self.load_dirs.iter()
     }
     // add to load dir
     pub(crate) fn add_load_dir(&mut self, dir_pd: PathDescriptor, dbid: i64) {
@@ -1017,7 +1020,7 @@ impl StatementsInFile {
                         let rel_path =
                             RelativeDirEntry::new(parse_state.get_tup_dir_desc(), glob_path_desc);
                         let mut glob_paths = vec![glob_path];
-                        for dir in parse_state.load_dirs.iter() {
+                        for dir in parse_state.unique_load_dirs() {
                             let glob_path =
                                 GlobPath::build_from_relative_desc(&dir.pd, &rel_path)?;
                             glob_paths.push(glob_path);
@@ -2764,8 +2767,8 @@ impl LocatedStatement {
         }
         let env_desc = parse_state.cur_env_desc.clone();
         let load_dirs: Vec<PathDescriptor> = parse_state
-            .load_dirs
-            .iter()
+            .unique_load_dirs()
+            .into_iter()
             .map(|d| d.pd.clone())
             .collect();
         Ok(StatementsInFile::new_current(LocatedStatement::new(
@@ -3549,8 +3552,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             let resolved_rules_ = self
                 .process_raw_statements(to_resolve)
                 .map_err(|e| Err::with_context(e, format!(
-                    "while processing statements for tupfile {:?}",
-                    tup_desc
+                    "while processing statements  for tupfile {:?}", tup_desc
                 )))?;
             f(resolved_rules_).map_err(|e| Err::with_context(e, format!(
                 "while consuming resolved rules for tupfile {:?}",

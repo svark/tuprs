@@ -18,6 +18,8 @@ extern crate thiserror;
 extern crate tupcompat;
 extern crate tuppaths;
 extern crate walkdir;
+extern crate core;
+
 pub use buffers::EnvDescriptor;
 pub use buffers::GeneratedFiles;
 pub use buffers::RuleDescriptor;
