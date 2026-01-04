@@ -12,18 +12,18 @@ path = "lib/mod.rs"
 nom = "8.0.0"
 nom_locate = "5.0.0"
 nom-language = "0.1.0"
-thiserror = "2.0.12"
-regex = "1.11.1"
+thiserror = "2.0.17"
+regex = "1.12.2"
 walkdir = "2.5.0"
-log = "0.4.27"
-mlua = { version = "0.10.3", features = ["lua54", "vendored"] }
+log = "0.4.29"
+mlua = { version = "0.11.5", features = ["lua54", "vendored"] }
 crossbeam-channel= "0.5.14"
 parking_lot = "0.12.3"
-hashbrown = { version = "0.15.2", features = [] }
+hashbrown = { version = "0.16.1", features = [] }
 tinyset = "0.5.2"
 sha2 = "0.10.8"
 hex = "0.4.3"
-nonempty = "0.11.0"
+nonempty = "0.12.0"
 tuppaths = { path = "../tuppaths" }
 tupcompat = { path = "../tupcompat" }
 
