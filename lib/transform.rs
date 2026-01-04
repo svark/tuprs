@@ -863,9 +863,7 @@ impl ParseState {
     ) {
         let val = self.eval_right(&right, path_searcher);
         if let Some(vals) = self.expr_map.get_mut(v) {
-            if log::log_enabled!(log::Level::Debug) {
-                debug!("append assign of {:?} over existing value:{:?}", v, val);
-            }
+            debug!("append assign of {:?} over existing value:{:?}", v, val);
             if pe_value_is_non_empty(vals) {
                 vals.push(PathExpr::Sp1);
             }
@@ -890,12 +888,10 @@ impl ParseState {
         debug!("assigning {:?} to {:?}", v, right);
         let val = self.eval_right(&right, path_searcher);
         if let Some(vals) = self.expr_map.get_mut(v) {
-            if log::log_enabled!(log::Level::Debug) {
-                debug!(
+            debug!(
                     "overwrite {:?} having existing value:{:?} with {:?}",
                     v, vals, val
                 );
-            }
             *vals = val;
         } else {
             debug!(
