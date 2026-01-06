@@ -280,6 +280,7 @@ pub(crate) enum DollarExprs {
     GrepFiles(Vec<PathExpr>, Vec<PathExpr>),
     // $(info ..) or  $(warning ..) or $(error ..)
     Message(Vec<PathExpr>, Level),
+    GroupName(Vec<PathExpr>),
 }
 
 /// represents the equality condition in if(n)eq (LHS,RHS)

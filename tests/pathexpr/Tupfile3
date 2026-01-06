@@ -5,4 +5,5 @@ CXX_FLAGS = -std=c++11 -Wall -Wextra -Wpedantic -Werror -W3 -Wno-unused-paramete
 $(call enable_warnings)
 $(info CXX_FLAGS is *$(CXX_FLAGS))
 FILES :=  ./file.lib file2.lib a/b/cfile.exe -L readme -lsdf
-GRPS := $(formatpath "/<%B_lib>", $(stripprefix -l -L, $(FILES)))
+GRPS := $(formatpath "/<%B_lib>", $(groupname $(FILES)))
+

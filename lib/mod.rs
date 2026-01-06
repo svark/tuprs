@@ -145,14 +145,14 @@ fn test_parse() {
 
 #[test]
 fn parse_x() {
-    /*  use env_logger;
+      use env_logger;
     let _ = env_logger::try_init();
-    let root = "c:/ws/nxtg/fb4/HmMshgNxtFeatTemp";
+    let root = "c:/ws/nxt/HmMshgNxt";
     std::env::set_current_dir(root).unwrap();
     let mut parser = TupParser::<crate::decode::DirSearcher>::try_new_from(root, crate::decode::DirSearcher::new()).unwrap();
-    let arts = parser.parse("hwdesktop/batchmesh/Tupfile").map_err( |e| {
+    let arts = parser.parse("hwdesktop/unity/modules/designexplorer/Tupfile").map_err( |e| {
         eprintln!("{:?}", e.to_string());
         e
     }).unwrap();
-    assert_eq!(arts.get_resolved_links().len(), 375); */
+    assert_eq!(arts.get_resolved_links().len(), 375);
 }

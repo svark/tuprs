@@ -156,6 +156,11 @@ pub(crate) fn write_pathexpr<T: Write>(writer: &mut BufWriter<T>, pathexpr: &Pat
                 write_pathexprs(writer, args);
                 write!(writer, ")").unwrap();
             }
+            DollarExprs::GroupName(groupname) => {
+                write!(writer, "$(groupname ").unwrap();
+                write_pathexprs(writer, groupname);
+                write!(writer, ")").unwrap();
+            }
             DollarExprs::WildCard(a) => {
                 write!(writer, "$(wildcard ").unwrap();
                 write_pathexprs(writer, a);

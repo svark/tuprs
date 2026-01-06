@@ -287,6 +287,7 @@ pub(crate) fn parse_pathexpr_dollar(i: Span) -> IResult<Span, PathExpr> {
                 complete(parse_pathexpr_foreach),
                 complete(parse_pathexpr_firstword),
                 complete(parse_pathexpr_grep_files),
+                complete(parse_pathexpr_groupname),
                 complete(parse_pathexpr_fallback),
             )),
         )
@@ -752,6 +753,13 @@ fn parse_pathexpr_format(i: Span) -> IResult<Span, PathExpr> {
     Ok((s, PathExpr::from(DollarExprs::Format(format_spec, pattern))))
 }
 
+fn parse_pathexpr_groupname(i: Span) -> IResult<Span, PathExpr> {
+    let (s, _) = tag("$(groupname").parse(i)?;
+    let (s, _) = parse_ws(s)?;
+    let (s, (groupname, _)) = parse_pelist_till_delim_with_ws(s, ")", &BRKTOKSWS)?;
+    let (s, _) = opt(parse_ws).parse(s)?;
+    Ok((s, PathExpr::from(DollarExprs::GroupName(groupname))))
+}
 /// parse $(realpath names...)
 /// $(realpath names...) is a function that returns the canonical absolute names of the given file names.
 fn parse_pathexpr_realpath(i: Span) -> IResult<Span, PathExpr> {

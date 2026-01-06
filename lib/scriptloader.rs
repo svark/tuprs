@@ -974,11 +974,11 @@ pub(crate) fn parse_script<Q: PathSearcher + 'static>(
                 },
                 |lua_context, debug| {
                     lua_context
-                        .set_named_registry_value(LINENO, debug.curr_line())
+                        .set_named_registry_value(LINENO, debug.current_line())
                         .expect("could not set registry value");
                     Ok(VmState::Yield)
                 },
-            );
+            )?;
             lua.set_named_registry_value(CURDIR, root.join(cur_dir).to_string_lossy().to_string())?;
             let tup_append_table = lua.create_function(|luactx, (a, b): (Value, Value)| {
                 let mut t = luactx.create_table()?;

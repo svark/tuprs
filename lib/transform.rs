@@ -526,6 +526,35 @@ impl ParseState {
         }
     }
 
+    /// Add directories from VPATH (if defined) to the load-dir list.
+    /// VPATH is treated like other preload search paths: colon/space separated.
+    pub(crate) fn add_vpath_load_dirs(
+        &mut self,
+        path_searcher: &impl PathSearcher,
+    ) -> Result<(), Error> {
+        let mut paths = self.extract_evaluated_var("VPATH", path_searcher);
+        paths.cleanup();
+        let dir = paths.cat();
+        let dirs = dir.split(|c| c == ':' || c == ' ' || c == '\n' || c == '\t').collect::<Vec<_>>();
+        let tup_cwd = self.get_tup_dir_desc();
+        for dir in dirs.into_iter() {
+            if dir.trim().is_empty() {
+                continue;
+            }
+            let dir = dir.strip_prefix("/").unwrap_or(dir);
+            let dir = dir.strip_prefix("./").unwrap_or(dir);
+            let dirid_pd = self.path_buffers.add_path_from(&tup_cwd, dir);
+            let dirid_pd = dirid_pd.map_err(|_| {
+                Error::PathNotFound(dir.to_string(), self.get_current_tup_loc().clone())
+            })?;
+            let (is_dir, dbid) = path_searcher.is_dir(&dirid_pd);
+            if is_dir {
+                self.add_load_dir(dirid_pd, dbid);
+            }
+        }
+        Ok(())
+    }
+
     fn read_cached_config_at(&self, fullpath: &Path) -> Result<(String, String), Error> {
         let hash = get_sha256_hash(self.get_cur_file())?;
         // read the first line of the file and compare with the hash
@@ -613,6 +642,7 @@ impl ParseState {
         F: Fn(&str) -> bool,
     {
         use std::io::Write;
+        log::warn!("Writing cached config to {:?}", path);
         let err_string = format!("Could not write to cached config {:?}", path);
         let f =
             File::create(path).map_err(|e| IoError(e, err_string.clone(), Loc::new(0, 0, 0)))?;
@@ -977,12 +1007,14 @@ impl StatementsInFile {
         parse_state: &mut ParseState,
         path_searcher: &impl PathSearcher,
     ) -> Result<Option<StatementsInFile>, Error> {
-        let tup_loc = parse_state.get_current_tup_loc();
+        let tup_loc = parse_state.get_current_tup_loc().clone();
 
         let loc = tup_loc.get_loc();
         let path_buffers = parse_state.get_path_buffers();
         let path_buffers = path_buffers.deref();
         let tup_cwd = parse_state.get_tup_dir_desc();
+        // Include VPATH directories in glob expansion search roots.
+        parse_state.add_vpath_load_dirs(path_searcher)?;
 
         if let Some(script_args) = self.get_run_script_args() {
             if let Some(script) = script_args.first() {
@@ -1358,6 +1390,10 @@ impl DollarExprs {
                 let vs = vs.subst_callargs(m);
                 DExpr(DollarExprs::StripPrefix(prefix, vs))
             }
+            DollarExprs::GroupName(ref vs) => {
+                let vs = vs.subst_callargs(m);
+                DExpr(DollarExprs::GroupName(vs))
+            }
             DollarExprs::Message(msg, l) => {
                 let msg = msg.subst_callargs(m);
                 DExpr(DollarExprs::Message(msg, l.clone()))
@@ -1455,6 +1491,32 @@ impl DollarExprs {
                         result.push(PathExpr::from(body_frag_str.to_string()));
                     }
                     result.extend(body_frag[1..].iter().cloned());
+                    result.push(PathExpr::Sp1);
+                }
+                result.pop();
+                result.cleanup();
+                result
+            }
+            DollarExprs::GroupName(ref body) => {
+                let body = body.subst_pe(m, path_searcher);
+                let body = trim_list(&body);
+                let mut result = Vec::new();
+                for body_frag in body.split(PathExpr::is_ws) {
+                    if body_frag.is_empty() {
+                        debug!("empty body frag");
+                        continue;
+                    }
+                    let body_frag_str = body_frag.cat_ref();
+                    if body_frag_str.starts_with("-L")
+                    {
+                        continue;
+                    }
+                    let rest =  body_frag_str.strip_prefix("-l");
+                    if rest.is_none() {
+                       result.extend(body_frag.iter().cloned());
+                    }else {
+                        result.push(PathExpr::from(rest.unwrap().to_string()));
+                    }
                     result.push(PathExpr::Sp1);
                 }
                 result.pop();
@@ -1590,6 +1652,7 @@ impl DollarExprs {
             DollarExprs::WildCard(glob) => {
                 // wild cards are not expanded in the substitution phase
 
+                
                 let glob = trim_list(&glob);
                 if glob.cat_ref().contains(" ") && !glob.contains(&PathExpr::Sp1) {
                     debug!("wildcard glob contains spaces and is not a list");
@@ -1604,6 +1667,7 @@ impl DollarExprs {
                             Ok(glob.subst_pe(m, path_searcher).cat())
                         })
                         .unwrap();
+                    log::warn!("wildcard glob {}", gstr);
                     debug!("wildcard glob expanded{:?}", gstr);
                     if !gstr.is_empty() {
                         let dir = m.get_tup_base_dir(); // wildcards are evaluated w.r.t tup base dir (tupfile being parsed as opposed to one of its includes)
@@ -2762,6 +2826,8 @@ impl LocatedStatement {
             l = l.expand(parse_state)?; // expand all nested macro refs
         }
         let env_desc = parse_state.cur_env_desc.clone();
+        // Include VPATH entries in load dirs for rule resolution.
+        parse_state.add_vpath_load_dirs(path_searcher)?;
         let load_dirs: Vec<PathDescriptor> = parse_state
             .unique_load_dirs()
             .into_iter()
@@ -2882,7 +2948,7 @@ impl LocatedStatement {
         paths.cleanup();
         let dir = paths.cat();
         debug!("adding search paths:{:?}", dir);
-        let dirs = dir.split(":").collect::<Vec<_>>();
+        let dirs = dir.split(|c| c == ':' || c == ' ' || c == '\n' || c == '\t').collect::<Vec<_>>();
         let tup_cwd = parse_state.get_tup_base_dir();
         for dir in dirs.into_iter() {
             if dir.trim().is_empty() {
@@ -3545,11 +3611,12 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     ) -> Result<(), Error> {
         receiver.iter().try_for_each(|to_resolve| {
             let tup_desc = to_resolve.get_cur_file_desc().clone();
+            log::info!("resolving statements for tupfile {:?}", tup_desc);
             let resolved_rules_ = self
                 .process_raw_statements(to_resolve)
                 .map_err(|e| Err::with_context(e, format!(
                     "while processing statements  for tupfile {:?}", tup_desc
-                )))?;
+                ))).inspect_err(|e| log::error!("error found resolving stmts\n {e}"))?;
             f(resolved_rules_).map_err(|e| Err::with_context(e, format!(
                 "while consuming resolved rules for tupfile {:?}",
                 tup_desc
