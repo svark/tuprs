@@ -7,7 +7,7 @@ use crate::buffers::RuleDescriptor;
 use crate::buffers::RuleRefDescriptor;
 use crate::statements::Loc;
 use crate::statements::TupLoc;
-use tuppaths::descs::{PathDescriptor};
+use tuppaths::descs::PathDescriptor;
 /// Error along with the tupfile path where it occurred
 
 /// Errors returning during parsing and subst-ing Tupfiles

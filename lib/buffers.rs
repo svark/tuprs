@@ -40,7 +40,11 @@ pub trait PathBuffers {
     fn add_rule_pos(&self, e: &IncludeTrail) -> RuleRefDescriptor;
 
     /// Add a path to a group in this buffer
-    fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> Result<GroupPathDescriptor, Error>;
+    fn add_group_pathexpr(
+        &self,
+        tup_cwd: &PathDescriptor,
+        pe: &str,
+    ) -> Result<GroupPathDescriptor, Error>;
     /// return non pattern prefix in the glob path
     fn get_glob_prefix(&self, glob_desc: &GlobPathDescriptor) -> PathDescriptor;
     /// return the portion of path from non pattern prefix to the parent of the glob
@@ -1032,7 +1036,11 @@ impl PathBuffers for BufferObjects {
     }
 
     /// Add a path to a group in this buffer
-    fn add_group_pathexpr(&self, tup_cwd: &PathDescriptor, pe: &str) -> Result<GroupPathDescriptor, Error> {
+    fn add_group_pathexpr(
+        &self,
+        tup_cwd: &PathDescriptor,
+        pe: &str,
+    ) -> Result<GroupPathDescriptor, Error> {
         let mut pd = tup_cwd.clone();
         if pe.contains("/") || pe.contains("\\") {
             let res = tup_cwd.join(pe)?;
@@ -1083,8 +1091,6 @@ impl PathBuffers for BufferObjects {
         }
     }
 
-
-
     /// Add a path to buffer and return its unique id in the buffer
     fn add_path_from<P: AsRef<Path>>(
         &self,
@@ -1106,7 +1112,7 @@ impl PathBuffers for BufferObjects {
 
     /// Add a path to buffer and return its unique id in the buffer
     /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
-    fn add_abs<P:AsRef<Path>>(&self, p:P) -> Result<TupPathDescriptor,Error> {
+    fn add_abs<P: AsRef<Path>>(&self, p: P) -> Result<TupPathDescriptor, Error> {
         if p.as_ref().is_absolute() {
             let num_base_comps = self.path_bo.get_root_dir().components().count();
             let p: PathBuf = p.as_ref().components().skip(num_base_comps).collect();
@@ -1117,8 +1123,7 @@ impl PathBuffers for BufferObjects {
     }
     ///  add a tup file path to the buffer and return its descriptor
     fn add_tup(&self, p: &Path) -> TupPathDescriptor {
-       self.add_abs(p)
-       .expect(
+        self.add_abs(p).expect(
             format!(
                 "unable to add  path {}. Root and Prefix components are not supported",
                 p.display()

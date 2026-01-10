@@ -519,7 +519,6 @@ where
         .for_each(f);
 }
 
-
 impl Cat for &Vec<PathExpr> {
     fn cat(self) -> String {
         self.as_slice().cat()

@@ -123,7 +123,7 @@ pub trait PathSearcher: PathDiscovery {
 
     /// Merge outputs from previous outputs
     fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error>;
-    
+
     /// return underlying implentation's is_dir status and a token i64
     fn is_dir(&self, pd: &PathDescriptor) -> (bool, i64);
 }
@@ -472,16 +472,15 @@ impl DirSearcher {
             .filter_map(move |e| e.ok().and_then(relative_path_on_matching_file_type))
             .filter(|entry| globs.is_match(entry.as_path()));
         for path in filtered_paths {
-            let path_desc = path_buffers
-                .add_abs(path.as_path())
-                .map_err(|e| Err::with_context(
+            let path_desc = path_buffers.add_abs(path.as_path()).map_err(|e| {
+                Err::with_context(
                     e,
                     format!(
                         "while adding abs path {:?} discovered during glob match of {:?}",
-                        path,
-                        to_match
+                        path, to_match
                     ),
-                ))?;
+                )
+            })?;
             let captured_globs = globs.group(path.as_path());
             debug!("found path {:?} with captures {:?}", path, captured_globs);
             if unique_path_descs.insert(path_desc.clone()) {
@@ -570,12 +569,10 @@ impl PathSearcher for DirSearcher {
         OutputHandler::merge(&mut self.output_holder, p, o)
     }
     fn is_dir(&self, pd: &PathDescriptor) -> (bool, i64) {
-        
-        if self.get_root().join(pd.get_path_ref()).is_dir()
-        {
+        if self.get_root().join(pd.get_path_ref()).is_dir() {
             (true, pd.to_u64().cast_signed())
-        }else {
-            (false,0)
+        } else {
+            (false, 0)
         }
     }
 }
@@ -612,10 +609,15 @@ impl DecodeInputPaths for PathExpr {
                 debug!("resolving literal: {:?}", s);
                 let p = path_buffers
                     .add_path_from(tup_cwd, s.as_ref())
-                    .map_err(|e| Err::with_context(e, format!(
-                        "while joining literal '{}' with base {:?} for {:?}",
-                        s, tup_cwd, rule_ref
-                    )))?;
+                    .map_err(|e| {
+                        Err::with_context(
+                            e,
+                            format!(
+                                "while joining literal '{}' with base {:?} for {:?}",
+                                s, tup_cwd, rule_ref
+                            ),
+                        )
+                    })?;
                 let glob_path = GlobPath::build_from(tup_cwd, &p)?;
                 let glob_path_desc = glob_path.get_glob_path_desc();
                 let mut glob_paths = vec![glob_path];
@@ -641,10 +643,15 @@ impl DecodeInputPaths for PathExpr {
                 let to_join = dir.cat();
                 let group_dir = path_buffers
                     .add_path_from(tup_cwd, to_join.as_str())
-                    .map_err(|e| Err::with_context(e, format!(
-                        "while joining group dir '{}' with base {:?} for {:?}",
-                        to_join, tup_cwd, rule_ref
-                    )))?;
+                    .map_err(|e| {
+                        Err::with_context(
+                            e,
+                            format!(
+                                "while joining group dir '{}' with base {:?} for {:?}",
+                                to_join, tup_cwd, rule_ref
+                            ),
+                        )
+                    })?;
                 let grp_desc = path_buffers.add_group_pathexpr(&group_dir, name.cat().as_str())?;
                 {
                     debug!(
@@ -654,9 +661,9 @@ impl DecodeInputPaths for PathExpr {
                     );
                     if let Some(paths) = path_searcher.get_outs().get().get_group(&grp_desc) {
                         vs.extend(
-                            paths
-                                .iter()
-                                .map(|x| InputResolvedType::GroupEntry(grp_desc.clone(), x.clone())),
+                            paths.iter().map(|x| {
+                                InputResolvedType::GroupEntry(grp_desc.clone(), x.clone())
+                            }),
                         )
                     } else {
                         //let (, _) = bo.add_path(Path::new(&*p.cat()), tup_cwd);
@@ -1217,10 +1224,17 @@ fn get_deglobbed_rule(
         let fullp = path_buffers
             .add_path_from(tup_cwd, dir.as_slice().cat_ref().as_ref())
             .inspect(|p| debug!("group:{:?}/<{:?}>", p, x.cat()))
-            .map_err(|e| Err::with_context(e, format!(
-                "while joining group path '{}' with base {:?} for {:?}",
-                dir.cat(), tup_cwd, rule_ref
-            )))?;
+            .map_err(|e| {
+                Err::with_context(
+                    e,
+                    format!(
+                        "while joining group path '{}' with base {:?} for {:?}",
+                        dir.cat(),
+                        tup_cwd,
+                        rule_ref
+                    ),
+                )
+            })?;
         let desc = path_buffers.add_group_pathexpr(&fullp, x.cat().as_str())?;
         Some(desc)
     } else {
@@ -1905,7 +1919,9 @@ impl ResolvePaths for StatementsInFile {
             let (art, _) =
                 stmt.resolve_paths(tup_desc, path_searcher, path_buffers, other_tupfiles_read)?;
             debug!("{:?}", art);
-            if !art.is_empty() {resolved_rules.extend(art);}
+            if !art.is_empty() {
+                resolved_rules.extend(art);
+            }
             Ok(())
         })?;
         Ok(resolved_rules)
