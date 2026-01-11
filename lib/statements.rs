@@ -127,7 +127,6 @@ pub(crate) enum PathExpr {
     TaskRef(Ident),
 }
 
-
 impl Default for PathExpr {
     fn default() -> Self {
         PathExpr::Literal(String::new())
