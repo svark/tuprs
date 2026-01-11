@@ -155,7 +155,7 @@ fn parse_x() {
     )
     .unwrap();
     let arts = parser
-        .parse("hwdesktop/unity/modules/designexplorer/Tupfile")
+        .parse("hwdesktop/batchmesh/Tupfile")
         .map_err(|e| {
             eprintln!("{:?}", e.to_string());
             e
