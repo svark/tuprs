@@ -2176,7 +2176,7 @@ impl DollarExprs {
                 let msg = msg.subst_pe(m, path_searcher);
                 let msg = msg.cat();
                 let tupfile_path = m.get_cur_file_desc().get_path_ref();
-                let msg  = || format!("{}: {}", tupfile_path, msg);
+                let msg = || format!("{}: {}", tupfile_path, msg);
                 match l {
                     Level::Warning => log::warn!("{}", msg()),
                     Level::Error => {
