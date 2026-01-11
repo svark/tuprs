@@ -3626,14 +3626,14 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
                 .map_err(|e| {
                     Err::with_context(
                         e,
-                        format!("while processing statements  for tupfile {:?}", tup_desc),
+                        format!("While processing statements for tupfile {}", tup_desc),
                     )
                 })
                 .inspect_err(|e| log::error!("error found resolving stmts\n {e}"))?;
             f(resolved_rules_).map_err(|e| {
                 Err::with_context(
                     e,
-                    format!("while consuming resolved rules for tupfile {:?}", tup_desc),
+                    format!("while consuming resolved rules for tupfile {}", tup_desc),
                 )
             })?;
             Ok::<(), Error>(())

@@ -22,7 +22,7 @@ use crate::buffers::{
     RuleRefDescriptor, TaskDescriptor,
 };
 use crate::decode::Index::All;
-use crate::errors::{Error as Err, Error};
+use crate::errors::{Error as Err, Error, WrapErr};
 use crate::parser::reparse_literal_as_input;
 use crate::ruleio::{FormatReplacements, InputsAsPaths, OutputsAsPaths};
 use crate::statements::*;
@@ -472,15 +472,10 @@ impl DirSearcher {
             .filter_map(move |e| e.ok().and_then(relative_path_on_matching_file_type))
             .filter(|entry| globs.is_match(entry.as_path()));
         for path in filtered_paths {
-            let path_desc = path_buffers.add_abs(path.as_path()).map_err(|e| {
-                Err::with_context(
-                    e,
-                    format!(
-                        "while adding abs path {:?} discovered during glob match of {:?}",
-                        path, to_match
-                    ),
-                )
-            })?;
+            let path_desc = path_buffers.add_abs(path.as_path()).wrap_err(format!(
+                "while adding abs path {:?} discovered during glob match of {:?}",
+                path, to_match
+            ))?;
             let captured_globs = globs.group(path.as_path());
             debug!("found path {:?} with captures {:?}", path, captured_globs);
             if unique_path_descs.insert(path_desc.clone()) {
@@ -629,9 +624,9 @@ impl DecodeInputPaths for PathExpr {
                     //debug!("glob str: {:?}", glob_path.get_abs_path());
                     glob_paths.push(glob_path);
                 }
-
-                let pes =
-                    path_searcher.discover_paths(path_buffers, glob_paths.as_slice(), Either)?;
+                let pes = path_searcher
+                    .discover_paths(path_buffers, glob_paths.as_slice(), Either)
+                    .wrap_err("Discovering glob paths")?;
                 if pes.is_empty() {
                     log::warn!("Could not find any paths matching {:?}", glob_path_desc);
                     vs.push(InputResolvedType::UnResolvedFile(glob_path_desc));
@@ -643,15 +638,10 @@ impl DecodeInputPaths for PathExpr {
                 let to_join = dir.cat();
                 let group_dir = path_buffers
                     .add_path_from(tup_cwd, to_join.as_str())
-                    .map_err(|e| {
-                        Err::with_context(
-                            e,
-                            format!(
-                                "while joining group dir '{}' with base {:?} for {:?}",
-                                to_join, tup_cwd, rule_ref
-                            ),
-                        )
-                    })?;
+                    .wrap_err(format!(
+                        "Joining group dir '{}' with base {:?} for {:?}",
+                        to_join, tup_cwd, rule_ref
+                    ))?;
                 let grp_desc = path_buffers.add_group_pathexpr(&group_dir, name.cat().as_str())?;
                 {
                     debug!(
@@ -723,9 +713,13 @@ impl DecodeInputPaths for Vec<PathExpr> {
         let decoded: Result<Vec<_>, _> = self
             .iter()
             .inspect(|x| debug!("before decode {:?}", x))
-            .map(|x| x.decode(tup_cwd, path_searcher, path_buffers, rule_ref, &search_dirs))
+            .map(|x| {
+                x.decode(tup_cwd, path_searcher, path_buffers, rule_ref, &search_dirs)
+                    .wrap_err(format!("Decoding input {}", x))
+            })
             .inspect(|x| debug!("after {:?}", x))
             .collect();
+        let decoded = decoded.wrap_err("Decoding inputs for rule")?;
         let filter_out_excludes =
             |(i, ips): (usize, Vec<InputResolvedType>)| -> Vec<InputResolvedType> {
                 // find the immediately following exclude pattern
@@ -739,7 +733,6 @@ impl DecodeInputPaths for Vec<PathExpr> {
                     ips
                 }
             };
-        let decoded = decoded?;
         debug!("done processing inputs");
         Ok(decoded
             .into_iter()
@@ -1224,17 +1217,12 @@ fn get_deglobbed_rule(
         let fullp = path_buffers
             .add_path_from(tup_cwd, dir.as_slice().cat_ref().as_ref())
             .inspect(|p| debug!("group:{:?}/<{:?}>", p, x.cat()))
-            .map_err(|e| {
-                Err::with_context(
-                    e,
-                    format!(
-                        "while joining group path '{}' with base {:?} for {:?}",
-                        dir.cat(),
-                        tup_cwd,
-                        rule_ref
-                    ),
-                )
-            })?;
+            .wrap_err(format!(
+                "while joining group path '{}' with base {:?} for {:?}",
+                dir.cat(),
+                tup_cwd,
+                rule_ref
+            ))?;
         let desc = path_buffers.add_group_pathexpr(&fullp, x.cat().as_str())?;
         Some(desc)
     } else {
@@ -1738,7 +1726,7 @@ impl LocatedStatement {
         // use same resolve_groups as input
         let mut output = OutputHolder::new();
 
-        debug!(
+        log::debug!(
             "resolving  rule at dir:{:?} rule: {:?}",
             tup_cwd.get_path_ref(),
             &self
@@ -1781,21 +1769,25 @@ impl LocatedStatement {
             }
 
             let rule_ref = path_buffers.add_rule_pos(rule_position);
-            let mut inpdec = reparsed_primary.decode(
-                &tup_cwd,
-                path_searcher,
-                path_buffers,
-                &rule_ref,
-                &search_dirs,
-            )?;
+            let mut inpdec = reparsed_primary
+                .decode(
+                    &tup_cwd,
+                    path_searcher,
+                    path_buffers,
+                    &rule_ref,
+                    &search_dirs,
+                )
+                .wrap_err("Parsing primary inputs of rule")?;
             let mut unique_deglobbed = HashSet::new();
-            let secondinpdec = reparsed_secondary.decode(
-                &tup_cwd,
-                path_searcher,
-                path_buffers,
-                &rule_ref,
-                &search_dirs,
-            )?;
+            let secondinpdec = reparsed_secondary
+                .decode(
+                    &tup_cwd,
+                    path_searcher,
+                    path_buffers,
+                    &rule_ref,
+                    &search_dirs,
+                )
+                .wrap_err("Parsing secondary inputs of rule")?;
             let resolver = RuleContext {
                 tup_cwd: tup_cwd.clone(),
                 rule_formula,
@@ -1833,15 +1825,21 @@ impl LocatedStatement {
                         core::slice::from_ref(&input),
                         path_buffers,
                         env,
-                    )?;
-                    delink.gather_outputs(&mut output, path_buffers)?;
+                    )
+                    .wrap_err("Deglobbing rule")?;
+                    delink
+                        .gather_outputs(&mut output, path_buffers)
+                        .wrap_err("Gathering outputs of rule")?;
                     deglobbed.push(delink);
                 }
             } else if !inpdec.is_empty() || !secondinpdec.is_empty() {
                 debug!("Resolving rule {:?} at {:?}", rule_ref, tup_cwd);
-                let delink = get_deglobbed_rule(&resolver, inpdec.as_slice(), path_buffers, env)?;
+                let delink = get_deglobbed_rule(&resolver, inpdec.as_slice(), path_buffers, env)
+                    .wrap_err("Deglobbing rule")?;
                 debug!("Resolved link: {:?}", delink.get_rule_desc().get_name());
-                delink.gather_outputs(&mut output, path_buffers)?;
+                delink
+                    .gather_outputs(&mut output, path_buffers)
+                    .wrap_err("Gathering outputs of rule")?;
                 deglobbed.push(delink);
             }
             path_searcher.merge(path_buffers, &mut output)?;
@@ -1916,8 +1914,12 @@ impl ResolvePaths for StatementsInFile {
         let mut resolved_rules = ResolvedRules::new(tup_desc.clone());
         debug!("Resolving paths for rules in {:?}", tup_desc.as_ref());
         self.try_for_each(|stmt| -> Result<(), Err> {
-            let (art, _) =
-                stmt.resolve_paths(tup_desc, path_searcher, path_buffers, other_tupfiles_read)?;
+            let (art, _) = stmt
+                .resolve_paths(tup_desc, path_searcher, path_buffers, other_tupfiles_read)
+                .wrap_err(format!(
+                    "Resolving statement {}\n parsed from {}",
+                    stmt, tup_desc
+                ))?;
             debug!("{:?}", art);
             if !art.is_empty() {
                 resolved_rules.extend(art);

@@ -90,7 +90,7 @@ pub enum Error {
     PathError(#[from] tuppaths::errors::Error),
 
     /// Wrapped error with context
-    #[error("Error {0} during \n {1}")]
+    #[error("Error {0} \n {1}")]
     WithContext(Box<Error>, String),
 }
 
@@ -107,5 +107,24 @@ impl Error {
     /// Wrap an error with context
     pub fn with_context(e: Error, context: String) -> Error {
         Error::WithContext(Box::new(e), context)
+    }
+}
+pub(crate) trait WrapErr {
+    type Output;
+    fn wrap_err<D>(self, msg: D) -> Result<Self::Output, Error>
+    where
+        D: ToString,
+        Self: Sized;
+}
+impl<T> WrapErr for Result<T, Error> {
+    type Output = T;
+    fn wrap_err<D>(self, msg: D) -> Result<T, Error>
+    where
+        D: ToString,
+    {
+        match self {
+            Ok(t) => Ok(t),
+            Err(e) => Err(Error::with_context(e, msg.to_string())),
+        }
     }
 }

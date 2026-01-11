@@ -27,6 +27,7 @@ use nom::{AsBytes, Offset};
 use nom_language::error::{VerboseError, VerboseErrorKind};
 use nom_locate::LocatedSpan;
 
+use crate::errors::WrapErr;
 use crate::statements::Level;
 use crate::statements::*;
 use tuppaths::descs::PathDescriptor;
@@ -2029,12 +2030,10 @@ pub(crate) fn parse_tupfile<P: AsRef<Path>>(
     if contents.last() != Some(&b'\n') {
         contents.push(b'\n');
     }
-    parse_statements_until_eof(Span::new(contents.as_bytes())).map_err(|e| {
-        crate::errors::Error::with_context(
-            e,
-            format!("Parsing :{}", filename.to_string_lossy().to_string()),
-        )
-    })
+    parse_statements_until_eof(Span::new(contents.as_bytes())).wrap_err(format!(
+        "Parsing :{}",
+        filename.to_string_lossy().to_string()
+    ))
 }
 
 /// locate TupRules.tup\[.lua\] walking up the directory tree
