@@ -781,42 +781,26 @@ pub trait GroupInputs {
 }
 
 /// replace all occurrences of <{}> in rule strings with the paths that are associated with corresponding group input for that that rule.
-pub fn decode_group_captures(
+pub fn decode_group_captures<'a>(
     inputs: &impl GroupInputs,
     _rule_ref: &TupLoc,
     rule_id: i64,
     dirid: i64,
-    rule_str: &str,
-) -> String {
-    let replacer = |caps: &Captures| {
-        let c = caps
+    rule_str: &'a str,
+) -> Cow<'a, str> {
+    perc_group_regex().replace_all(rule_str, |caps: &Captures| {
+        let full_match = caps.get(0).unwrap().as_str();
+        debug!("group capture before replace :{}", full_match);
+        if let Some(paths) = caps
             .get(1)
-            .and_then(|c| inputs.get_group_paths(c.as_str(), rule_id, dirid));
-        c
-    };
-    let reps: Vec<_> = perc_group_regex()
-        .captures(rule_str)
-        .iter()
-        .inspect(|x| {
-            debug!(
-                "group capture before replace :{}",
-                x.get(0).unwrap().as_str()
-            )
-        })
-        .filter_map(replacer)
-        .inspect(|x| {
-            debug!("group capture after replace :{}", x.as_str());
-        })
-        .collect();
-    let mut i = 0;
-    let d = perc_group_regex()
-        .replace(rule_str, |_: &Captures| {
-            let r = &reps[i];
-            i += 1;
-            r.as_str()
-        })
-        .to_string();
-    d
+            .and_then(|c| inputs.get_group_paths(c.as_str(), rule_id, dirid))
+        {
+            debug!("group capture after replace :{}", paths.as_str());
+            paths
+        } else {
+            full_match.to_string()
+        }
+    })
 }
 fn replace_io_patterns<'a, F>(input: &str, replacer: F) -> String
 where
