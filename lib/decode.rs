@@ -121,8 +121,6 @@ pub trait PathSearcher: PathDiscovery {
     /// Root of the tup hierarchy, where tupfiles are found
     fn get_root(&self) -> &Path;
 
-    /// Merge outputs from previous outputs
-    fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error>;
 
     /// return underlying implentation's is_dir status and a token i64
     fn is_dir(&self, pd: &PathDescriptor) -> (bool, i64);
@@ -560,9 +558,6 @@ impl PathSearcher for DirSearcher {
         self.root.as_path()
     }
 
-    fn merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error> {
-        OutputHandler::merge(&mut self.output_holder, p, o)
-    }
     fn is_dir(&self, pd: &PathDescriptor) -> (bool, i64) {
         if self.get_root().join(pd.get_path_ref()).is_dir() {
             (true, pd.to_u64().cast_signed())
@@ -719,7 +714,7 @@ impl DecodeInputPaths for Vec<PathExpr> {
             })
             .inspect(|x| debug!("after {:?}", x))
             .collect();
-        let decoded = decoded.wrap_err("Decoding inputs for rule")?;
+        let decoded = decoded?;
         let filter_out_excludes =
             |(i, ips): (usize, Vec<InputResolvedType>)| -> Vec<InputResolvedType> {
                 // find the immediately following exclude pattern
@@ -1528,7 +1523,8 @@ pub(crate) trait ResolvePaths {
     fn resolve_paths(
         &self,
         tup_desc: &TupPathDescriptor,
-        path_searcher: &mut impl PathSearcher,
+        path_searcher: &impl PathSearcher,
+        output_holder: &mut impl OutputHandler,
         path_buffers: &impl PathBuffers,
         other_tupfiles_read: &Vec<PathDescriptor>,
     ) -> Result<ResolvedRules, Err>;
@@ -1538,7 +1534,8 @@ impl ResolvedRules {
     /// resolve missing inputs and outputs in all the resolved links
     pub fn resolve_paths(
         &mut self,
-        path_searcher: &mut impl PathSearcher,
+        path_searcher: &impl PathSearcher,
+        output_holder: &mut OutputHolder,
         path_buffers: &impl PathBuffers,
         _: &Vec<PathDescriptor>,
     ) -> Result<(), Err> {
@@ -1551,6 +1548,7 @@ impl ResolvedRules {
                 let mut art = resolved_link.resolve_paths(
                     &cur_tup_desc,
                     path_searcher,
+                    output_holder,
                     path_buffers,
                     resolved_link.get_tupfiles_read(),
                 )?;
@@ -1570,9 +1568,10 @@ impl ResolvePaths for ResolvedLink {
     fn resolve_paths(
         &self,
         tup_desc: &TupPathDescriptor,
-        path_searcher: &mut impl PathSearcher,
+        path_searcher: &impl PathSearcher,
+        output_holder: &mut impl OutputHandler,
         path_buffers: &impl PathBuffers,
-        tupfiles_read: &Vec<PathDescriptor>,
+        other_tupfiles_read: &Vec<PathDescriptor>,
     ) -> Result<ResolvedRules, Err> {
         let mut rlink: ResolvedLink = self.clone();
         rlink.primary_sources.clear();
@@ -1650,12 +1649,12 @@ impl ResolvePaths for ResolvedLink {
         }
         let mut out = OutputHolder::new();
         self.gather_outputs(&mut out, path_buffers)?;
-        path_searcher.merge(path_buffers, &mut out)?;
+        output_holder.merge(path_buffers, &mut out)?;
         Ok(ResolvedRules::from(
             vec![rlink],
             vec![],
             tup_desc.clone(),
-            tupfiles_read.clone(),
+            other_tupfiles_read.clone(),
             Default::default(),
         ))
     }
@@ -1701,7 +1700,8 @@ impl LocatedStatement {
     pub(crate) fn resolve_paths(
         &self,
         tup_desc: &TupPathDescriptor,
-        path_searcher: &mut impl PathSearcher,
+        path_searcher: &impl PathSearcher,
+        output_holder: &mut impl OutputHandler,
         path_buffers: &impl PathBuffers,
         tupfiles_read: &Vec<PathDescriptor>,
     ) -> Result<(ResolvedRules, OutputHolder), Err> {
@@ -1826,7 +1826,7 @@ impl LocatedStatement {
                     .wrap_err("Gathering outputs of rule")?;
                 deglobbed.push(delink);
             }
-            path_searcher.merge(path_buffers, &mut output)?;
+            output_holder.merge(path_buffers, &mut output)?;
         }
 
         let mut tasks = Vec::new();
@@ -1891,7 +1891,8 @@ impl ResolvePaths for StatementsInFile {
     fn resolve_paths(
         &self,
         tup_desc: &TupPathDescriptor,
-        path_searcher: &mut impl PathSearcher,
+        path_searcher: &impl PathSearcher,
+        output_holder: &mut impl OutputHandler,
         path_buffers: &impl PathBuffers,
         other_tupfiles_read: &Vec<PathDescriptor>,
     ) -> Result<ResolvedRules, Err> {
@@ -1899,7 +1900,7 @@ impl ResolvePaths for StatementsInFile {
         debug!("Resolving paths for rules in {:?}", tup_desc.as_ref());
         self.try_for_each(|stmt| -> Result<(), Err> {
             let (art, _) = stmt
-                .resolve_paths(tup_desc, path_searcher, path_buffers, other_tupfiles_read)
+                .resolve_paths(tup_desc, path_searcher, output_holder, path_buffers, other_tupfiles_read)
                 .wrap_err(format!(
                     "Resolving statement {}\n parsed from {}",
                     stmt, tup_desc
@@ -1907,6 +1908,8 @@ impl ResolvePaths for StatementsInFile {
             debug!("{:?}", art);
             if !art.is_empty() {
                 resolved_rules.extend(art);
+            }else {
+                log::warn!("No resolved rules from statement {}\n parsed from {}", stmt, tup_desc);
             }
             Ok(())
         })?;

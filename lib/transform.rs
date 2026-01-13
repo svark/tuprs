@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::Write;
 use std::io::{BufRead, BufWriter};
 use std::ops::ControlFlow::Continue;
-use std::ops::{AddAssign, ControlFlow, Deref, DerefMut};
+use std::ops::{AddAssign, ControlFlow, Deref};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -2899,6 +2899,7 @@ impl LocatedStatement {
                     acc
                 },
             );
+            log::debug!("eval block optimized to deglob statements: {:?}", newstats);
             return Ok(parse_state.to_statements_in_file(newstats));
         } else if !body.is_empty() {
             let body_str = body.cat() + "\n";
@@ -3146,6 +3147,7 @@ pub struct TupParser<Q: PathSearcher + Sized + Send + 'static> {
     path_searcher: Arc<RwLock<Q>>,
     config_vars: HashMap<String, Vec<String>>,
     statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, StatementsInFile>>>, //< cache of parsed statements for each included file
+    output_holder: OutputHolder,
 }
 
 /// ResolvedRules represent fully resolved rules/tasks along with their inputs and outputs that the parser gathers.
@@ -3486,7 +3488,8 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
 
     /// return outputs gathered by this parser and the relationships to its rule, directory etc
     pub fn get_outs(&self) -> OutputHolder {
-        self.get_searcher().get_outs().clone()
+        //self.get_searcher().get_outs().clone()
+        self.output_holder.clone()
     }
 
     /// list of other tupfiles read by the parser while parsing a single tupfile
@@ -3520,6 +3523,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             path_searcher,
             config_vars,
             statement_cache: Arc::new(RwLock::new(HashMap::new())),
+            output_holder: Default::default(),
         }
     }
 
@@ -3605,22 +3609,20 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         receiver: Receiver<StatementsToResolve>,
         mut f: impl FnMut(ResolvedRules) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        receiver.iter().try_for_each(|to_resolve| {
+        let mut holder = self.get_outs();
+        while let Ok(to_resolve) = receiver.recv() {
             let tup_desc = to_resolve.get_cur_file_desc().clone();
             log::info!("resolving statements for tupfile {:?}", tup_desc);
             let resolved_rules_ = self
-                .process_raw_statements(to_resolve)
+                .process_raw_statements(to_resolve, &mut holder)
                 .wrap_err(format!(
                     "While processing statements for tupfile {}",
                     tup_desc
                 ))
                 .inspect_err(|e| log::error!("error found resolving stmts\n {e}"))?;
-            f(resolved_rules_).wrap_err(format!(
-                "while consuming resolved rules for tupfile {}",
-                tup_desc
-            ))?;
-            Ok::<(), Error>(())
-        })?;
+            f(resolved_rules_)
+                .wrap_err(format!("Consuming resolved rules for tupfile {}", tup_desc))?;
+        }
         drop(receiver);
         Ok(())
     }
@@ -3651,20 +3653,25 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             self.path_buffers.clone(),
         );
         // now we ready to parse the tupfile or tupfile.lua
+        let mut output_holder = self.get_outs();
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
             // both path buffers and path searcher are rc-cloned (with shared ref cells) and passed to the lua parser
-            let (arts, _) = parse_script(parse_state, self.path_searcher.clone())?;
+            let (arts, _) = parse_script(parse_state, self.path_searcher.clone(), output_holder)?;
             Ok(arts)
         } else {
             let stmts = parse_tupfile(tup_file_path)?;
-            self.process_raw_statements(StatementsToResolve::new(stmts, parse_state))
+            self.process_raw_statements(
+                StatementsToResolve::new(stmts, parse_state),
+                &mut output_holder,
+            )
         }
     }
 
     fn process_raw_statements(
         &self,
         statements_to_resolve: StatementsToResolve,
+        output_holder: &mut OutputHolder,
     ) -> Result<ResolvedRules, Error> {
         let mut parse_state = statements_to_resolve.parse_state;
         let stmts = statements_to_resolve.statements;
@@ -3673,18 +3680,24 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         let stmts = parse_state.to_statements_in_file(stmts);
         let stmts_in_file: StatementsInFile = {
             let searcher = self.get_path_searcher();
-            let res = stmts.subst(&mut parse_state, searcher.deref())?;
+            let res = stmts
+                .subst(&mut parse_state, searcher.deref())
+                .wrap_err(format!(
+                    "Substituting in  : {}",
+                    parse_state.get_include_path_str()
+                ))?;
             //let res = res.expand_run(&mut parse_state, searcher.deref())?;
             Ok::<StatementsInFile, Error>(res)
         }?;
-        debug!(
+        log::warn!(
             "num statements after expand run:{:?} in tupfile {:?}",
             stmts_in_file.len(),
             parse_state.get_cur_file()
         );
         stmts_in_file.resolve_paths(
             &tup_desc,
-            self.get_mut_searcher().deref_mut(),
+            self.get_searcher().deref(),
+            output_holder,
             self.borrow_ref(),
             parse_state.get_tupfiles_read(),
         )
@@ -3696,10 +3709,16 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         type R = Result<(), Error>;
         self.with_path_buffers_do(|path_buffers| -> R {
             self.with_path_searcher_do(|path_searcher| -> R {
+                let mut output_holder = self.get_outs();
                 resolved_rules_vec
                     .iter_mut()
                     .try_for_each(|resolved_rules| -> R {
-                        resolved_rules.resolve_paths(path_searcher, path_buffers, &vec![])?;
+                        resolved_rules.resolve_paths(
+                            path_searcher,
+                            &mut output_holder,
+                            path_buffers,
+                            &vec![],
+                        )?;
                         Ok(())
                     })?;
                 Ok(())
