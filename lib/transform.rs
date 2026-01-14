@@ -1,5 +1,4 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
-use xxhash_rust::xxh3::Xxh3;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -14,6 +13,7 @@ use std::process::Stdio;
 use std::string::String;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::vec::Drain;
+use xxhash_rust::xxh3::Xxh3;
 
 use crate::buffers::{
     BufferObjects, EnvDescriptor, EnvList, GenBufferObject, GroupBufferObject, OutputHolder,
@@ -21,8 +21,8 @@ use crate::buffers::{
 };
 use crate::buffers::{GlobPath, InputResolvedType, SelOptions};
 use crate::decode::{
-    paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathDiscovery,
-    PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance,
+    paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathDiscovery, PathSearcher,
+    ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance,
 };
 use crate::errors::Error::{IoError, RootNotFound};
 use crate::errors::WrapErr;
@@ -1130,7 +1130,8 @@ impl StatementsInFile {
                             tup_run_file_name, tup_cwd, loc
                         ))?;
                     parse_state.register_temp_owner(&tuprun_pd);
-                    let _tempfile = TempFile::new(contents.as_slice(), path_searcher.get_root(), &tuprun_pd);
+                    let _tempfile =
+                        TempFile::new(contents.as_slice(), path_searcher.get_root(), &tuprun_pd);
                     let lstmts = parse_state.switch_tupfile_and_process(&tuprun_pd, |ps| {
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_slice()))
                             .expect(
@@ -1616,7 +1617,8 @@ impl DollarExprs {
                         )
                     });
                 m.register_temp_owner(&dump_file_pd);
-                let _tempfile = TempFile::new(body_str.as_bytes(), path_searcher.get_root(), &dump_file_pd);
+                let _tempfile =
+                    TempFile::new(body_str.as_bytes(), path_searcher.get_root(), &dump_file_pd);
 
                 m.switch_tupfile_and_process(&dump_file_pd, |ps| -> Result<Vec<PathExpr>, Error> {
                     let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
@@ -2029,7 +2031,11 @@ impl DollarExprs {
                 m.register_temp_owner(&dump_if_else_pd);
                 if cond.is_empty() {
                     let else_part_str = else_part.cat() + "\n";
-                    let _tempfile = TempFile::new(else_part_str.as_bytes(),path_searcher.get_root(), &dump_if_else_pd);
+                    let _tempfile = TempFile::new(
+                        else_part_str.as_bytes(),
+                        path_searcher.get_root(),
+                        &dump_if_else_pd,
+                    );
                     m.switch_tupfile_and_process(&dump_if_else_pd, |m| {
                         let else_part =
                             parse_statements_until_eof(Span::new(else_part_str.as_bytes()))
@@ -2050,7 +2056,11 @@ impl DollarExprs {
                     .unwrap_or_default()
                 } else {
                     let then_part_str = then_part.cat() + "\n";
-                    let _tempfile = TempFile::new(then_part_str.as_bytes(), path_searcher.get_root(), &dump_if_else_pd);
+                    let _tempfile = TempFile::new(
+                        then_part_str.as_bytes(),
+                        path_searcher.get_root(),
+                        &dump_if_else_pd,
+                    );
                     m.switch_tupfile_and_process(&dump_if_else_pd, |m| {
                         let then_part =
                             parse_statements_until_eof(Span::new(then_part_str.as_bytes()))
@@ -2085,7 +2095,8 @@ impl DollarExprs {
                         .add_path_from(&m.get_tup_dir_desc(), dump_eval_file_name.as_str())
                         .unwrap();
                     m.register_temp_owner(&dump_eval_file_pd);
-                    let _tempfile = TempFile::new(val.as_bytes(), path_searcher.get_root(), &dump_eval_file_pd);
+                    let _tempfile =
+                        TempFile::new(val.as_bytes(), path_searcher.get_root(), &dump_eval_file_pd);
                     m.switch_tupfile_and_process(&dump_eval_file_pd, |m| {
                         let stmts = parse_statements_until_eof(Span::new(val.as_bytes()))
                             .unwrap_or_else(|e| {
@@ -2927,7 +2938,11 @@ impl LocatedStatement {
                 .get_path_buffers()
                 .add_path_from(&tup_cwd, dump_eval_file_name)?;
             parse_state.register_temp_owner(&dump_eval_file_pd);
-            let _tempfile = TempFile::new(body_str.as_bytes(), path_searcher.get_root(), &dump_eval_file_pd);
+            let _tempfile = TempFile::new(
+                body_str.as_bytes(),
+                path_searcher.get_root(),
+                &dump_eval_file_pd,
+            );
 
             let res = parse_state.switch_tupfile_and_process(&dump_eval_file_pd, |ps| {
                 debug!("evaluating block: {:?}", body_str.as_str());
@@ -3322,8 +3337,7 @@ pub struct ReadWriteBufferObjects {
     bo: Arc<BufferObjects>,
 }
 
-impl ReadWriteBufferObjects {
-}
+impl ReadWriteBufferObjects {}
 
 impl ReadWriteBufferObjects {
     /// Constructor
@@ -3630,7 +3644,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         while let Ok(to_resolve) = receiver.recv() {
             let tup_desc = to_resolve.get_cur_file_desc().clone();
             log::info!("resolving statements for tupfile {:?}", tup_desc);
-            let (resolved_rules_,_) = self
+            let (resolved_rules_, _) = self
                 .process_raw_statements(to_resolve)
                 .wrap_err(format!(
                     "While processing statements for tupfile {}",
@@ -3648,7 +3662,10 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     /// Upon success the parser returns `ResolvedRules` that holds  references to all the resolved outputs by their ids
     /// The parser currently also allows you to read its buffers (id-object pairs) and even update it based on externally saved data via `ReadBufferObjects` and `WriteBufObjects`
     /// See [ResolvedRules]
-    pub fn parse<P: AsRef<Path>>(&mut self, tup_file_path: P) -> Result<(ResolvedRules,OutputHolder), Error> {
+    pub fn parse<P: AsRef<Path>>(
+        &mut self,
+        tup_file_path: P,
+    ) -> Result<(ResolvedRules, OutputHolder), Error> {
         // add tupfile path and tup environment to the buffer
         let (tup_desc, env_desc) = self.with_path_buffers_do(|path_buffers| {
             let tup_desc = path_buffers.add_tup(tup_file_path.as_ref());
@@ -3706,15 +3723,15 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             parse_state.get_cur_file()
         );
         let mut output_holder = parse_state.get_outs().clone();
-        stmts_in_file.resolve_paths(
-            &tup_desc,
-            self.get_searcher().deref(),
-            &mut output_holder,
-            self.borrow_ref(),
-            parse_state.get_tupfiles_read(),
-        ).map(|resolved_rules| {
-            (resolved_rules, output_holder)
-        })
+        stmts_in_file
+            .resolve_paths(
+                &tup_desc,
+                self.get_searcher().deref(),
+                &mut output_holder,
+                self.borrow_ref(),
+                parse_state.get_tupfiles_read(),
+            )
+            .map(|resolved_rules| (resolved_rules, output_holder))
     }
 
     /// Re-resolve for resolved groups that were left unresolved in the first round of parsing
@@ -3923,10 +3940,7 @@ pub fn compute_glob_hash(
 }
 
 /// hash of a rglob is the hash of the list of folders in the directory and subdirectories that match the glob  within the glob non pattern prefix directory
-pub fn compute_rglob_hash(
-    bo: &impl PathBuffers,
-    p0: &GlobPathDescriptor,
-) -> Result<String, Error> {
+pub fn compute_rglob_hash(bo: &impl PathBuffers, p0: &GlobPathDescriptor) -> Result<String, Error> {
     let parent = p0.get_parent_descriptor();
     let glob_path = GlobPath::build_from(&PathDescriptor::default(), &parent)?;
     let root = glob_path.get_non_pattern_abs_path();

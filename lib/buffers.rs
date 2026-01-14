@@ -820,7 +820,6 @@ impl GeneratedFiles {
     }
 }
 
-
 impl OutputHandler for OutputHolder {
     fn get_output_files(&self) -> MappedRwLockReadGuard<'_, BTreeSet<PathDescriptor>> {
         RwLockReadGuard::map(self.get(), |x| x.get_output_files())
@@ -834,7 +833,7 @@ impl OutputHandler for OutputHolder {
 
     fn apply_for_group<F>(&self, g: &GroupPathDescriptor, mut f: F) -> bool
     where
-        F: FnMut(&BTreeSet<PathDescriptor>) -> ()
+        F: FnMut(&BTreeSet<PathDescriptor>) -> (),
     {
         let r = self.get();
         let mut has_some = false;
@@ -853,7 +852,7 @@ impl OutputHandler for OutputHolder {
 
     fn apply_for_bin<F>(&self, b: &BinDescriptor, mut f: F) -> bool
     where
-        F: FnMut(&BTreeSet<PathDescriptor>) -> ()
+        F: FnMut(&BTreeSet<PathDescriptor>) -> (),
     {
         let r = self.get();
         let mut has_some = false;
@@ -909,7 +908,11 @@ impl OutputHandler for OutputHolder {
         self.get_mut().add_bin_entry(bin_desc, pd)
     }
 
-    fn merge_self_with(&mut self, p: &impl PathBuffers, out: &impl OutputHandler) -> Result<(), Error> {
+    fn merge_self_with(
+        &mut self,
+        p: &impl PathBuffers,
+        out: &impl OutputHandler,
+    ) -> Result<(), Error> {
         self.get_mut().merge_self_with(p, out)
     }
     fn discover_paths(
@@ -937,7 +940,6 @@ impl OutputHandler for OutputHolder {
         }
         Ok(vs)
     }
-
 }
 
 /// Wrapper over Burnt sushi's GlobMatcher

@@ -403,7 +403,11 @@ pub trait OutputHandler {
     /// merge groups, outputs and bins from other `OutputHandler`
     ///  erorr-ing out if unique parent rule
     /// of an output is not found
-    fn merge_self_with(&mut self, p: &impl PathBuffers, out: &impl OutputHandler) -> Result<(), Err>;
+    fn merge_self_with(
+        &mut self,
+        p: &impl PathBuffers,
+        out: &impl OutputHandler,
+    ) -> Result<(), Err>;
 
     /// Paths matching globs in outputs so far
     fn discover_paths(
@@ -2024,9 +2028,9 @@ pub fn parse_tupfiles(
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new_at(root))?;
     let mut output_holder = OutputHolder::new();
     for tup_file_path in tupfiles.iter() {
-        let (resolved_rules,outs) = parser.parse(tup_file_path)?;
+        let (resolved_rules, outs) = parser.parse(tup_file_path)?;
         artifacts_all.push(resolved_rules);
-         let bo = parser.borrow_ref();
+        let bo = parser.borrow_ref();
         output_holder.merge_self_with(bo, &outs)?;
     }
     parser.reresolve(&mut artifacts_all, output_holder)?;

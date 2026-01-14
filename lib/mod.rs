@@ -78,7 +78,7 @@ fn test_parse() {
     use crate::buffers::OutputHolder;
     let mut output_holder = OutputHolder::new();
     let (decodedrule1, _outs) = LocatedStatement::new(rule1, Loc::new(0, 0, 0))
-        .resolve_paths(&tup_desc, &mut dir, &mut output_holder , &mut bo, &vec![])
+        .resolve_paths(&tup_desc, &mut dir, &mut output_holder, &mut bo, &vec![])
         .unwrap();
     if let Some(deglobbed_link) = decodedrule1.get_resolved_links().first() {
         let rf = bo.get_rule(&deglobbed_link.get_rule_desc());
@@ -142,7 +142,13 @@ fn test_parse() {
     let write_guard = m.path_buffers;
     let mut output_holder = OutputHolder::new();
     stmts
-        .resolve_paths(&tup_desc, &mut dir_searcher, &mut output_holder, write_guard.as_ref(), &vec![])
+        .resolve_paths(
+            &tup_desc,
+            &mut dir_searcher,
+            &mut output_holder,
+            write_guard.as_ref(),
+            &vec![],
+        )
         .expect("resolve failure");
 }
 

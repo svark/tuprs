@@ -332,7 +332,7 @@ impl<Q: PathSearcher> TupScriptContext<Q> {
     pub(crate) fn get_mut_path_searcher(&self) -> parking_lot::RwLockWriteGuard<'_, Q> {
         self.path_searcher.deref().write()
     }
-    pub(crate) fn get_output_handler(&self) ->  OutputHolder {
+    pub(crate) fn get_output_handler(&self) -> OutputHolder {
         self.parse_state.get_outs().clone()
     }
     pub(crate) fn get_path_searcher(&self) -> parking_lot::RwLockReadGuard<'_, Q> {
