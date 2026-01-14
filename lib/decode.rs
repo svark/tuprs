@@ -140,7 +140,7 @@ pub trait PathDiscovery {
 /// Outputs from rules can be added to list of paths searched using `merge` method
 pub trait PathSearcher: PathDiscovery {
     /// Discover Tuprules.lua or Tuprules.tup in all parent directories of tup_cwd
-    fn locate_tuprules(
+    fn locate_tup_rules(
         &self,
         tup_cwd: &PathDescriptor,
         path_buffers: &impl PathBuffers,
@@ -589,7 +589,7 @@ impl PathDiscovery for DirSearcher {
     }
 }
 impl PathSearcher for DirSearcher {
-    fn locate_tuprules(
+    fn locate_tup_rules(
         &self,
         tup_cwd: &PathDescriptor,
         _path_buffers: &impl PathBuffers,
@@ -2022,10 +2022,12 @@ pub fn parse_tupfiles(
     let mut artifacts_all = Vec::new();
     debug!("parsing tupfiles in {:?}", root);
     let mut parser = TupParser::<DirSearcher>::try_new_from(root, DirSearcher::new_at(root))?;
-    let output_holder = OutputHolder::new();
+    let mut output_holder = OutputHolder::new();
     for tup_file_path in tupfiles.iter() {
-        let resolved_rules = parser.parse(tup_file_path)?;
+        let (resolved_rules,outs) = parser.parse(tup_file_path)?;
         artifacts_all.push(resolved_rules);
+         let bo = parser.borrow_ref();
+        output_holder.merge_self_with(bo, &outs)?;
     }
     parser.reresolve(&mut artifacts_all, output_holder)?;
     Ok((artifacts_all, parser.read_write_buffers()))

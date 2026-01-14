@@ -956,7 +956,7 @@ pub(crate) fn parse_script<Q: PathSearcher + 'static>(
             {
                 let path_searcher_read = path_searcher.deref().read();
                 for tup_rules in
-                    path_searcher_read.locate_tuprules(&script_dir_desc, pbuffers.deref())
+                    path_searcher_read.locate_tup_rules(&script_dir_desc, pbuffers.deref())
                 {
                     rules.push(tup_rules.get_path_ref().clone());
                 }

@@ -1,5 +1,5 @@
 //! This module has data structures and methods to transform Statements to Statements with substitutions and expansions
-use hex::encode;
+use xxhash_rust::xxh3::Xxh3;
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
@@ -45,7 +45,6 @@ use log::Level::Debug;
 use nom::AsBytes;
 use nonempty::{nonempty, NonEmpty};
 use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use sha2::{Digest, Sha256};
 use std::io::{self, BufReader, Read};
 use tupcompat::platform::*;
 use tuppaths::paths::SelOptions::Either;
@@ -62,15 +61,15 @@ impl Drop for TempFile {
     }
 }
 
-fn dump_temp_tup(contents: &[u8], tuprun_pd: &PathDescriptor) {
+fn dump_temp_tup(contents: &[u8], root: &Path, tuprun_pd: &PathDescriptor) {
     let path = tuprun_pd.get_path_ref().as_path();
-    let mut f = File::create(path).expect("Could not write to tup_run_output.tup");
+    let mut f = File::create(root.join(path)).expect("Could not write to tup_run_output.tup");
     f.write_all(contents)
         .expect(&format!("Could not write to {}", path.display()));
 }
 impl TempFile {
-    fn new(contents: &[u8], tuprun_pd: &PathDescriptor) -> Self {
-        dump_temp_tup(contents, tuprun_pd);
+    fn new(contents: &[u8], root: &Path, tuprun_pd: &PathDescriptor) -> Self {
+        dump_temp_tup(contents, root, tuprun_pd);
         TempFile {
             pd: tuprun_pd.clone(),
         }
@@ -81,12 +80,12 @@ fn temp_file_name(prefix: &str, line: u32) -> String {
     format!("{}-{}.{}", prefix, line, "-temp.tup")
 }
 
-/// Compute SHA-256 hash of a file, fails with io error if file cannot be read
-pub fn compute_sha256<P: AsRef<Path>>(path: P) -> io::Result<String> {
+/// Compute hash of a file, fails with io error if file cannot be read
+pub fn compute_hash<P: AsRef<Path>>(path: P) -> io::Result<String> {
     let file = File::open(path.as_ref())?;
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
-    let mut buffer = [0; 1024];
+    let mut reader = BufReader::with_capacity(16384, file);
+    let mut hasher = Xxh3::new();
+    let mut buffer = [0; 16384];
 
     loop {
         let count = reader.read(&mut buffer)?;
@@ -96,8 +95,8 @@ pub fn compute_sha256<P: AsRef<Path>>(path: P) -> io::Result<String> {
         hasher.update(&buffer[..count]);
     }
 
-    let result = hasher.finalize();
-    Ok(encode(result))
+    let result = hasher.digest();
+    Ok(hex::encode(result.to_be_bytes()))
 }
 
 fn cached_config_write_set() -> &'static Mutex<HashSet<PathBuf>> {
@@ -1131,7 +1130,7 @@ impl StatementsInFile {
                             tup_run_file_name, tup_cwd, loc
                         ))?;
                     parse_state.register_temp_owner(&tuprun_pd);
-                    let _tempfile = TempFile::new(contents.as_slice(), &tuprun_pd);
+                    let _tempfile = TempFile::new(contents.as_slice(), path_searcher.get_root(), &tuprun_pd);
                     let lstmts = parse_state.switch_tupfile_and_process(&tuprun_pd, |ps| {
                         let lstmts = parse_statements_until_eof(Span::new(contents.as_slice()))
                             .expect(
@@ -1617,7 +1616,7 @@ impl DollarExprs {
                         )
                     });
                 m.register_temp_owner(&dump_file_pd);
-                let _tempfile = TempFile::new(body_str.as_bytes(), &dump_file_pd);
+                let _tempfile = TempFile::new(body_str.as_bytes(), path_searcher.get_root(), &dump_file_pd);
 
                 m.switch_tupfile_and_process(&dump_file_pd, |ps| -> Result<Vec<PathExpr>, Error> {
                     let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
@@ -2030,7 +2029,7 @@ impl DollarExprs {
                 m.register_temp_owner(&dump_if_else_pd);
                 if cond.is_empty() {
                     let else_part_str = else_part.cat() + "\n";
-                    let _tempfile = TempFile::new(else_part_str.as_bytes(), &dump_if_else_pd);
+                    let _tempfile = TempFile::new(else_part_str.as_bytes(),path_searcher.get_root(), &dump_if_else_pd);
                     m.switch_tupfile_and_process(&dump_if_else_pd, |m| {
                         let else_part =
                             parse_statements_until_eof(Span::new(else_part_str.as_bytes()))
@@ -2051,7 +2050,7 @@ impl DollarExprs {
                     .unwrap_or_default()
                 } else {
                     let then_part_str = then_part.cat() + "\n";
-                    let _tempfile = TempFile::new(then_part_str.as_bytes(), &dump_if_else_pd);
+                    let _tempfile = TempFile::new(then_part_str.as_bytes(), path_searcher.get_root(), &dump_if_else_pd);
                     m.switch_tupfile_and_process(&dump_if_else_pd, |m| {
                         let then_part =
                             parse_statements_until_eof(Span::new(then_part_str.as_bytes()))
@@ -2086,7 +2085,7 @@ impl DollarExprs {
                         .add_path_from(&m.get_tup_dir_desc(), dump_eval_file_name.as_str())
                         .unwrap();
                     m.register_temp_owner(&dump_eval_file_pd);
-                    let _tempfile = TempFile::new(val.as_bytes(), &dump_eval_file_pd);
+                    let _tempfile = TempFile::new(val.as_bytes(), path_searcher.get_root(), &dump_eval_file_pd);
                     m.switch_tupfile_and_process(&dump_eval_file_pd, |m| {
                         let stmts = parse_statements_until_eof(Span::new(val.as_bytes()))
                             .unwrap_or_else(|e| {
@@ -2529,7 +2528,7 @@ pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>
         load_config_vars_raw(conf_file.as_path(), &mut conf_vars)?;
     }
     // @(TUP_PLATFORM)
-    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. 
+    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in.
     // Currently, the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
     //     @(TUP_ARCH)
     //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
@@ -2662,7 +2661,7 @@ impl SubstPEs for Condition {
 }
 /// Compute SHA256 hash of a file
 fn get_sha256_hash(path: &Path) -> Result<String, Error> {
-    let sha = compute_sha256(path).map_err(|e| {
+    let sha = compute_hash(path).map_err(|e| {
         Error::new_path_search_error(format!(
             "failed to compute sha256 hash for path:{:?} due to {}",
             path, e
@@ -2928,7 +2927,7 @@ impl LocatedStatement {
                 .get_path_buffers()
                 .add_path_from(&tup_cwd, dump_eval_file_name)?;
             parse_state.register_temp_owner(&dump_eval_file_pd);
-            let _tempfile = TempFile::new(body_str.as_bytes(), &dump_eval_file_pd);
+            let _tempfile = TempFile::new(body_str.as_bytes(), path_searcher.get_root(), &dump_eval_file_pd);
 
             let res = parse_state.switch_tupfile_and_process(&dump_eval_file_pd, |ps| {
                 debug!("evaluating block: {:?}", body_str.as_str());
@@ -3047,7 +3046,7 @@ impl LocatedStatement {
         );
         // locate tupfiles up the heirarchy from the current Tupfile folder
         if let Some(f) = path_searcher
-            .locate_tuprules(&parent, parse_state.get_path_buffers().deref())
+            .locate_tup_rules(&parent, parse_state.get_path_buffers().deref())
             .last()
         {
             debug!("reading tuprules {:?}", f);
@@ -3263,6 +3262,11 @@ impl ResolvedRules {
         &self.resolved_links
     }
 
+    /// divulges secrets of all the resolved links returned by the parser,
+    pub fn get_resolved_links_mut(&mut self) -> &mut Vec<ResolvedLink> {
+        &mut self.resolved_links
+    }
+
     /// Returns a vector over slices of resolved links grouped by the tupfile that generated them
     pub fn rules_by_tup(&self) -> Vec<&'_ [ResolvedLink]> {
         let mut link_iter = self.resolved_links.as_slice().iter().peekable();
@@ -3319,6 +3323,9 @@ pub struct ReadWriteBufferObjects {
 }
 
 impl ReadWriteBufferObjects {
+}
+
+impl ReadWriteBufferObjects {
     /// Constructor
     pub fn new(bo: Arc<BufferObjects>) -> ReadWriteBufferObjects {
         ReadWriteBufferObjects { bo }
@@ -3336,6 +3343,10 @@ impl ReadWriteBufferObjects {
     /// If it already exists in its buffers boolean returned will be false
     pub fn add_abs(&mut self, p: &Path) -> Result<PathDescriptor, Error> {
         self.get_mut().add_abs(p)
+    }
+    /// get root directory of the parser
+    pub fn get_root(&self) -> &Path {
+        self.bo.get_root_dir()
     }
     /// iterate over all the (grouppath, groupid) pairs stored in buffers during parsing
 
@@ -3612,14 +3623,14 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     }
     /// wait for the next [StatementsToResolve] and process them
     pub fn receive_resolved_statements(
-        &mut self,
+        &self,
         receiver: Receiver<StatementsToResolve>,
         mut f: impl FnMut(ResolvedRules) -> Result<(), Error>,
     ) -> Result<(), Error> {
         while let Ok(to_resolve) = receiver.recv() {
             let tup_desc = to_resolve.get_cur_file_desc().clone();
             log::info!("resolving statements for tupfile {:?}", tup_desc);
-            let resolved_rules_ = self
+            let (resolved_rules_,_) = self
                 .process_raw_statements(to_resolve)
                 .wrap_err(format!(
                     "While processing statements for tupfile {}",
@@ -3637,7 +3648,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     /// Upon success the parser returns `ResolvedRules` that holds  references to all the resolved outputs by their ids
     /// The parser currently also allows you to read its buffers (id-object pairs) and even update it based on externally saved data via `ReadBufferObjects` and `WriteBufObjects`
     /// See [ResolvedRules]
-    pub fn parse<P: AsRef<Path>>(&mut self, tup_file_path: P) -> Result<ResolvedRules, Error> {
+    pub fn parse<P: AsRef<Path>>(&mut self, tup_file_path: P) -> Result<(ResolvedRules,OutputHolder), Error> {
         // add tupfile path and tup environment to the buffer
         let (tup_desc, env_desc) = self.with_path_buffers_do(|path_buffers| {
             let tup_desc = path_buffers.add_tup(tup_file_path.as_ref());
@@ -3661,8 +3672,8 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
             // both path buffers and path searcher are rc-cloned (with shared ref cells) and passed to the lua parser
-            let (arts, _) = parse_script(parse_state, self.path_searcher.clone())?;
-            Ok(arts)
+            let (arts, ps) = parse_script(parse_state, self.path_searcher.clone())?;
+            Ok((arts, ps.get_outs().clone()))
         } else {
             let stmts = parse_tupfile(tup_file_path)?;
             self.process_raw_statements(StatementsToResolve::new(stmts, parse_state))
@@ -3672,7 +3683,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     fn process_raw_statements(
         &self,
         statements_to_resolve: StatementsToResolve,
-    ) -> Result<ResolvedRules, Error> {
+    ) -> Result<(ResolvedRules, OutputHolder), Error> {
         let mut parse_state = statements_to_resolve.parse_state;
         let stmts = statements_to_resolve.statements;
         let tup_desc = parse_state.get_cur_file_desc().clone();
@@ -3694,14 +3705,16 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             stmts_in_file.len(),
             parse_state.get_cur_file()
         );
-        let mut output_holder = OutputHolder::new();
+        let mut output_holder = parse_state.get_outs().clone();
         stmts_in_file.resolve_paths(
             &tup_desc,
             self.get_searcher().deref(),
             &mut output_holder,
             self.borrow_ref(),
             parse_state.get_tupfiles_read(),
-        )
+        ).map(|resolved_rules| {
+            (resolved_rules, output_holder)
+        })
     }
 
     /// Re-resolve for resolved groups that were left unresolved in the first round of parsing
@@ -3712,7 +3725,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         mut output_holder: OutputHolder,
     ) -> Result<(), Error> {
         type R = Result<(), Error>;
-        self.with_path_buffers_do(|path_buffers| -> R {
+        self.with_path_buffers_do(|path_buffers_local| -> R {
             self.with_path_searcher_do(|path_searcher| -> R {
                 resolved_rules_vec
                     .iter_mut()
@@ -3720,7 +3733,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
                         resolved_rules.resolve_paths(
                             path_searcher,
                             &mut output_holder,
-                            path_buffers,
+                            path_buffers_local,
                             &vec![],
                         )?;
                         Ok(())
@@ -3861,9 +3874,9 @@ pub mod testing {
     }
 }
 
-/// sha of a directory is the sha of the list of files in the directory and the current directory
-pub fn compute_dir_sha256(p0: &Path) -> Result<String, Error> {
-    let mut hasher = Sha256::new();
+/// hash of a directory is the hash of the list of files in the directory and the current directory
+pub fn compute_dir_hash(p0: &Path) -> Result<String, Error> {
+    let mut hasher = Xxh3::new();
     let wdir = WalkDir::new(p0);
     hasher.update(p0.as_os_str().as_encoded_bytes());
     wdir.max_depth(1)
@@ -3875,12 +3888,12 @@ pub fn compute_dir_sha256(p0: &Path) -> Result<String, Error> {
             let path = entry.path();
             hasher.update(path.as_os_str().as_encoded_bytes());
         });
-    let result = hasher.finalize();
-    Ok(encode(result))
+    let result = hasher.digest();
+    Ok(hex::encode(result.to_be_bytes()))
 }
 
-/// sha of a glob is the sha of the list of files in the directory that match the glob and the current directory
-pub fn compute_glob_sha256(
+/// hash of a glob is the hash of the list of files in the directory that match the glob and the current directory
+pub fn compute_glob_hash(
     ps: &impl PathDiscovery,
     bo: &impl PathBuffers,
     p0: &GlobPathDescriptor,
@@ -3890,7 +3903,7 @@ pub fn compute_glob_sha256(
     if !glob_path.has_glob_pattern() {
         return Ok(String::new());
     }
-    let mut hasher = Sha256::new();
+    let mut hasher = Xxh3::new();
     let parent = root.as_path();
     hasher.update(parent.as_os_str().as_encoded_bytes());
     let mut set = HashSet::new();
@@ -3905,12 +3918,12 @@ pub fn compute_glob_sha256(
             hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
         }
     }
-    let result = hasher.finalize();
-    Ok(encode(result))
+    let result = hasher.digest();
+    Ok(hex::encode(result.to_be_bytes()))
 }
 
-/// sha of a rglob is the sha of the list of folders in the directory and subdirectories that match the glob  within the glob non pattern prefix directory
-pub fn compute_rglob_sha256(
+/// hash of a rglob is the hash of the list of folders in the directory and subdirectories that match the glob  within the glob non pattern prefix directory
+pub fn compute_rglob_hash(
     bo: &impl PathBuffers,
     p0: &GlobPathDescriptor,
 ) -> Result<String, Error> {
@@ -3920,7 +3933,7 @@ pub fn compute_rglob_sha256(
     if !glob_path.has_glob_pattern() {
         return Ok(String::new());
     }
-    let mut hasher = Sha256::new();
+    let mut hasher = Xxh3::new();
     let parent = root.as_path();
     hasher.update(parent.as_os_str().as_encoded_bytes());
     DirSearcher::discover_input_files(
@@ -3932,6 +3945,6 @@ pub fn compute_rglob_sha256(
             Ok(())
         },
     )?;
-    let result = hasher.finalize();
-    Ok(encode(result))
+    let result = hasher.digest();
+    Ok(hex::encode(result.to_be_bytes()))
 }
