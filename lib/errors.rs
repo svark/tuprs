@@ -41,7 +41,6 @@ pub enum Error {
     /// Multiple rules return the same output file
     #[error("Multiple rules writing to same output {0}: current rule: {1}, previous rule: {2}")]
     MultipleRulesToSameOutput(PathDescriptor, RuleDescriptor, RuleDescriptor),
-    /// Group reference could not resolved
     /// Bin reference could not be resolved
     #[error("Bin reference {0} could not be resolved at input {1}")]
     StaleBinRef(String, RuleRefDescriptor),

@@ -108,7 +108,7 @@ pub trait PathBuffers {
     /// fetch the descriptor for a task using its name and directory
     fn try_get_task_desc(&self, tup_cwd: &PathDescriptor, name: &str) -> Option<TaskDescriptor>;
 
-    /// Try get a bin path entry by its descriptor.
+    /// Try to get a bin path entry by its descriptor.
     fn get_group_path<'a>(&'a self, gd: &'a GroupPathDescriptor) -> &'a GroupPathEntry;
 
     /// Directory descriptor from a group descriptor
@@ -384,7 +384,7 @@ impl InputResolvedType {
         if let Some(x) = self.as_glob_match() {
             return !x.is_empty();
         }
-        return false;
+        false
     }
 
     /// return true if this is a reference to a task
@@ -744,14 +744,14 @@ impl GeneratedFiles {
     /// merge groups , outputs and bins from other `OutputHandler`
     ///  erorr-ing out if unique parent rule
     /// of an output is not found
-    fn merge(
+    fn merge_self_with(
         &mut self,
         path_buffers: &impl PathBuffers,
-        out: &impl OutputHandler,
+        new_outputs: &impl OutputHandler,
     ) -> Result<(), Error> {
-        self.merge_group_tags(path_buffers, out)?;
-        self.merge_output_files(path_buffers, out)?;
-        self.merge_bin_tags(path_buffers, out)
+        self.merge_group_tags(path_buffers, new_outputs)?;
+        self.merge_output_files(path_buffers, new_outputs)?;
+        self.merge_bin_tags(path_buffers, new_outputs)
     }
 
     /// extend the list of outputs. Update children of directories with new outputs. Update also the parent rules of each of the output files.
@@ -820,42 +820,6 @@ impl GeneratedFiles {
     }
 }
 
-impl OutputHolder {
-    /// Discover paths matching glob pattern from outputs accumulated so far
-    pub fn discover_paths(
-        &self,
-        path_buffers: &impl PathBuffers,
-        glob_paths: &[GlobPath],
-    ) -> Result<Vec<MatchingPath>, Error> {
-        let mut vs = Vec::new();
-        for glob_path in glob_paths {
-            if !glob_path.has_glob_pattern() {
-                let path_desc: PathDescriptor = glob_path.get_glob_path_desc();
-                self.get().outputs_with_desc(
-                    &path_desc,
-                    glob_path.get_non_pattern_prefix_desc(),
-                    glob_path.get_tup_dir_desc(),
-                    &mut vs,
-                );
-            } else {
-                self.get()
-                    .outputs_matching_glob(path_buffers, &glob_path, &mut vs);
-            }
-            if !vs.is_empty() {
-                break;
-            }
-        }
-        Ok(vs)
-    }
-
-    fn _get_outs(&self) -> &OutputHolder {
-        &self
-    }
-
-    fn _merge(&mut self, p: &impl PathBuffers, o: &impl OutputHandler) -> Result<(), Error> {
-        self.get_mut().merge(p, o)
-    }
-}
 
 impl OutputHandler for OutputHolder {
     fn get_output_files(&self) -> MappedRwLockReadGuard<'_, BTreeSet<PathDescriptor>> {
@@ -868,10 +832,36 @@ impl OutputHandler for OutputHolder {
         RwLockReadGuard::map(self.get(), |x| x.get_groups())
     }
 
+    fn apply_for_group<F>(&self, g: &GroupPathDescriptor, mut f: F) -> bool
+    where
+        F: FnMut(&BTreeSet<PathDescriptor>) -> ()
+    {
+        let r = self.get();
+        let mut has_some = false;
+        r.get_group(g).into_iter().for_each(|paths| {
+            has_some = true;
+            f(paths);
+        });
+        has_some
+    }
+
     fn get_bins(
         &self,
     ) -> MappedRwLockReadGuard<'_, HashMap<BinDescriptor, BTreeSet<PathDescriptor>>> {
         RwLockReadGuard::map(self.get(), |x| x.get_bins())
+    }
+
+    fn apply_for_bin<F>(&self, b: &BinDescriptor, mut f: F) -> bool
+    where
+        F: FnMut(&BTreeSet<PathDescriptor>) -> ()
+    {
+        let r = self.get();
+        let mut has_some = false;
+        r.get_bin(b).into_iter().for_each(|paths| {
+            has_some = true;
+            f(paths);
+        });
+        has_some
     }
 
     fn get_children(
@@ -919,9 +909,35 @@ impl OutputHandler for OutputHolder {
         self.get_mut().add_bin_entry(bin_desc, pd)
     }
 
-    fn merge(&mut self, p: &impl PathBuffers, out: &impl OutputHandler) -> Result<(), Error> {
-        self.get_mut().merge(p, out)
+    fn merge_self_with(&mut self, p: &impl PathBuffers, out: &impl OutputHandler) -> Result<(), Error> {
+        self.get_mut().merge_self_with(p, out)
     }
+    fn discover_paths(
+        &self,
+        path_buffers: &impl PathBuffers,
+        glob_paths: &[GlobPath],
+    ) -> Result<Vec<MatchingPath>, Error> {
+        let mut vs = Vec::new();
+        for glob_path in glob_paths {
+            if !glob_path.has_glob_pattern() {
+                let path_desc: PathDescriptor = glob_path.get_glob_path_desc();
+                self.get().outputs_with_desc(
+                    &path_desc,
+                    glob_path.get_non_pattern_prefix_desc(),
+                    glob_path.get_tup_dir_desc(),
+                    &mut vs,
+                );
+            } else {
+                self.get()
+                    .outputs_matching_glob(path_buffers, &glob_path, &mut vs);
+            }
+            if !vs.is_empty() {
+                break;
+            }
+        }
+        Ok(vs)
+    }
+
 }
 
 /// Wrapper over Burnt sushi's GlobMatcher
@@ -1092,6 +1108,18 @@ impl PathBuffers for BufferObjects {
     }
 
     /// Add a path to buffer and return its unique id in the buffer
+    /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
+    fn add_abs<P: AsRef<Path>>(&self, p: P) -> Result<TupPathDescriptor, Error> {
+        if p.as_ref().is_absolute() {
+            let num_base_comps = self.path_bo.get_root_dir().components().count();
+            let p: PathBuf = p.as_ref().components().skip(num_base_comps).collect();
+            self.path_bo.add(p.as_path())
+        } else {
+            self.path_bo.add(p)
+        }
+    }
+
+    /// Add a path to buffer and return its unique id in the buffer
     fn add_path_from<P: AsRef<Path>>(
         &self,
         tup_cwd: &PathDescriptor,
@@ -1108,18 +1136,6 @@ impl PathBuffers for BufferObjects {
     /// Add a rule formula to the buffer and return its descriptor
     fn add_rule(&self, r: RuleFormulaInstance) -> RuleDescriptor {
         RuleBufferObject::add_ref(r).into()
-    }
-
-    /// Add a path to buffer and return its unique id in the buffer
-    /// It is assumed that no de-dotting is necessary for the input path and path is already from the root
-    fn add_abs<P: AsRef<Path>>(&self, p: P) -> Result<TupPathDescriptor, Error> {
-        if p.as_ref().is_absolute() {
-            let num_base_comps = self.path_bo.get_root_dir().components().count();
-            let p: PathBuf = p.as_ref().components().skip(num_base_comps).collect();
-            self.path_bo.add(p.as_path())
-        } else {
-            self.path_bo.add(p)
-        }
     }
     ///  add a tup file path to the buffer and return its descriptor
     fn add_tup(&self, p: &Path) -> TupPathDescriptor {

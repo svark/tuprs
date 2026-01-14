@@ -21,8 +21,8 @@ use crate::buffers::{
 };
 use crate::buffers::{GlobPath, InputResolvedType, SelOptions};
 use crate::decode::{
-    paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathDiscovery, PathSearcher,
-    ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance,
+    paths_with_pattern, DecodeInputPlaceHolders, DirSearcher, PathDiscovery,
+    PathSearcher, ResolvePaths, ResolvedLink, ResolvedTask, RuleFormulaInstance, TaskInstance,
 };
 use crate::errors::Error::{IoError, RootNotFound};
 use crate::errors::WrapErr;
@@ -244,6 +244,8 @@ pub(crate) struct ParseState {
     pub(crate) tempfile_owner_map: HashMap<TupPathDescriptor, TupPathDescriptor>,
     /// current tupfile active stack.
     pub(crate) cur_tupfile_loc_stack: NonEmpty<TupLoc>,
+    // outputs collected in current tupfile
+    pub(crate) output_holder: OutputHolder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,6 +454,10 @@ impl ParseState {
 
     fn get_current_loc(&self) -> &Loc {
         &self.get_current_tup_loc().get_loc()
+    }
+
+    pub(crate) fn get_outs(&self) -> &OutputHolder {
+        &self.output_holder
     }
     /// Evaluate a variable and return its value. Eager evaluation is preferred over lazy evaluation.
     /// Lazy evaluation is done for functions and `tupconfig` assignments in `conf_map`.
@@ -970,7 +976,7 @@ impl ParseState {
 
     pub(crate) fn conditional_assign(&mut self, v: &str, right: Vec<PathExpr>) {
         if self.is_var_defined(v) {
-            if log::log_enabled!(log::Level::Debug) {
+            if log::log_enabled!(Debug) {
                 debug!("skip empty assign of {:?} ?= {:?}", v, right);
                 if self.expr_map.contains_key(v) {
                     debug!(
@@ -1058,7 +1064,7 @@ impl StatementsInFile {
                             glob_paths.push(glob_path);
                         }
                         let matches = path_searcher
-                            .discover_paths(path_buffers, glob_paths.as_slice(), Either)
+                            .discover_non_outputs(path_buffers, glob_paths.as_slice(), Either)
                             .unwrap_or_else(|_| panic!("error matching glob pattern {}", arg));
 
                         debug!("expand_run num files from glob:{:?}", matches.len());
@@ -1238,7 +1244,7 @@ fn discover_paths_with_pattern(
     glob: &[GlobPath],
     pattern: &str,
 ) -> Result<Vec<MatchingPath>, Error> {
-    let paths = psx.discover_paths(path_buffers, glob, SelOptions::File)?;
+    let paths = psx.discover_non_outputs(path_buffers, glob, SelOptions::File)?;
     paths_with_pattern(psx.get_root(), &pattern, paths)
 }
 
@@ -1582,7 +1588,14 @@ impl DollarExprs {
                 body
             }
             DollarExprs::ForEach(var, list, body) => {
-                let list = list.subst_pe(m, path_searcher);
+                let mut list = list.subst_pe(m, path_searcher);
+                list.cleanup();
+                let mut cnt = 0;
+                let mut iter = list.iter();
+                while let Some(PathExpr::Sp1 | PathExpr::NL) = iter.next() {
+                    cnt += 1;
+                }
+                let list = &list[cnt..];
                 if list.is_empty() {
                     log::warn!("Empty suffix values for {} in {:?}", var, m.get_cur_file());
                     return vec![];
@@ -1640,7 +1653,7 @@ impl DollarExprs {
                             ps.expr_map.remove(var);
                         }
                     };
-                    for_each_word_in_pelist(list.as_slice(), f);
+                    for_each_word_in_pelist(list, f);
 
                     if vs_updated.ends_with(&[PathExpr::Sp1])
                         || vs_updated.ends_with(&[PathExpr::NL])
@@ -1689,6 +1702,7 @@ impl DollarExprs {
                             let paths = path_searcher
                                 .discover_paths(
                                     path_buffers_mut,
+                                    m.get_outs(),
                                     std::slice::from_ref(&glob_path),
                                     Either,
                                 )
@@ -2314,7 +2328,7 @@ trait CallArgs {
 impl SubstPEs for Vec<PathExpr> {
     type Output = Self;
     /// call subst on each path expr and flatten/cleanup the output.
-    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output {
         let mut newpe: Vec<_> = self
             .iter()
             .flat_map(|x| x.subst(m, path_searcher))
@@ -2354,7 +2368,7 @@ impl SubstPEs for Source {
     type Output = Self;
 
     /// call subst on each path expr and flatten/cleanup the input.
-    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output {
         Source {
             primary: self.primary.subst_pe(m, path_searcher),
             for_each: self.for_each,
@@ -2414,7 +2428,7 @@ fn takefirst(
 impl SubstPEs for Target {
     type Output = Self;
     /// run variable substitution on `Target'
-    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output {
         let primary = self.primary.subst_pe(m, path_searcher);
         let secondary = self.secondary.subst_pe(m, path_searcher);
         debug!(
@@ -2432,7 +2446,7 @@ impl SubstPEs for Target {
 impl SubstPEs for RuleFormula {
     type Output = Self;
     /// run variable substitution on `RuleFormula'
-    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output {
         RuleFormula {
             description: self.description.clone(),
             formula: self.formula.subst_pe(m, path_searcher),
@@ -2515,7 +2529,8 @@ pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>
         load_config_vars_raw(conf_file.as_path(), &mut conf_vars)?;
     }
     // @(TUP_PLATFORM)
-    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. Currently the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
+    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in. 
+    // Currently, the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
     //     @(TUP_ARCH)
     //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
 
@@ -2609,7 +2624,7 @@ pub fn load_conf_vars_relative_to(root: &Path) -> Result<HashMap<String, Vec<Str
 impl SubstPEs for Link {
     type Output = Self;
     /// recursively substitute variables inside a link
-    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self {
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output {
         Link {
             source: self.source.subst_pe(m, path_searcher),
             target: self.target.subst_pe(m, path_searcher),
@@ -2621,7 +2636,7 @@ impl SubstPEs for Link {
 
 impl SubstPEs for EqCond {
     type Output = Self;
-    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output
     where
         Self: Sized,
     {
@@ -2635,7 +2650,7 @@ impl SubstPEs for EqCond {
 
 impl SubstPEs for Condition {
     type Output = Self;
-    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self
+    fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output
     where
         Self: Sized,
     {
@@ -2899,7 +2914,7 @@ impl LocatedStatement {
                     acc
                 },
             );
-            log::debug!("eval block optimized to deglob statements: {:?}", newstats);
+            debug!("eval block optimized to deglob statements: {:?}", newstats);
             return Ok(parse_state.to_statements_in_file(newstats));
         } else if !body.is_empty() {
             let body_str = body.cat() + "\n";
@@ -2989,7 +3004,7 @@ impl LocatedStatement {
             fullp.get_path_ref(),
             parse_state.get_cur_file()
         );
-        let ps = path_searcher.discover_paths(
+        let ps = path_searcher.discover_non_outputs(
             parse_state.path_buffers.deref(),
             &[GlobPath::build_from(
                 &parse_state.get_tup_base_dir(),
@@ -3147,7 +3162,6 @@ pub struct TupParser<Q: PathSearcher + Sized + Send + 'static> {
     path_searcher: Arc<RwLock<Q>>,
     config_vars: HashMap<String, Vec<String>>,
     statement_cache: Arc<RwLock<HashMap<TupPathDescriptor, StatementsInFile>>>, //< cache of parsed statements for each included file
-    output_holder: OutputHolder,
 }
 
 /// ResolvedRules represent fully resolved rules/tasks along with their inputs and outputs that the parser gathers.
@@ -3486,12 +3500,6 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         ))
     }
 
-    /// return outputs gathered by this parser and the relationships to its rule, directory etc
-    pub fn get_outs(&self) -> OutputHolder {
-        //self.get_searcher().get_outs().clone()
-        self.output_holder.clone()
-    }
-
     /// list of other tupfiles read by the parser while parsing a single tupfile
     pub fn get_tupfiles_read(&self) -> Vec<PathDescriptor> {
         let cache = self.statement_cache.try_read();
@@ -3523,7 +3531,6 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             path_searcher,
             config_vars,
             statement_cache: Arc::new(RwLock::new(HashMap::new())),
-            output_holder: Default::default(),
         }
     }
 
@@ -3609,12 +3616,11 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         receiver: Receiver<StatementsToResolve>,
         mut f: impl FnMut(ResolvedRules) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        let mut holder = self.get_outs();
         while let Ok(to_resolve) = receiver.recv() {
             let tup_desc = to_resolve.get_cur_file_desc().clone();
             log::info!("resolving statements for tupfile {:?}", tup_desc);
             let resolved_rules_ = self
-                .process_raw_statements(to_resolve, &mut holder)
+                .process_raw_statements(to_resolve)
                 .wrap_err(format!(
                     "While processing statements for tupfile {}",
                     tup_desc
@@ -3623,7 +3629,6 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             f(resolved_rules_)
                 .wrap_err(format!("Consuming resolved rules for tupfile {}", tup_desc))?;
         }
-        drop(receiver);
         Ok(())
     }
 
@@ -3653,25 +3658,20 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             self.path_buffers.clone(),
         );
         // now we ready to parse the tupfile or tupfile.lua
-        let mut output_holder = self.get_outs();
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
             // both path buffers and path searcher are rc-cloned (with shared ref cells) and passed to the lua parser
-            let (arts, _) = parse_script(parse_state, self.path_searcher.clone(), output_holder)?;
+            let (arts, _) = parse_script(parse_state, self.path_searcher.clone())?;
             Ok(arts)
         } else {
             let stmts = parse_tupfile(tup_file_path)?;
-            self.process_raw_statements(
-                StatementsToResolve::new(stmts, parse_state),
-                &mut output_holder,
-            )
+            self.process_raw_statements(StatementsToResolve::new(stmts, parse_state))
         }
     }
 
     fn process_raw_statements(
         &self,
         statements_to_resolve: StatementsToResolve,
-        output_holder: &mut OutputHolder,
     ) -> Result<ResolvedRules, Error> {
         let mut parse_state = statements_to_resolve.parse_state;
         let stmts = statements_to_resolve.statements;
@@ -3694,10 +3694,11 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             stmts_in_file.len(),
             parse_state.get_cur_file()
         );
+        let mut output_holder = OutputHolder::new();
         stmts_in_file.resolve_paths(
             &tup_desc,
             self.get_searcher().deref(),
-            output_holder,
+            &mut output_holder,
             self.borrow_ref(),
             parse_state.get_tupfiles_read(),
         )
@@ -3705,11 +3706,14 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
 
     /// Re-resolve for resolved groups that were left unresolved in the first round of parsing
     /// This step is usually run as a second pass to resolve group references across Tupfiles
-    pub fn reresolve(&mut self, resolved_rules_vec: &mut Vec<ResolvedRules>) -> Result<(), Error> {
+    pub fn reresolve(
+        &mut self,
+        resolved_rules_vec: &mut Vec<ResolvedRules>,
+        mut output_holder: OutputHolder,
+    ) -> Result<(), Error> {
         type R = Result<(), Error>;
         self.with_path_buffers_do(|path_buffers| -> R {
             self.with_path_searcher_do(|path_searcher| -> R {
-                let mut output_holder = self.get_outs();
                 resolved_rules_vec
                     .iter_mut()
                     .try_for_each(|resolved_rules| -> R {
@@ -3770,10 +3774,6 @@ pub fn locate_file<P: AsRef<Path>>(
 
 /// functions for testing transformations
 pub mod testing {
-    use log::debug;
-    use std::collections::HashMap;
-    use std::path::Path;
-
     use crate::decode::DirSearcher;
     use crate::errors::Error;
     use crate::statements::{
@@ -3781,6 +3781,9 @@ pub mod testing {
     };
     use crate::transform::{get_parent, ParseState};
     use crate::TupPathDescriptor;
+    use log::debug;
+    use std::collections::HashMap;
+    use std::path::Path;
 
     /// Holds parse state variables (eager and lazily assigned)
     pub struct Vars {
@@ -3891,16 +3894,17 @@ pub fn compute_glob_sha256(
     let parent = root.as_path();
     hasher.update(parent.as_os_str().as_encoded_bytes());
     let mut set = HashSet::new();
-    ps.discover_paths_with_cb(
+    let paths = ps.discover_non_outputs(
         bo,
         &[glob_path],
-        &mut |path: MatchingPath| {
-            if set.insert(path.path_descriptor().to_u64()) {
-                hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
-            }
-        },
+        // },
         SelOptions::File,
     )?;
+    for path in paths.iter() {
+        if set.insert(path.path_descriptor().to_u64()) {
+            hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
+        }
+    }
     let result = hasher.finalize();
     Ok(encode(result))
 }
@@ -3925,6 +3929,7 @@ pub fn compute_rglob_sha256(
         SelOptions::Dir,
         &mut |path: MatchingPath| {
             hasher.update(path.get_path_ref().as_os_str().as_encoded_bytes());
+            Ok(())
         },
     )?;
     let result = hasher.finalize();

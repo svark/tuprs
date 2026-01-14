@@ -115,7 +115,6 @@ Returns the extension in the filename filename (excluding the .) or the empty st
 pub struct TupScriptContext<Q: PathSearcher + Sized + 'static> {
     parse_state: ParseState,
     path_searcher: Arc<RwLock<Q>>,
-    output_holder: OutputHolder,
     arts: ResolvedRules,
 }
 #[derive(Debug, Default, Clone)]
@@ -319,13 +318,11 @@ impl<Q: PathSearcher> TupScriptContext<Q> {
     pub(crate) fn new(
         parse_state: ParseState,
         path_searcher: Arc<RwLock<Q>>,
-        output_holder: OutputHolder,
     ) -> TupScriptContext<Q> {
         TupScriptContext {
             arts: ResolvedRules::new(parse_state.get_cur_file_desc().clone()),
             parse_state,
             path_searcher,
-            output_holder,
         }
     }
 
@@ -336,7 +333,7 @@ impl<Q: PathSearcher> TupScriptContext<Q> {
         self.path_searcher.deref().write()
     }
     pub(crate) fn get_output_handler(&self) ->  OutputHolder {
-        self.output_holder.clone()
+        self.parse_state.get_outs().clone()
     }
     pub(crate) fn get_path_searcher(&self) -> parking_lot::RwLockReadGuard<'_, Q> {
         self.path_searcher.deref().read()
@@ -874,9 +871,11 @@ impl<Q: PathSearcher + 'static> UserData for TupScriptContext<Q> {
                     .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
                 let glob_path = &GlobPath::build_from(&scriptctx.get_cwd_desc(), &p)
                     .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
+                let outputs = scriptctx.get_output_handler();
                 path_searcher
                     .discover_paths(
                         scriptctx.bo_as_mut().deref(),
+                        &outputs,
                         std::slice::from_ref(glob_path),
                         SelOptions::File,
                     )
@@ -944,14 +943,13 @@ impl<Q: PathSearcher + 'static> UserData for TupScriptContext<Q> {
 pub(crate) fn parse_script<Q: PathSearcher + 'static>(
     parse_state: ParseState,
     path_searcher: Arc<RwLock<Q>>,
-    output_holder: OutputHolder
 ) -> Result<(ResolvedRules, ParseState), Err> {
     let lua = unsafe { Lua::unsafe_new() };
     let script_path = parse_state.get_cur_file().to_path_buf();
     let script_dir_desc = parse_state.get_tup_dir_desc();
     let pbuffers = parse_state.get_path_buffers();
 
-    let mut tup_script_ctx = TupScriptContext::new(parse_state, path_searcher.clone(), output_holder);
+    let mut tup_script_ctx = TupScriptContext::new(parse_state, path_searcher.clone());
     let _r = lua
         .scope(|scope| {
             let mut rules = Vec::new();
