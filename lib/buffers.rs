@@ -1154,9 +1154,6 @@ impl PathBuffers for BufferObjects {
     /// This appends a new env var current list of env vars.
     fn add_env_var(&self, var: Env) -> EnvDescriptor {
         debug!("add env var {} in ebo ", var);
-        if var.get_val_str().is_empty() {
-            log::warn!("empty env var {:?}", var);
-        }
         EnvBufferObject::add_ref(var).into()
     }
 

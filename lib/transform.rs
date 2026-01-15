@@ -39,7 +39,7 @@ use crate::GroupPathDescriptor;
 use crate::PathDescriptor;
 use crate::RelativeDirEntry;
 use crate::{GlobPathDescriptor, TupPathDescriptor};
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Sender};
 use log::debug;
 use log::Level::Debug;
 use nom::AsBytes;
@@ -3635,27 +3635,6 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             self.path_buffers.clone(),
         )
     }
-    /// wait for the next [StatementsToResolve] and process them
-    pub fn receive_resolved_statements(
-        &self,
-        receiver: Receiver<StatementsToResolve>,
-        mut f: impl FnMut(ResolvedRules) -> Result<(), Error>,
-    ) -> Result<(), Error> {
-        while let Ok(to_resolve) = receiver.recv() {
-            let tup_desc = to_resolve.get_cur_file_desc().clone();
-            log::info!("resolving statements for tupfile {:?}", tup_desc);
-            let (resolved_rules_, _) = self
-                .process_raw_statements(to_resolve)
-                .wrap_err(format!(
-                    "While processing statements for tupfile {}",
-                    tup_desc
-                ))
-                .inspect_err(|e| log::error!("error found resolving stmts\n {e}"))?;
-            f(resolved_rules_)
-                .wrap_err(format!("Consuming resolved rules for tupfile {}", tup_desc))?;
-        }
-        Ok(())
-    }
 
     /// `parse` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
     /// These are all referenced by their ids that are generated  on the fly.
@@ -3697,7 +3676,8 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         }
     }
 
-    fn process_raw_statements(
+    /// Process raw statements obtained from parsing a tupfile into resolved rules and outputs
+    pub fn process_raw_statements(
         &self,
         statements_to_resolve: StatementsToResolve,
     ) -> Result<(ResolvedRules, OutputHolder), Error> {
@@ -3717,10 +3697,10 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
             //let res = res.expand_run(&mut parse_state, searcher.deref())?;
             Ok::<StatementsInFile, Error>(res)
         }?;
-        log::warn!(
-            "num statements after expand run:{:?} in tupfile {:?}",
+        log::info!(
+            "Num statements after substitution in tupfile {} is {}",
+            parse_state.get_cur_file().display(),
             stmts_in_file.len(),
-            parse_state.get_cur_file()
         );
         let mut output_holder = parse_state.get_outs().clone();
         stmts_in_file
