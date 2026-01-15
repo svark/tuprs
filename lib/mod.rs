@@ -164,7 +164,7 @@ fn parse_x() {
     )
     .unwrap();
     let _arts = parser
-        .parse("hwdesktop/batchmesh/Tupfile")
+        .parse("hwdesktop/hm/comgen/Tupfile")
         .map_err(|e| {
             eprintln!("{:?}", e.to_string());
             e

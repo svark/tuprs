@@ -91,6 +91,10 @@ pub enum Error {
     /// Wrapped error with context
     #[error("Error {0} \n {1}")]
     WithContext(Box<Error>, String),
+
+    /// no paths matched the glob pattern
+    #[error("No paths matched the glob pattern: {0}")]
+    NoGlobMatches(String),
 }
 
 impl Error {
@@ -106,6 +110,14 @@ impl Error {
     /// Wrap an error with context
     pub fn with_context(e: Error, context: String) -> Error {
         Error::WithContext(Box::new(e), context)
+    }
+
+    /// Check if error is NoGlobMatches
+    pub fn is_no_glob_matches(&self) -> bool {
+        match self {
+            Error::NoGlobMatches(_) => true,
+            _ => false,
+        }
     }
 }
 pub(crate) trait WrapErr {

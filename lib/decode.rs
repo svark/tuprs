@@ -110,10 +110,17 @@ pub trait PathDiscovery {
                 Ok(())
             },
             sel,
-        )?;
-        if pes.is_empty() {
-            output_handler.discover_paths(path_buffers, glob_path)?;
-        }
+        ).or_else(|e| {
+            match e {
+                Error::NoGlobMatches(_) =>
+                    {
+                        let pe = output_handler.discover_paths(path_buffers, glob_path)?;
+                        pes.extend(pe);
+                        Ok(pes.len())
+                    }
+                _ => Err(e),
+            }
+        })?;
         Ok(pes)
     }
     /// Discover non output paths from glob string and return them as a vector
