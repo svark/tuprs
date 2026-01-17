@@ -63,7 +63,8 @@ impl Drop for TempFile {
 
 fn dump_temp_tup(contents: &[u8], root: &Path, tuprun_pd: &PathDescriptor) {
     let path = tuprun_pd.get_path_ref().as_path();
-    let mut f = File::create(root.join(path)).expect("Could not write to tup_run_output.tup");
+    let mut f = File::create(root.join(path)).unwrap_or_else(|e|
+        panic!("Dump temp tup file failed {}", e.to_string()));
     f.write_all(contents)
         .expect(&format!("Could not write to {}", path.display()));
 }
