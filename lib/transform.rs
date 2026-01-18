@@ -50,27 +50,20 @@ use tupcompat::platform::*;
 use tuppaths::paths::SelOptions::Either;
 use tuppaths::paths::{get_parent, get_parent_with_fsep, MatchingPath, NormalPath};
 use walkdir::WalkDir;
+#[allow(dead_code)]
 struct TempFile {
     pd: PathDescriptor,
 }
 impl Drop for TempFile {
     fn drop(&mut self) {
-        if !log::log_enabled!(Debug) {
-            std::fs::remove_file(self.pd.get_path_ref()).unwrap_or_default();
-        }
+        // No filesystem cleanup needed when operating purely in-memory.
     }
 }
 
-fn dump_temp_tup(contents: &[u8], root: &Path, tuprun_pd: &PathDescriptor) {
-    let path = tuprun_pd.get_path_ref().as_path();
-    let mut f = File::create(root.join(path)).unwrap_or_else(|e|
-        panic!("Dump temp tup file failed {}", e.to_string()));
-    f.write_all(contents)
-        .expect(&format!("Could not write to {}", path.display()));
-}
 impl TempFile {
     fn new(contents: &[u8], root: &Path, tuprun_pd: &PathDescriptor) -> Self {
-        dump_temp_tup(contents, root, tuprun_pd);
+        // Previously wrote to disk; now we operate in-memory, so no I/O.
+        let _ = (contents, root);
         TempFile {
             pd: tuprun_pd.clone(),
         }
