@@ -347,9 +347,14 @@ impl RuleFormulaInstance {
     }
 }
 
+impl Display for RuleFormula {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.formula.cat())
+    }
+}
 impl Display for RuleFormulaInstance {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "?{:?}? {:?}", self.rule_ref, self.rule_formula)
+        write!(f, "?{} {}", self.rule_formula, self.rule_ref)
     }
 }
 
