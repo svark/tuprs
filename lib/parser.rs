@@ -1269,7 +1269,7 @@ fn parse_define_rule_block(i: Span, for_each: bool) -> IResult<Span, LocatedStat
     .parse(s)?;
 
     // Cleanup and join body lines with NL separators, flattening into single Vec<PathExpr>
-    body_lines.iter_mut().for_each(CleanupPaths::cleanup);
+    body_lines.iter_mut().for_each(|x| {x.cleanup();});
     let mut formula: Vec<PathExpr> = Vec::new();
     let mut first = true;
     for mut line in body_lines.into_iter() {
@@ -1330,7 +1330,7 @@ fn parse_pathexpr_define(i: Span) -> IResult<Span, LocatedStatement> {
     )
     .parse(s)?;
 
-    body.iter_mut().for_each(CleanupPaths::cleanup);
+    body.iter_mut().for_each(|x| {x.cleanup();});
     log::debug!("with body: {:?}", body);
     let body: Vec<_> = body
         .drain(..)

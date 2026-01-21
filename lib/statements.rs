@@ -720,7 +720,7 @@ impl Condition {
     }
 }
 impl CleanupPaths for Condition {
-    fn cleanup(&mut self) {
+    fn cleanup(&mut self) -> &mut Self {
         match self {
             Condition::EqCond(eq) => {
                 eq.lhs.cleanup();
@@ -728,6 +728,12 @@ impl CleanupPaths for Condition {
             }
             _ => {}
         }
+        self
+    }
+
+    fn strip_ws(&mut self) -> &mut Self {
+        // dangerous to strip ws in conditions
+        self
     }
 }
 #[derive(PartialEq, Debug, Clone)]
@@ -737,10 +743,16 @@ pub(crate) struct CondThenStatements {
 }
 
 impl CleanupPaths for CondThenStatements {
-    fn cleanup(&mut self) {
+    fn cleanup(&mut self) -> &mut Self{
         self.cond.cleanup();
         self.cond.cleanup();
         self.then_statements.cleanup();
+        self
+    }
+
+    fn strip_ws(&mut self) -> &mut Self {
+        self.then_statements.strip_ws();
+        self
     }
 }
 
@@ -855,14 +867,15 @@ pub(crate) trait CatRef {
 }
 
 pub(crate) trait CleanupPaths {
-    fn cleanup(&mut self);
+    fn cleanup(&mut self) -> &mut Self;
+    fn strip_ws(&mut self) -> &mut Self;
 }
 
 impl CleanupPaths for Vec<PathExpr> {
-    fn cleanup(&mut self) {
+    fn cleanup(&mut self) -> &mut Self {
         // Early return for empty collections
         if self.is_empty() {
-            return;
+            return self;
         }
 
         // Check if cleanup is needed
@@ -881,7 +894,7 @@ impl CleanupPaths for Vec<PathExpr> {
         let has_empty_literals = self.iter().any(|x| x.is_empty());
 
         if !needs_adjacent_merging && !has_empty_literals {
-            return;
+            return self;
         }
 
         if has_empty_literals {
@@ -932,26 +945,62 @@ impl CleanupPaths for Vec<PathExpr> {
 
         // Replace the original vector with the cleaned one
         *self = result;
+        self
+    }
+
+    fn strip_ws(&mut self) -> &mut Self {
+        // remove leading whitespace
+        while let Some(first) = self.first() {
+            if first.is_ws() {
+                self.remove(0);
+            } else {
+                break;
+            }
+        }
+        // remove trailing whitespace
+        while let Some(last) = self.last() {
+            if last.is_ws() {
+                self.pop();
+            } else {
+                break;
+            }
+        }
+        self
     }
 }
 impl CleanupPaths for RuleFormula {
-    fn cleanup(&mut self) {
+    fn cleanup(&mut self) -> &mut Self {
         self.formula.cleanup();
+        self
+    }
+    fn strip_ws(&mut self) -> &mut Self {
+        self.formula.strip_ws();
+        self
     }
 }
 
 impl CleanupPaths for Link {
-    fn cleanup(&mut self) {
+    fn cleanup(&mut self) -> &mut Self {
         self.target.primary.cleanup();
         self.target.secondary.cleanup();
         self.source.primary.cleanup();
         self.source.secondary.cleanup();
         self.rule_formula.formula.cleanup();
+        self
+    }
+
+    fn strip_ws(&mut self)  -> &mut Self {
+        self.target.primary.strip_ws();
+        self.target.secondary.strip_ws();
+        self.source.primary.strip_ws();
+        self.source.secondary.strip_ws();
+        self.rule_formula.formula.strip_ws();
+        self
     }
 }
 
 impl CleanupPaths for Statement {
-    fn cleanup(&mut self) {
+    fn cleanup(&mut self) -> &mut Self {
         match self {
             Statement::Rule(l, _, _) => {
                 l.cleanup();
@@ -967,7 +1016,7 @@ impl CleanupPaths for Statement {
             } => {
                 then_elif_statements
                     .iter_mut()
-                    .for_each(CleanupPaths::cleanup);
+                    .for_each(|x| {x.cleanup();} );
                 else_statements.cleanup();
             }
             Statement::Include(r) => {
@@ -989,38 +1038,115 @@ impl CleanupPaths for Statement {
                 v.cleanup();
             }
             Statement::Task(t) => {
-                t.get_mut_body().iter_mut().for_each(CleanupPaths::cleanup);
+                t.get_mut_body().iter_mut().for_each(|x| {x.cleanup();});
                 t.get_mut_deps().cleanup();
             }
             _ => {}
         }
+        self
+    }
+
+    fn strip_ws(&mut self)  -> &mut Self {
+        match self {
+            Statement::Rule(l, _, _) => {
+                l.strip_ws();
+            }
+            Statement::AssignExpr {
+                left: _left, right, ..
+            } => {
+                right.strip_ws();
+            }
+            Statement::IfElseEndIf {
+                then_elif_statements,
+                else_statements,
+            } => {
+                then_elif_statements
+                    .iter_mut()
+                    .for_each(|cts| {cts.then_statements.strip_ws();});
+                else_statements.strip_ws();
+            }
+            Statement::Include(r) => {
+                r.strip_ws();
+            }
+            Statement::Message(r, _) => {
+                r.strip_ws();
+            }
+            Statement::MacroRule(_, link) => {
+                link.strip_ws();
+            }
+            Statement::Preload(v) => {
+                v.strip_ws();
+            }
+            Statement::Run(v) => {
+                v.strip_ws();
+            }
+            Statement::EvalBlock(v) => {
+                v.strip_ws();
+            }
+            Statement::Task(t) => {
+                t.get_mut_body()
+                    .iter_mut()
+                    .for_each(|b| {b.strip_ws();});
+                t.get_mut_deps().strip_ws();
+            }
+            _ => {}
+        }
+        self
     }
 }
+
 impl CleanupPaths for Vec<Statement> {
-    fn cleanup(&mut self) {
-        for f in self {
+    fn cleanup(&mut self) -> &mut Self {
+        for f in self.iter_mut() {
             f.cleanup();
         }
+        self
+    }
+
+    fn strip_ws(&mut self) -> &mut Self {
+        for f in self.iter_mut() {
+            f.strip_ws();
+        }
+        self
     }
 }
 
 impl CleanupPaths for Vec<LocatedStatement> {
-    fn cleanup(&mut self) {
-        for f in self {
+    fn cleanup(&mut self) -> &mut Self {
+        for f in self.iter_mut() {
             f.statement.cleanup();
         }
+        self
+    }
+    fn strip_ws(&mut self) -> &mut Self {
+        for f in self.iter_mut() {
+            f.statement.strip_ws();
+        }
+        self
     }
 }
 
 impl CleanupPaths for StatementsInFile {
-    fn cleanup(&mut self) {
+    fn cleanup(&mut self) -> &mut Self {
         match self {
-            StatementsInFile::Current(stmt) => stmt.statement.cleanup(),
+            StatementsInFile::Current(stmt) => {stmt.statement.cleanup();},
             StatementsInFile::Includes(includes) => includes
                 .statements
                 .iter_mut()
-                .for_each(CleanupPaths::cleanup),
+                .for_each(|x| {x.cleanup();}),
         };
+        self
+    }
+
+    fn strip_ws(&mut self) -> &mut Self {
+        match self {
+            StatementsInFile::Current(stmt) => {stmt.statement.strip_ws();},
+            StatementsInFile::Includes(includes) => includes
+                .statements
+                .iter_mut()
+                .for_each(|x| {x.strip_ws();}),
+        };
+        self
     }
 }
 

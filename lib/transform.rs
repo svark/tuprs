@@ -2271,8 +2271,48 @@ impl DollarExprs {
             };
             result.extend(pelist);
         });
+        if m.parse_context == Expression {
+            result.iter_mut().for_each(|e| { replace_newlines_with_spaces(e) });
+        }
         debug!("eval returned {}", result.as_slice().cat_ref());
         result
+    }
+}
+
+fn replace_newlines_with_spaces(p0: &mut PathExpr) {
+    match p0 {
+        PathExpr::Literal(ref mut s) => {
+            let rep : Vec<u8> = Vec::new();
+            let mut writer = BufWriter::new(rep);
+            let buf_reader = BufReader::new(s.as_bytes());
+            let mut first = true;
+            for line in buf_reader.lines() {
+                let line = line.unwrap_or_default();
+                if first {
+                    write!(writer, "{}", line).unwrap_or_default();
+                }else {
+                    write!(writer, " {}", line).unwrap_or_default();
+                }
+                first = false;
+            }
+            writer.flush().unwrap_or_default();
+            *s = String::from_utf8(writer.into_inner().unwrap_or_default()).unwrap_or_default();
+        }
+        PathExpr::Quoted(ref mut s) => {
+            let new_s: Vec<PathExpr> = s
+                .iter()
+                .map(|pe| {
+                    let mut pe = pe.clone();
+                    replace_newlines_with_spaces(&mut pe);
+                    pe
+                })
+                .collect();
+            *s = new_s;
+        }
+        PathExpr::NL => {
+            *p0 = PathExpr::Sp1;
+        }
+        _ => {}
     }
 }
 
@@ -2451,9 +2491,11 @@ impl SubstPEs for RuleFormula {
     type Output = Self;
     /// run variable substitution on `RuleFormula'
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output {
+        let mut formula  = self.formula.subst_pe(m, path_searcher);
+        formula.strip_ws();
         RuleFormula {
             description: self.description.clone(),
-            formula: self.formula.subst_pe(m, path_searcher),
+            formula,
         }
     }
 }
@@ -2489,8 +2531,7 @@ impl ExpandMacro for Link {
                             desc = explink.rule_formula.description.clone();
                         }
                         let mut r = explink.rule_formula.formula.clone();
-                        r.cleanup();
-                        formulae.append(&mut r);
+                        formulae.append(r.cleanup().strip_ws());
                     } else {
                         return Err(Err::UnknownMacroRef(name.clone(), pos.to_string()));
                     }
@@ -2838,6 +2879,7 @@ impl LocatedStatement {
         link: &Link,
     ) -> Result<StatementsInFile, Error> {
         let mut l = link.clone();
+        l.cleanup().strip_ws();
         let loc = parse_state.get_current_loc().clone();
         while l.has_ref() {
             l = l.expand(parse_state)?; // expand all nested macro refs

@@ -20,6 +20,7 @@ extern crate tupcompat;
 extern crate tuppaths;
 extern crate walkdir;
 
+use log::warn;
 pub use buffers::EnvDescriptor;
 pub use buffers::GeneratedFiles;
 pub use buffers::RuleDescriptor;
@@ -164,11 +165,20 @@ fn parse_x() {
     )
     .unwrap();
     let _arts = parser
-        .parse("hwdesktop/hm/comgen/Tupfile")
+        .parse("hwdesktop/hm/amesh/Tupfile")
         .map_err(|e| {
             eprintln!("{:?}", e.to_string());
             e
         })
         .unwrap();
+    let defaul_path_desc = PathDescriptor::default();
+    log::warn!("default: {:?}", defaul_path_desc);
+    for l in _arts.0.get_resolved_links() {
+        let ss = l.get_sources();
+        for s in ss {
+            let p = s.get_resolved_path_desc().unwrap_or(&defaul_path_desc);
+            log::warn!("{}", p.get_path_ref());
+        }
+    }
     //assert_eq!(arts.get_resolved_links().len(), 375);
 }
