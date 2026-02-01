@@ -888,6 +888,7 @@ impl CleanupPaths for Vec<PathExpr> {
                     | (PathExpr::NL, PathExpr::Sp1)
                     | (PathExpr::Sp1, PathExpr::NL)
                     | (PathExpr::Sp1, PathExpr::Sp1)
+                | (PathExpr::DeGlob(_), PathExpr::Literal(_))
             )
         });
 
@@ -898,7 +899,7 @@ impl CleanupPaths for Vec<PathExpr> {
         }
 
         if has_empty_literals {
-            log::debug!("removing empty string in pelist");
+            log::debug!("removing empty string in pathexpr cleanup");
         }
 
         // Perform the cleanup using fold to merge adjacent elements
@@ -915,7 +916,21 @@ impl CleanupPaths for Vec<PathExpr> {
                     }
                 }
                 PathExpr::Literal(s) => {
-                    if let Some(PathExpr::Literal(last)) = acc.last_mut() {
+                    if let Some(PathExpr::DeGlob(mp)) = acc.last_mut() {
+                        // Merge DeGlob with following Literal if it starts with /
+                        if s.starts_with("/") {
+                            let res = mp.join_with_relative(s.as_str());
+                            if let Some(new_mp) = res {
+                                *mp = new_mp;
+                            } else if !s.is_empty() {
+                                // If join fails, just add the literal as is
+                                acc.push(pe.clone());
+                            }
+                        }else if !s.is_empty() {
+                            acc.push(pe.clone());
+                        }
+
+                    } else if let Some(PathExpr::Literal(last)) = acc.last_mut() {
                         // Merge with previous literal
                         last.push_str(s);
                     } else if !s.is_empty() {

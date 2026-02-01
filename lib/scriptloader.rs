@@ -447,7 +447,7 @@ impl<Q: PathSearcher> TupScriptContext<Q> {
         self.parse_state
             .conf_map
             .get(name)
-            .map(|x| x.join(" "))
+            .map(|x| x.cat())
             .unwrap_or_default()
     }
     pub fn get_cwd(&self) -> String {
