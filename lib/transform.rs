@@ -747,6 +747,8 @@ impl ParseState {
             "TUP_ROOT_BUT_ONE".to_string(),
             vec![MatchingPath::new(root_but_one, dir.clone()).into()],
         );
+        debug!("replacing tup_root_but_one with {}",
+            self.expr_map.get("TUP_ROOT_BUT_ONE").unwrap().first().unwrap_or(&PathExpr::default()));
     }
 
     pub fn with_path_buffers_do<F, R>(&self, f: F) -> R
@@ -811,20 +813,17 @@ impl ParseState {
     /// set the current TUP_CWD, TUP_ROOT in expression map in ParseState as we switch to reading an included file
     pub fn set_cwd(
         &mut self,
-        tupfile: &PathDescriptor,
         old_tupfile: &TupPathDescriptor,
     ) -> Result<(), Error> {
         let old_tup_dir = old_tupfile.get_parent_descriptor();
-        if tupfile.eq(&self.get_cur_file_desc()) {
-            return Ok(());
-        }
         //self.cur_file_desc = tupfile.clone();
-        debug!(
+
+        if self.get_tup_dir_desc() != old_tup_dir {
+            debug!(
             "switching to:{:?} from: {:?}",
             self.get_cur_file_desc(),
             old_tup_dir
         );
-        if self.get_tup_dir_desc() != old_tup_dir {
             let diff = RelativeDirEntry::new(self.get_tup_base_dir(), self.get_tup_dir_desc());
             let diff_path = diff.get_path();
             debug!("new tup_cwd {}", diff_path);
@@ -846,15 +845,14 @@ impl ParseState {
         }
         self.record_include_edge(&new_tupfile, &old_tupfile);
         self.push_trail(&new_tupfile);
-        self.set_cwd(&new_tupfile, &old_tupfile)?;
+        self.set_cwd(&old_tupfile)?;
         Ok(true)
     }
     pub fn pop_tup(&mut self) -> Result<(), Error> {
         //let new_tupfile = self.get_cur_file_desc().clone();
 
         let new_tupfile = self.pop_trail().get_tupfile_desc().clone();
-        let old_tupfile = self.get_cur_file_desc().clone();
-        self.set_cwd(&old_tupfile, &new_tupfile)?;
+        self.set_cwd(&new_tupfile)?;
         Ok(())
     }
 

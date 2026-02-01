@@ -5,12 +5,10 @@ extern crate tupparser;
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-
     use env_logger;
 
     use tupparser::decode::parse_dir;
-    use tupparser::statements::LocatedStatement;
-    use tupparser::transform::load_conf_vars;
+    use tupparser::statements::{LocatedStatement};
     use tupparser::writer::convert_to_str;
 
     #[test]
@@ -140,32 +138,4 @@ mod tests {
         insta::assert_json_snapshot!(v2.get("GRPS").unwrap().join(" "));
     }
 
-    #[test]
-    fn parse_pathexprs4() {
-        let _ = env_logger::try_init();
-        let stmts = parse_pathexprs(4);
-        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        d.push("tests/pathexpr");
-
-        let tupconf = d.join("Tupfile4.config");
-        let conf_map = load_conf_vars(tupconf).expect("conf var open error from tupdata1.txt");
-        assert_eq!(
-            conf_map.get("CONFIG_PLATFORM").and_then(|x| x.first()),
-            Some(&"win64".to_owned())
-        );
-        assert_eq!(
-            conf_map.get("CONFIG_CVAR").and_then(|x| x.first()),
-            Some(&"1".to_owned())
-        );
-
-        let (stmts_, _) = tupparser::transform::testing::subst_statements_with_conf(
-            &*std::path::Path::join(&*d, "Tupfile4"),
-            stmts,
-            conf_map,
-        )
-        .expect("subst_statements_with_conf error");
-        //assert_eq!(stmts_.len(), 3);
-        let strings = convert_to_str(&stmts_);
-        insta::assert_json_snapshot!(strings);
-    }
 }

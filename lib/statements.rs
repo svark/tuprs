@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::fmt::{Display, Formatter, Write};
 use tuppaths::paths::MatchingPath;
 /// `TupLoc` keeps track of the current file being processed and rule location.
-/// This is mostly useful for error handling to let the user know we ran into problem with a rule at
+/// This is mostly useful for error handling to let the user know we ran into a problem with a rule at
 /// a particular line
 #[derive(Debug, Default, PartialEq, Eq, Clone, Hash, PartialOrd, Ord)]
 pub struct TupLoc {
@@ -919,7 +919,7 @@ impl CleanupPaths for Vec<PathExpr> {
                     if let Some(PathExpr::DeGlob(mp)) = acc.last_mut() {
                         // Merge DeGlob with following Literal if it starts with /
                         if s.starts_with("/") {
-                            let res = mp.join_with_relative(s.as_str());
+                            let res = mp.join_with_relative(&s[1..]);
                             if let Some(new_mp) = res {
                                 *mp = new_mp;
                             } else if !s.is_empty() {
