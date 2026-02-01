@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::vec::Drain;
 use xxhash_rust::xxh3::Xxh3;
 
+const TUP_CONFIG: &str = "tup.config";
 use crate::buffers::{
     BufferObjects, EnvDescriptor, EnvList, GenBufferObject, GroupBufferObject, OutputHolder,
     PathBuffers, RuleDescriptor, TaskDescriptor,
@@ -253,7 +254,6 @@ impl LoadDirEntry {
     }
 }
 
-impl ParseState {}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CallArgsMap {
@@ -353,12 +353,13 @@ impl ParseState {
         debug!("TUP_ROOT:{}", rel_path_to_root);
         def_vars.insert(
             "TUP_ROOT".to_owned(),
-            vec![MatchingPath::new(PathDescriptor::default(), dir).into()],
+            vec![MatchingPath::new(PathDescriptor::default(), dir.clone()).into()]
         );
+        def_vars.insert("TUP_DOT".to_owned(), vec![MatchingPath::new(dir.clone(), dir.clone()).into()]);
         let mut tup_files_read = Vec::new();
         tup_files_read.push(cur_file_desc.clone());
         let tupconfig = PathDescriptor::default();
-        let tupconfig = tupconfig.join_leaf("tup.config");
+        let tupconfig = tupconfig.join_leaf(TUP_CONFIG);
         tup_files_read.push(tupconfig); // tup.config is always a dependency whether it exists or not
 
         ParseState {
