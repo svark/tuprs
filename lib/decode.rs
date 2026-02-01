@@ -158,6 +158,10 @@ pub trait PathSearcher: PathDiscovery {
 
     /// return underlying implentation's is_dir status and a token i64
     fn is_dir(&self, pd: &PathDescriptor) -> (bool, i64);
+    /// Check if a path is a file
+    /// Returns (is_file, token)
+    fn is_file(&self, pd: &PathDescriptor) -> (bool, i64);
+
 }
 
 /// `RuleFormulaInstance` stores both rule formula and its whereabouts(`TupLoc`) in a Tupfile
@@ -619,6 +623,14 @@ impl PathSearcher for DirSearcher {
 
     fn is_dir(&self, pd: &PathDescriptor) -> (bool, i64) {
         if self.get_root().join(pd.get_path_ref()).is_dir() {
+            (true, pd.to_u64().cast_signed())
+        } else {
+            (false, 0)
+        }
+    }
+
+    fn is_file(&self, pd: &PathDescriptor) -> (bool, i64) {
+        if self.get_root().join(pd.get_path_ref()).is_file() {
             (true, pd.to_u64().cast_signed())
         } else {
             (false, 0)

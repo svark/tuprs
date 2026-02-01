@@ -27,7 +27,6 @@ pub use buffers::RuleDescriptor;
 pub use buffers::RuleRefDescriptor;
 pub use buffers::TaskDescriptor;
 pub use decode::ResolvedLink;
-pub use transform::load_conf_vars_relative_to;
 pub use transform::locate_file;
 pub use transform::ReadWriteBufferObjects;
 pub use transform::ResolvedRules;

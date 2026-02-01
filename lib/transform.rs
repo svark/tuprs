@@ -40,7 +40,7 @@ use crate::GroupPathDescriptor;
 use crate::PathDescriptor;
 use crate::RelativeDirEntry;
 use crate::{GlobPathDescriptor, TupPathDescriptor};
-use crossbeam_channel::{Sender};
+use crossbeam_channel::Sender;
 use log::debug;
 use log::Level::Debug;
 use nom::AsBytes;
@@ -254,7 +254,6 @@ impl LoadDirEntry {
     }
 }
 
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CallArgsMap {
     // call args
@@ -353,9 +352,12 @@ impl ParseState {
         debug!("TUP_ROOT:{}", rel_path_to_root);
         def_vars.insert(
             "TUP_ROOT".to_owned(),
-            vec![MatchingPath::new(PathDescriptor::default(), dir.clone()).into()]
+            vec![MatchingPath::new(PathDescriptor::default(), dir.clone()).into()],
         );
-        def_vars.insert("TUP_DOT".to_owned(), vec![MatchingPath::new(dir.clone(), dir.clone()).into()]);
+        def_vars.insert(
+            "TUP_DOT".to_owned(),
+            vec![MatchingPath::new(dir.clone(), dir.clone()).into()],
+        );
         let mut tup_files_read = Vec::new();
         tup_files_read.push(cur_file_desc.clone());
         let tupconfig = PathDescriptor::default();
@@ -514,6 +516,20 @@ impl ParseState {
         self.cur_env_desc.get_key_value_pairs()
     }
 
+    pub(crate) fn move_new_vars_to_conf(&mut self, old_keys: &HashSet<String>) {
+        for (k, v) in self.expr_map.iter().filter(|&(k, _)| !old_keys.contains(k)) {
+            let vec1 = tovecstring(v);
+            debug!("adding {:?} to conf_vars with val:{:?}", k, vec1);
+            self.conf_map.insert(k.clone(), vec1);
+        }
+        for (k, v) in self.func_map.iter().filter(|&(k, _)| !old_keys.contains(k)) {
+            let vec2 = tovecstring(v);
+            debug!("adding {:?} to conf_vars with val:{:?}", k, vec2);
+            self.conf_map.insert(k.clone(), vec2);
+        }
+        self.expr_map.retain(|k, _| old_keys.contains(k));
+        self.func_map.retain(|k, _| old_keys.contains(k));
+    }
     pub(crate) fn get_env_value(&self, key: &str) -> Option<String> {
         self.cur_env_desc
             .find_key(key)
@@ -2273,7 +2289,9 @@ impl DollarExprs {
             result.extend(pelist);
         });
         if m.parse_context == Expression {
-            result.iter_mut().for_each(|e| { replace_newlines_with_spaces(e) });
+            result
+                .iter_mut()
+                .for_each(|e| replace_newlines_with_spaces(e));
         }
         debug!("eval returned {}", result.as_slice().cat_ref());
         result
@@ -2283,7 +2301,7 @@ impl DollarExprs {
 fn replace_newlines_with_spaces(p0: &mut PathExpr) {
     match p0 {
         PathExpr::Literal(ref mut s) => {
-            let rep : Vec<u8> = Vec::new();
+            let rep: Vec<u8> = Vec::new();
             let mut writer = BufWriter::new(rep);
             let buf_reader = BufReader::new(s.as_bytes());
             let mut first = true;
@@ -2291,7 +2309,7 @@ fn replace_newlines_with_spaces(p0: &mut PathExpr) {
                 let line = line.unwrap_or_default();
                 if first {
                     write!(writer, "{}", line).unwrap_or_default();
-                }else {
+                } else {
                     write!(writer, " {}", line).unwrap_or_default();
                 }
                 first = false;
@@ -2492,7 +2510,7 @@ impl SubstPEs for RuleFormula {
     type Output = Self;
     /// run variable substitution on `RuleFormula'
     fn subst_pe(&self, m: &mut ParseState, path_searcher: &impl PathSearcher) -> Self::Output {
-        let mut formula  = self.formula.subst_pe(m, path_searcher);
+        let mut formula = self.formula.subst_pe(m, path_searcher);
         formula.strip_ws();
         RuleFormula {
             description: self.description.clone(),
@@ -2557,31 +2575,6 @@ fn tovecstring(right: &[PathExpr]) -> Vec<String> {
         .collect()
 }
 
-/// load config vars from tup.config file
-/// Also sets TUP_PLATFORM and TUP_ARCH if they are not set in the config-file
-/// File format is similar to tupfile, but it may not exist
-pub fn load_conf_vars(conf_file: PathBuf) -> Result<HashMap<String, Vec<String>>, Error> {
-    let mut conf_vars = HashMap::new();
-    if !conf_vars.contains_key("TUP_PLATFORM") {
-        conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform().into()]);
-    }
-    if !conf_vars.contains_key("TUP_ARCH") {
-        conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch().into()]);
-    }
-    if !conf_vars.contains_key("TUP_UNAME") {
-        conf_vars.insert("TUP_UNAME".to_owned(), vec![get_uname().into()]);
-    }
-    if conf_file.is_file() {
-        load_config_vars_raw(conf_file.as_path(), &mut conf_vars)?;
-    }
-    // @(TUP_PLATFORM)
-    //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in.
-    // Currently, the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
-    //     @(TUP_ARCH)
-    //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
-
-    Ok(conf_vars)
-}
 pub(crate) fn load_temp_config(
     conf_file: &Path,
     expr_map: &mut HashMap<String, Vec<PathExpr>>,
@@ -2608,63 +2601,6 @@ pub(crate) fn load_temp_config(
         }
     }
     Ok(())
-}
-
-pub(crate) fn load_config_vars_raw(
-    conf_file: &Path,
-    conf_vars: &mut HashMap<String, Vec<String>>,
-) -> Result<(), Error> {
-    let bo = BufferObjects::new(conf_file.parent().unwrap());
-    let cur_file_desc = bo
-        .add_abs(conf_file.file_name().unwrap())
-        .wrap_err(format!(
-            "while adding absolute path for config file {:?} relative to {:?}",
-            conf_file.file_name().unwrap(),
-            conf_file.parent().unwrap()
-        ))?;
-    let cvars = HashMap::new();
-    let mut parse_state = ParseState::new(
-        &cvars,
-        cur_file_desc,
-        Vec::new(),
-        Arc::new(RwLock::new(HashMap::new())),
-        Arc::from(bo),
-    );
-    let db_path_searcher = DirSearcher::new_at(conf_file.parent().unwrap());
-    let located_statements = parse_tupfile(conf_file)?;
-    for located_statement in located_statements.into_iter() {
-        if let Statement::AssignExpr { .. } = located_statement.get_statement() {
-            located_statement.subst(&mut parse_state, &db_path_searcher)?;
-        } else if let Statement::Import(_, _) = located_statement.get_statement() {
-            // import the environment variable `e` into the tupfile as `e` with the value `v` if environment variable `e` is not set.
-            // this is not used as  env var but as a variable .
-            located_statement.subst(&mut parse_state, &db_path_searcher)?;
-        }
-    }
-    for (k, v) in parse_state.expr_map.iter() {
-        let vec1 = tovecstring(v);
-        debug!("adding {:?} to conf_vars with val:{:?}", k, vec1);
-        conf_vars.insert(k.clone(), vec1);
-    }
-    for (k, v) in parse_state.func_map.iter() {
-        let vec2 = tovecstring(v);
-        debug!("adding {:?} to conf_vars with val:{:?}", k, vec2);
-        conf_vars.insert(k.clone(), vec2);
-    }
-    for (k, v) in parse_state.get_envs() {
-        conf_vars.insert(k, vec![v]);
-    }
-    Ok(())
-}
-
-/// load the conf variables in tup.config in the root directory
-/// TUP_PLATFORM and TUP_ARCH are automatically assigned based on how this program is built
-pub fn load_conf_vars_relative_to(root: &Path) -> Result<HashMap<String, Vec<String>>, Error> {
-    debug!("attempting loading conf vars from tup.config at {:?}", root);
-    let conf_file = root.join("tup.config");
-    //debug!("loading conf vars from tup.config at {:?}", root);
-    let conf_vars = load_conf_vars(conf_file)?;
-    Ok(conf_vars)
 }
 
 impl SubstPEs for Link {
@@ -3554,7 +3490,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
 
         let root = parent.as_path();
         debug!("root folder: {:?}", root);
-        let conf_vars = load_conf_vars_relative_to(root)?;
+        let conf_vars = HashMap::new();
         Ok(TupParser::new_from(
             root,
             conf_vars,
@@ -3632,7 +3568,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     ) -> Result<(), Error> {
         let p = tup_file_path.as_ref();
         // create a parser state
-        let parse_state = self.prepare_to_parse(p);
+        let parse_state = self.prepare_to_parse(p)?;
         // now we are ready to parse the tupfile or tupfile.lua
         let stmts = parse_tupfile(tup_file_path)?;
         sender
@@ -3649,13 +3585,74 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     ) -> Result<StatementsToResolve, Error> {
         // add tupfile path and tup environment to the buffer
 
-        let parse_state = self.prepare_to_parse(&tup_file_path);
+        let parse_state = self.prepare_to_parse(&tup_file_path)?;
         // now we ready to parse the tupfile or tupfile.lua
         let stmts = parse_tupfile(tup_file_path)?;
         Ok(StatementsToResolve::new(stmts, parse_state))
     }
+    /// load config vars from tup.config file
+    /// Also sets TUP_PLATFORM and TUP_ARCH if they are not set in the config-file
+    /// File format is similar to tupfile, but it may not exist
+    pub(crate) fn load_conf_vars(
+        &mut self,
+        conf_file: PathBuf,
+        parse_state: &mut ParseState,
+    ) -> Result<(), Error> {
+        // @(TUP_PLATFORM)
+        //     TUP_PLATFORM is a special @-variable. If CONFIG_TUP_PLATFORM is not set in the tup.config file, it has a default value according to the platform that tup itself was compiled in.
+        // Currently, the default value is one of "linux", "solaris", "macosx", "win32", or "freebsd".
+        //     @(TUP_ARCH)
+        //     TUP_ARCH is another special @-variable. If CONFIG_TUP_ARCH is not set in the tup.config file, it has a default value according to the processor architecture that tup itself was compiled in. Currently the default value is one of "i386", "x86_64", "powerpc", "powerpc64", "ia64", "alpha", "sparc", "arm64", or "arm".
 
-    fn prepare_to_parse<P: AsRef<Path>>(&mut self, tup_file_path: P) -> ParseState {
+        let conf_vars = &mut parse_state.conf_map;
+        if !conf_vars.contains_key("TUP_PLATFORM") {
+            conf_vars.insert("TUP_PLATFORM".to_owned(), vec![get_platform().into()]);
+        }
+        if !conf_vars.contains_key("TUP_ARCH") {
+            conf_vars.insert("TUP_ARCH".to_owned(), vec![get_arch().into()]);
+        }
+        if !conf_vars.contains_key("TUP_UNAME") {
+            conf_vars.insert("TUP_UNAME".to_owned(), vec![get_uname().into()]);
+        }
+
+        // load_config_vars_raw(conf_file.as_path(), &mut conf_vars)?;
+        let cur_file_desc = self.with_path_buffers_do(|bo| {
+            bo.add_abs(conf_file.file_name().unwrap()).wrap_err(format!(
+                "while adding absolute path for config file {:?} relative to {:?}",
+                conf_file.file_name().unwrap(),
+                conf_file.parent().unwrap()
+            ))
+        })?;
+
+        let old_expr_map_keys = parse_state.get_var_keys();
+        self.with_path_searcher_do(|psx| {
+            parse_state.switch_tupfile_and_process(
+                &cur_file_desc,
+                |parse_state| -> Result<(), Error> {
+                    let located_statements = parse_tupfile(conf_file).or_else(|e| {
+                        if let Error::IoError(..) = e {
+                            Ok(Vec::new())
+                        } else {
+                            Err(e)
+                        }
+                    })?;
+                    // pretend we are reading a regular tupfile, and copy over the variables to conf vars
+                    for located_statement in located_statements.into_iter() {
+                        if let Statement::AssignExpr { .. } = located_statement.get_statement() {
+                            located_statement.subst(parse_state, psx)?;
+                        } else if let Statement::Import(_, _) = located_statement.get_statement() {
+                            // import the environment variable `e` into the tupfile as `e` with the value `v` if environment variable `e` is not set.
+                            // this is not used as  env var but as a variable .
+                            located_statement.subst(parse_state, psx)?;
+                        }
+                    }
+                    parse_state.move_new_vars_to_conf(&old_expr_map_keys);
+                    Ok(())
+                },
+            )
+        })
+    }
+    fn prepare_to_parse<P: AsRef<Path>>(&mut self, tup_file_path: P) -> Result<ParseState, Error> {
         let (tup_desc, env_desc) = self.with_path_buffers_do(|boref| {
             let tup_desc = boref.add_tup(tup_file_path.as_ref());
             let env = init_env();
@@ -3664,13 +3661,16 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         });
 
         // create a parser state
-        ParseState::new(
+        let mut ps = ParseState::new(
             &self.config_vars,
             tup_desc.clone(),
             env_desc,
             self.statement_cache.clone(),
             self.path_buffers.clone(),
-        )
+        );
+        let conf_file = self.get_root().join(TUP_CONFIG);
+        self.load_conf_vars(conf_file, &mut ps)?;
+        Ok(ps)
     }
 
     /// `parse` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
@@ -3683,24 +3683,9 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         tup_file_path: P,
     ) -> Result<(ResolvedRules, OutputHolder), Error> {
         // add tupfile path and tup environment to the buffer
-        let (tup_desc, env_desc) = self.with_path_buffers_do(|path_buffers| {
-            let tup_desc = path_buffers.add_tup(tup_file_path.as_ref());
-            let env = init_env();
-            let env_desc: Vec<_> = env
-                .into_iter()
-                .map(|e| path_buffers.add_env(Cow::Owned(e)))
-                .collect();
-            (tup_desc, env_desc)
-        });
 
-        // create a parser state
-        let parse_state = ParseState::new(
-            &self.config_vars,
-            tup_desc,
-            env_desc,
-            self.statement_cache.clone(),
-            self.path_buffers.clone(),
-        );
+        let parse_state = self.prepare_to_parse(tup_file_path.as_ref())?;
+        //load_conf_vars_relative_to(root, parse_state.get_tup_dir_desc())?
         // now we ready to parse the tupfile or tupfile.lua
         if let Some("lua") = tup_file_path.as_ref().extension().and_then(OsStr::to_str) {
             // wer are not going to  resolve group paths during the first phase of parsing.
@@ -3780,6 +3765,10 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     }
     fn get_path_searcher(&self) -> RwLockReadGuard<'_, Q> {
         self.path_searcher.deref().read()
+    }
+
+    fn get_root(&self) -> &Path {
+        self.path_buffers.get_root_dir()
     }
 }
 
