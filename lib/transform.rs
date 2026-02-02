@@ -236,9 +236,9 @@ pub(crate) struct ParseState {
     pub(crate) cur_tupfile_loc_stack: NonEmpty<TupLoc>,
     // outputs collected in current tupfile
     pub(crate) output_holder: OutputHolder,
+    // cached list of assignment statements
+    pub(crate) assignment_cache: HashMap<TupPathDescriptor, Vec<TupLocatedStatement>>,
 }
-
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LoadDirEntry {
@@ -346,22 +346,22 @@ impl ParseState {
             .get_path_to_root()
             .to_string_lossy()
             .to_string();
-       debug!("TUP_ROOT:{}", rel_path_to_root);
-       let root_but_one = cur_file_desc
-            .get_root_but_one();
+        debug!("TUP_ROOT:{}", rel_path_to_root);
+        let root_but_one = cur_file_desc.get_root_but_one();
         def_vars.insert(
             "TUP_ROOT".to_owned(),
             vec![MatchingPath::new(PathDescriptor::default(), dir.clone()).into()],
         );
         def_vars.insert(
             "TUP_ROOT_BUT_ONE".to_owned(),
-            vec![MatchingPath::new(
-                root_but_one,
-                dir.clone(),
-            )
-            .into()],
+            vec![MatchingPath::new(root_but_one, dir.clone()).into()],
         );
-        debug!("TUP_ROOT_BUT_ONE:{}", def_vars["TUP_ROOT_BUT_ONE"].first().unwrap_or(&Default::default()));
+        debug!(
+            "TUP_ROOT_BUT_ONE:{}",
+            def_vars["TUP_ROOT_BUT_ONE"]
+                .first()
+                .unwrap_or(&Default::default())
+        );
 
         def_vars.insert(
             "TUP_DOT".to_owned(),
@@ -402,6 +402,23 @@ impl ParseState {
 
     pub(crate) fn get_include_trail(&self) -> IncludeTrail {
         self.cur_tupfile_loc_stack.clone().into()
+    }
+
+    pub(crate) fn record_assignments_for_cached_config(&mut self, statement: &LocatedStatement) {
+        if self.get_cached_config().is_empty() {
+            return;
+        }
+        let cur_file_desc = self.get_cur_file_desc().clone();
+        let cached_configs = self.get_cached_config().clone();
+        for cc in cached_configs.into_iter() {
+            self.assignment_cache
+                .entry(cc.0)
+                .or_default()
+                .push(TupLocatedStatement::new(
+                    statement.clone(),
+                    cur_file_desc.clone(),
+                ));
+        }
     }
 
     fn get_cached_config(&self) -> &Vec<(TupPathDescriptor, PathDescriptor)> {
@@ -628,13 +645,15 @@ impl ParseState {
         read().unwrap_or_default()
     }
 
-    pub(crate) fn write_cached_config(&mut self, keys_so_far: HashSet<String>) {
-        let mut c = self.get_cached_config().iter();
+    pub(crate) fn write_cached_config(&mut self) {
+        let x = self.get_cached_config().clone();
+        let mut c = x.into_iter();
         while let Some((tup, p)) = c.next() {
             if tup.ne(self.get_cur_file_desc()) {
                 continue;
             }
             let cur_file = self.get_cur_file();
+            let cur_file_desc = self.get_cur_file_desc().clone();
             //let extn = cur_file.extension().unwrap_or_default();
             let fullpath = cur_file.with_extension("temp-config.tup");
             let should_write = cached_config_write_set()
@@ -648,18 +667,19 @@ impl ParseState {
             let path = p.get_path_ref();
             debug!("writing cached config to {:?} for tup: {:?}", path, tup);
             let _ = get_sha256_hash(&cur_file).and_then(|hash| {
-                self.dump_vars(&fullpath, hash.as_str(), |var| {
-                    // write only new keys
-                    !keys_so_far.contains(var)
-                })
+                self.dump_vars(&fullpath, hash.as_str(), cur_file_desc.clone())?;
+                self.clear_assignments(cur_file_desc.clone());
+                Ok(())
             });
         }
     }
     // Dump all variable to a file
-    pub(crate) fn dump_vars<F>(&self, path: &Path, sha: &str, include: F) -> Result<(), Error>
-    where
-        F: Fn(&str) -> bool,
-    {
+    pub(crate) fn dump_vars(
+        &self,
+        path: &Path,
+        sha: &str,
+        cur_file: TupPathDescriptor,
+    ) -> Result<(), Error> {
         use std::io::Write;
         log::warn!("Writing cached config to {:?}", path);
         let err_string = format!("Could not write to cached config {:?}", path);
@@ -667,26 +687,28 @@ impl ParseState {
             File::create(path).map_err(|e| IoError(e, err_string.clone(), Loc::new(0, 0, 0)))?;
         let mut f = BufWriter::new(f);
         writeln!(f, "#tup.config sha:{}", sha).expect(err_string.as_str());
-        for (k, v) in self.expr_map.iter() {
-            if !include(k) {
+        let first_dir = cur_file.get_parent_descriptor();
+        for (tup_desc, statements) in self.assignment_cache.iter() {
+            if tup_desc != &cur_file {
                 continue;
             }
-            let res = writeln!(f, "{}:={}", k, v.cat());
-            if let Err(e) = res {
-                return Err(IoError(e, err_string, Loc::new(0, 0, 0)));
-            }
-        }
-        for (k, v) in self.func_map.iter() {
-            if !include(k) {
-                continue;
-            }
-            let res = writeln!(f, "{}={}", k, v.cat());
-            if let Err(e) = res {
-                return Err(IoError(
-                    e,
-                    String::from("Could write to config"),
-                    Loc::new(0, 0, 0),
-                ));
+            for tup_loc_statement in statements.iter() {
+                let loc_statement = tup_loc_statement.get_statement();
+                let tup_file_desc = tup_loc_statement.get_tup_file_desc();
+                if tup_file_desc
+                    .get_parent_descriptor()
+                    .ne(&first_dir)
+                {
+                    return Err(Error::UserError(
+                        "Deep cached configs across folders are not supported".to_owned(),
+                        TupLoc::new(tup_file_desc, loc_statement.get_loc()),
+                    ));
+                }
+
+                let res = write!(f, "{}", loc_statement);
+                if let Err(e) = res {
+                    return Err(IoError(e, err_string, Loc::new(0, 0, 0)));
+                }
             }
         }
         Ok(())
@@ -735,20 +757,24 @@ impl ParseState {
             .insert("TUP_CWD".to_string(), vec![dir.into()]);
     }
 
-    pub (crate) fn replace_tup_root(&mut self, dir: PathDescriptor) {
-        self.expr_map.insert(
-            "TUP_ROOT".to_string(),
-            vec![MatchingPath::new(PathDescriptor::default(), dir.clone()).into()],
+    pub(crate) fn replace_tup_root(&mut self, dir: PathDescriptor) {
+        let path_to_root_from_here = MatchingPath::new(PathDescriptor::default(), dir.clone());
+        debug!(
+            "replacing tup_root with {}",
+            path_to_root_from_here.get_relative_path()
         );
-        debug!("replacing tup_root with {:?}", dir);
-        let root_but_one = dir
-            .get_root_but_one();
+        self.expr_map
+            .insert("TUP_ROOT".to_string(), vec![path_to_root_from_here.into()]);
+        let root_but_one = dir.get_root_but_one();
+        let path_to_root_but_one = MatchingPath::new(root_but_one, dir.clone());
+        debug!(
+            "replacing tup_root_but_one with {}",
+            path_to_root_but_one.get_relative_path()
+        );
         self.expr_map.insert(
             "TUP_ROOT_BUT_ONE".to_string(),
-            vec![MatchingPath::new(root_but_one, dir.clone()).into()],
+            vec![path_to_root_but_one.into()],
         );
-        debug!("replacing tup_root_but_one with {}",
-            self.expr_map.get("TUP_ROOT_BUT_ONE").unwrap().first().unwrap_or(&PathExpr::default()));
     }
 
     pub fn with_path_buffers_do<F, R>(&self, f: F) -> R
@@ -811,25 +837,24 @@ impl ParseState {
         }
     }
     /// set the current TUP_CWD, TUP_ROOT in expression map in ParseState as we switch to reading an included file
-    pub fn set_cwd(
-        &mut self,
-        old_tupfile: &TupPathDescriptor,
-    ) -> Result<(), Error> {
+    pub fn set_cwd(&mut self, old_tupfile: &TupPathDescriptor) -> Result<(), Error> {
         let old_tup_dir = old_tupfile.get_parent_descriptor();
         //self.cur_file_desc = tupfile.clone();
 
         if self.get_tup_dir_desc() != old_tup_dir {
             debug!(
-            "switching to:{:?} from: {:?}",
-            self.get_cur_file_desc(),
-            old_tup_dir
-        );
-            let diff = RelativeDirEntry::new(self.get_tup_base_dir(), self.get_tup_dir_desc());
-            let diff_path = diff.get_path();
-            debug!("new tup_cwd {}", diff_path);
-            self.replace_tup_cwd(
-                MatchingPath::new(self.get_tup_dir_desc(), self.get_tup_base_dir()).into(),
+                "switching to:{:?} from: {:?}",
+                self.get_cur_file_desc(),
+                old_tup_dir
             );
+            let path_from_tup_base_to_here =
+                MatchingPath::new(self.get_tup_dir_desc(), self.get_tup_base_dir());
+            debug!(
+                "path from tup_base to here: {}",
+                path_from_tup_base_to_here.get_relative_path()
+            );
+            self.replace_tup_cwd(path_from_tup_base_to_here.into());
+
             self.replace_tup_root(self.get_tup_dir_desc());
         } else {
             debug!("no change in cwd!");
@@ -1020,6 +1045,10 @@ impl ParseState {
         self.expr_map.contains_key(v) && pe_value_is_non_empty(self.expr_map.get(v).unwrap())
             || self.func_map.contains_key(v) && self.func_map.get(v).unwrap().len() > 0
             || self.conf_map.contains_key(v) && self.conf_map.get(v).unwrap().len() > 0
+    }
+
+    fn clear_assignments(&mut self, cur_file_desc: TupPathDescriptor) {
+        self.assignment_cache.remove(&cur_file_desc); // remove if still exists
     }
 }
 
@@ -2576,7 +2605,6 @@ impl ExpandMacro for Link {
     }
 }
 
-
 pub(crate) fn load_temp_config(
     conf_file: &Path,
     expr_map: &mut HashMap<String, Vec<PathExpr>>,
@@ -2671,6 +2699,7 @@ impl LocatedStatement {
                 right,
                 assignment_type,
             } => {
+                parse_state.record_assignments_for_cached_config(self);
                 Self::subst_assign(
                     parse_state,
                     path_searcher,
@@ -3013,11 +3042,10 @@ impl LocatedStatement {
                 if parse_state.read_cached_config() {
                     Ok(StatementsInFile::default())
                 } else {
-                    let keys_so_far = parse_state.get_var_keys();
                     let include_stmts =
                         get_or_insert_parsed_statements(path_searcher.get_root(), parse_state)?;
                     let stat = include_stmts.subst(parse_state, path_searcher)?;
-                    parse_state.write_cached_config(keys_so_far);
+                    parse_state.write_cached_config();
                     Ok(stat)
                 }
             },
@@ -3518,10 +3546,7 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
     }
 
     /// Construct at the given rootdir and using config vars
-    pub fn new_from<P: AsRef<Path>>(
-        root_dir: P,
-        path_searcher: Arc<RwLock<Q>>,
-    ) -> TupParser<Q> {
+    pub fn new_from<P: AsRef<Path>>(root_dir: P, path_searcher: Arc<RwLock<Q>>) -> TupParser<Q> {
         TupParser {
             path_buffers: Arc::new(BufferObjects::new(root_dir)),
             path_searcher,
@@ -3624,35 +3649,35 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         })?;
 
         let old_expr_map_keys = parse_state.get_var_keys();
-        self.with_path_searcher_do(|psx| {
-            parse_state.switch_tupfile_and_process(
-                &cur_file_desc,
-                |parse_state| -> Result<(), Error> {
-                    let located_statements = parse_tupfile(conf_file).or_else(|e| {
-                        if let IoError(..) = e {
-                            Ok(Vec::new())
-                        } else {
-                            Err(e)
-                        }
-                    })?;
-                    // pretend we are reading a regular tupfile, and copy over the variables to conf vars
-                    for located_statement in located_statements.into_iter() {
-                        if let Statement::AssignExpr { .. } = located_statement.get_statement() {
-                            located_statement.subst(parse_state, psx)?;
-                        } else if let Statement::Import(_, _) = located_statement.get_statement() {
-                            // import the environment variable `e` into the tupfile as `e` with the value `v` if environment variable `e` is not set.
-                            // this is not used as  env var but as a variable .
-                            located_statement.subst(parse_state, psx)?;
-                        }
-                    }
-                    parse_state.move_new_vars_to_conf(&old_expr_map_keys);
-                    Ok(())
-                },
-            )
+        parse_state.switch_tupfile_and_process(&cur_file_desc, |parse_state| -> Result<(), Error> {
+            let located_statements = parse_tupfile(conf_file).or_else(|e| {
+                if let IoError(..) = e {
+                    Ok(Vec::new())
+                } else {
+                    Err(e)
+                }
+            })?;
+            // pretend we are reading a regular tupfile, and copy over the variables to conf vars
+            let searcher = self.get_path_searcher();
+            for located_statement in located_statements.into_iter() {
+                if let Statement::AssignExpr { .. } = located_statement.get_statement() {
+                    located_statement.subst(parse_state, searcher.deref())?;
+                } else if let Statement::Import(_, _) = located_statement.get_statement() {
+                    // import the environment variable `e` into the tupfile as `e` with the value `v` if environment variable `e` is not set.
+                    // this is not used as  env var but as a variable .
+                    located_statement.subst(parse_state, searcher.deref())?;
+                }
+            }
+            parse_state.move_new_vars_to_conf(&old_expr_map_keys);
+            Ok(())
         })
     }
     /// prepare to parse a tupfile by setting up its parse state with tupfile path and environment variables
-     pub(crate) fn prepare_to_parse<P: AsRef<Path>>(&mut self, tup_file_path: P, tup_config : Option<&str>) -> Result<ParseState, Error> {
+    pub(crate) fn prepare_to_parse<P: AsRef<Path>>(
+        &mut self,
+        tup_file_path: P,
+        tup_config: Option<&str>,
+    ) -> Result<ParseState, Error> {
         let (tup_desc, env_desc) = self.with_path_buffers_do(|boref| {
             let tup_desc = boref.add_tup(tup_file_path.as_ref());
             let env = init_env();
@@ -3672,7 +3697,6 @@ impl<Q: PathSearcher + Sized + Send> TupParser<Q> {
         self.load_conf_vars(conf_file, &mut ps)?;
         Ok(ps)
     }
-
 
     /// `parse` takes a tupfile or Tupfile.lua file, and gathers rules, groups, bins and file paths it finds in them.
     /// These are all referenced by their ids that are generated  on the fly.
@@ -3874,7 +3898,7 @@ pub mod testing {
 
     #[allow(dead_code)]
     /// perform variable substition, resolve calls, evals, foreach etc
-     fn subst_statements_with_conf(
+    fn subst_statements_with_conf(
         filename: &Path,
         statements: Vec<LocatedStatement>,
         conf_map: HashMap<String, Vec<PathExpr>>,

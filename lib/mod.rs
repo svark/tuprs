@@ -164,7 +164,7 @@ fn parse_x() {
     )
     .unwrap();
     let _arts = parser
-        .parse("hwdesktop/hm/amesh/Tupfile")
+        .parse("hwdesktop/hm/modules/Tupfile")
         .map_err(|e| {
             eprintln!("{:?}", e.to_string());
             e

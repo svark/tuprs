@@ -447,6 +447,24 @@ pub struct LocatedStatement {
     pub(crate) statement: Statement,
     pub(crate) loc: Loc,
 }
+/// A statement in a tupfile with its location
+#[derive(PartialEq, Debug, Clone)]
+pub struct TupLocatedStatement {
+    located_statement: LocatedStatement,
+    tup_file_desc: TupPathDescriptor,
+}
+
+impl TupLocatedStatement {
+    pub(crate) fn new(located_statement: LocatedStatement, tup_file_desc: TupPathDescriptor) -> TupLocatedStatement {
+        TupLocatedStatement { located_statement, tup_file_desc }
+    }
+    pub(crate) fn get_tup_file_desc(&self) -> &TupPathDescriptor {
+        &self.tup_file_desc
+    }
+    pub(crate) fn get_statement(&self) -> &LocatedStatement {
+        &self.located_statement
+    }
+}
 
 /// Stack of included tupfiles and the location until the statement is found
 #[derive(Clone, Debug, PartialEq, Default, Eq, Hash, Ord, PartialOrd)]
@@ -460,6 +478,14 @@ impl Display for IncludeTrail {
             write!(f, "\tfrom\n{}", t)?;
         }
         Ok(())
+    }
+}
+
+impl Iterator for IncludeTrail {
+    type Item = TupLoc;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.pop()
     }
 }
 
