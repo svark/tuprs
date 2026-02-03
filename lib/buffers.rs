@@ -16,10 +16,7 @@ use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tinyset::Fits64;
-use tuppaths::descs::{
-    BinDescriptor, BinPathEntry, Descriptor, DirEntry, GlobPathDescriptor, GroupPathDescriptor,
-    GroupPathEntry, PathDescriptor, RelativeDirEntry, TupPathDescriptor,
-};
+use tuppaths::descs::{BinDescriptor, BinPathEntry, Descriptor, DirEntry, GlobPathDescriptor, GroupPathDescriptor, GroupPathEntry, PathDescriptor, RelativeDirEntry, RelativePath, TupPathDescriptor};
 use tuppaths::glob;
 use tuppaths::glob::{GlobBuilder, GlobMatcher};
 use tuppaths::intern::Intern;
@@ -94,7 +91,7 @@ pub trait PathBuffers {
     fn get_abs_path(&self, pd: &PathDescriptor) -> PathBuf;
 
     /// return relative path from current and base.
-    fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> NormalPath;
+    fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> RelativePath;
     /// Return Rule from its descriptor
     fn get_rule<'a>(&'a self, rd: &'a RuleDescriptor) -> &'a RuleFormulaInstance;
     /// return Env from its descriptor
@@ -1189,7 +1186,7 @@ impl PathBuffers for BufferObjects {
     fn get_abs_path(&self, pd: &PathDescriptor) -> PathBuf {
         self.get_root_dir().join(pd.get_path_ref())
     }
-    fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> NormalPath {
+    fn get_rel_path(&self, pd: &PathDescriptor, base: &PathDescriptor) -> RelativePath {
         let rel = RelativeDirEntry::new(base.clone(), pd.clone());
         rel.get_path()
     }
