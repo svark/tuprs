@@ -75,7 +75,7 @@ fn temp_file_name(prefix: &str, line: u32) -> String {
     format!("{}-{}.{}", prefix, line, "-temp.tup")
 }
 
-/// Compute hash of a file, fails with io error if file cannot be read
+/// Compute hash of a file, fails with io error if a file cannot be read
 pub fn compute_hash<P: AsRef<Path>>(path: P) -> io::Result<String> {
     let file = File::open(path.as_ref())?;
     let mut reader = BufReader::with_capacity(16384, file);
@@ -199,7 +199,7 @@ impl Default for ParseContext {
     }
 }
 
-/// ParseState holds maps tracking current state of variable replacements as we read a tupfile
+/// ParseState holds maps tracking the current state of variable replacements as we read a tupfile
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ParseState {
     /// tupfile variables to be substituted
@@ -695,10 +695,7 @@ impl ParseState {
             for tup_loc_statement in statements.iter() {
                 let loc_statement = tup_loc_statement.get_statement();
                 let tup_file_desc = tup_loc_statement.get_tup_file_desc();
-                if tup_file_desc
-                    .get_parent_descriptor()
-                    .ne(&first_dir)
-                {
+                if tup_file_desc.get_parent_descriptor().ne(&first_dir) {
                     return Err(Error::UserError(
                         "Deep cached configs across folders are not supported".to_owned(),
                         TupLoc::new(tup_file_desc, loc_statement.get_loc()),
@@ -895,12 +892,12 @@ impl ParseState {
         self.get_cur_file_desc().get_path_ref().as_path()
     }
 
-    // get directory of the tupfile being parsed
+    // get the directory of the tupfile being parsed
     pub(crate) fn get_tup_dir_desc(&self) -> PathDescriptor {
         self.get_cur_file_desc().get_parent_descriptor()
     }
 
-    /// Get descriptor of the tup file being parsed
+    /// Get the file descriptor of tupfile being parsed from the last stack entry.
     pub(crate) fn get_cur_file_desc(&self) -> &TupPathDescriptor {
         //&self.cur_file_desc
         self.cur_tupfile_loc_stack.last().get_tupfile_desc()
@@ -1102,13 +1099,13 @@ impl StatementsInFile {
                                 parse_state.get_tup_dir_desc(),
                                 loc
                             ))?;
-                        let glob_path = GlobPath::build_from(&parse_state.get_tup_dir_desc(), &p)?;
+                        let glob_path = GlobPath::build_from(&parse_state.get_tup_dir_desc(), &p);
                         let glob_path_desc = glob_path.get_glob_path_desc();
                         let rel_path =
                             RelativeDirEntry::new(parse_state.get_tup_dir_desc(), glob_path_desc);
                         let mut glob_paths = vec![glob_path];
                         for dir in parse_state.unique_load_dirs() {
-                            let glob_path = GlobPath::build_from_relative_desc(&dir.pd, &rel_path)?;
+                            let glob_path = GlobPath::build_from_relative_desc(&dir.pd, &rel_path);
                             glob_paths.push(glob_path);
                         }
                         let matches = path_searcher
@@ -1744,8 +1741,7 @@ impl DollarExprs {
                                 .unwrap_or_else(|e| {
                                     panic!("failed to add path from {:?} due to {}", dir, e);
                                 });
-                            let glob_path = GlobPath::build_from(&dir, &p)
-                                .expect("Failed to build a glob path");
+                            let glob_path = GlobPath::build_from(&dir, &p);
                             let glob_path_desc = glob_path.get_glob_path_desc();
                             let rel_path = RelativeDirEntry::new(dir.clone(), glob_path_desc);
                             debug!("rel_path:{:?}", rel_path);
@@ -1848,10 +1844,10 @@ impl DollarExprs {
                         let s = cat_literals(v);
                         if !s.is_empty() {
                             let p = Path::new(s.as_str());
-                            let base_name = p.file_stem().unwrap_or_else(|| {
-                                panic!("failed to get base name from path: {:?}", p)
-                            });
-                            Some(base_name.to_string_lossy().to_string().into())
+                            {
+                                p.file_stem()
+                                    .map(|base_name| base_name.to_string_lossy().to_string().into())
+                            }
                         } else {
                             None
                         }
@@ -1870,10 +1866,8 @@ impl DollarExprs {
                         let s = cat_literals(v);
                         if !s.is_empty() {
                             let p = Path::new(s.as_str());
-                            let file_name = p.file_name().unwrap_or_else(|| {
-                                panic!("failed to get base name from path: {:?}", p)
-                            });
-                            Some(file_name.to_string_lossy().to_string().into())
+                            p.file_name()
+                                .map(|p| p.to_string_lossy().to_string().into())
                         } else {
                             None
                         }
@@ -2222,10 +2216,7 @@ impl DollarExprs {
                         .unwrap_or_else(|e| {
                             panic!("failed to add path from {:?} due to {}", dirid, e);
                         });
-                    let glob_path = GlobPath::build_from(&dirid, &p).expect(&*format!(
-                        "Failed to build a glob path:{}",
-                        glob_pattern.as_str()
-                    ));
+                    let glob_path = GlobPath::build_from(&dirid, &p);
                     glob_paths.push(glob_path); // other directories in which to look for paths
 
                     let paths = discover_paths_with_pattern(
@@ -2618,9 +2609,7 @@ pub(crate) fn load_temp_config(
         } = statement
         {
             match assignment_type {
-                AssignmentType::Lazy => {
-                    parse_state.assign_lazy(left.name.as_str(), right.clone())
-                }
+                AssignmentType::Lazy => parse_state.assign_lazy(left.name.as_str(), right.clone()),
                 AssignmentType::Immediate => {
                     parse_state.assign_eager(left.name.as_str(), right.clone(), path_searcher)
                 }
@@ -3029,7 +3018,7 @@ impl LocatedStatement {
             &[GlobPath::build_from(
                 &parse_state.get_tup_base_dir(),
                 &fullp,
-            )?],
+            )],
             SelOptions::File,
         )?;
         let p = ps.into_iter().next().ok_or_else(|| {
@@ -3950,7 +3939,7 @@ pub fn compute_glob_hash(
     bo: &impl PathBuffers,
     p0: &GlobPathDescriptor,
 ) -> Result<String, Error> {
-    let glob_path = GlobPath::build_from(&PathDescriptor::default(), p0)?;
+    let glob_path = GlobPath::build_from(&PathDescriptor::default(), p0);
     let root = glob_path.get_non_pattern_abs_path();
     if !glob_path.has_glob_pattern() {
         return Ok(String::new());
@@ -3977,7 +3966,7 @@ pub fn compute_glob_hash(
 /// hash of a rglob is the hash of the list of folders in the directory and subdirectories that match the glob  within the glob non pattern prefix directory
 pub fn compute_rglob_hash(bo: &impl PathBuffers, p0: &GlobPathDescriptor) -> Result<String, Error> {
     let parent = p0.get_parent_descriptor();
-    let glob_path = GlobPath::build_from(&PathDescriptor::default(), &parent)?;
+    let glob_path = GlobPath::build_from(&PathDescriptor::default(), &parent);
     let root = glob_path.get_non_pattern_abs_path();
     if !glob_path.has_glob_pattern() {
         return Ok(String::new());

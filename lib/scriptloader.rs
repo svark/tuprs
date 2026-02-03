@@ -869,8 +869,7 @@ impl<Q: PathSearcher + 'static> UserData for TupScriptContext<Q> {
                     .bo_as_mut()
                     .add_path_from(&scriptctx.get_cwd_desc(), &path)
                     .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
-                let glob_path = &GlobPath::build_from(&scriptctx.get_cwd_desc(), &p)
-                    .map_err(|e| mlua::Error::ExternalError(Arc::new(e)))?;
+                let glob_path = &GlobPath::build_from(&scriptctx.get_cwd_desc(), &p);
                 let outputs = scriptctx.get_output_handler();
                 path_searcher
                     .discover_paths(
