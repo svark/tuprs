@@ -942,21 +942,7 @@ impl CleanupPaths for Vec<PathExpr> {
                     }
                 }
                 PathExpr::Literal(s) => {
-                    if let Some(PathExpr::DeGlob(mp)) = acc.last_mut() {
-                        // Merge DeGlob with following Literal if it starts with /
-                        if s.starts_with("/") {
-                            let res = mp.join_with_relative(&s[1..]);
-                            if let Some(new_mp) = res {
-                                *mp = new_mp;
-                            } else if !s.is_empty() {
-                                // If join fails, just add the literal as is
-                                acc.push(pe.clone());
-                            }
-                        }else if !s.is_empty() {
-                            acc.push(pe.clone());
-                        }
-
-                    } else if let Some(PathExpr::Literal(last)) = acc.last_mut() {
+                    if let Some(PathExpr::Literal(last)) = acc.last_mut() {
                         // Merge with previous literal
                         last.push_str(s);
                     } else if !s.is_empty() {
