@@ -603,7 +603,7 @@ impl ParseState {
         Ok((line, header))
     }
 
-    pub(crate) fn read_cached_config(&mut self) -> bool {
+    pub(crate) fn read_cached_config(&mut self, path_searcher: &impl PathSearcher) -> bool {
         let mut read = || -> Result<bool, Error> {
             let mut do_read = false;
             let mut header_str = String::new();
@@ -635,7 +635,7 @@ impl ParseState {
                 }
             }
             if do_read {
-                load_temp_config(fullpath.as_path(), &mut self.expr_map, &mut self.func_map)?;
+                load_temp_config(fullpath.as_path(), self, path_searcher)?;
                 self.conf_map.insert(header_str, vec![]);
                 Ok(true)
             } else {
@@ -2607,8 +2607,8 @@ impl ExpandMacro for Link {
 
 pub(crate) fn load_temp_config(
     conf_file: &Path,
-    expr_map: &mut HashMap<String, Vec<PathExpr>>,
-    func_map: &mut HashMap<String, Vec<PathExpr>>,
+    parse_state: &mut ParseState,
+    path_searcher: &impl PathSearcher,
 ) -> Result<(), Error> {
     for LocatedStatement { statement, .. } in parse_tupfile(conf_file)?.iter() {
         if let Statement::AssignExpr {
@@ -2619,13 +2619,16 @@ pub(crate) fn load_temp_config(
         {
             match assignment_type {
                 AssignmentType::Lazy => {
-                    func_map.insert(left.name.clone(), right.clone());
+                    parse_state.assign_lazy(left.name.as_str(), right.clone())
                 }
                 AssignmentType::Immediate => {
-                    expr_map.insert(left.name.clone(), right.clone());
+                    parse_state.assign_eager(left.name.as_str(), right.clone(), path_searcher)
                 }
-                _ => {
-                    panic!("unexpected assignment type in temp config");
+                AssignmentType::Append => {
+                    parse_state.append_assign(left.name.as_str(), right.clone(), path_searcher)
+                }
+                AssignmentType::Conditional => {
+                    parse_state.conditional_assign(left.name.as_str(), right.clone())
                 }
             }
         }
@@ -3039,7 +3042,7 @@ impl LocatedStatement {
         parse_state.switch_tupfile_and_process(
             p.path_descriptor_ref(),
             |parse_state| -> Result<StatementsInFile, Error> {
-                if parse_state.read_cached_config() {
+                if parse_state.read_cached_config(path_searcher) {
                     Ok(StatementsInFile::default())
                 } else {
                     let include_stmts =
