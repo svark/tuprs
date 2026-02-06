@@ -850,7 +850,7 @@ impl ParseState {
             let path_from_tup_base_to_here =
                 MatchingPath::new(self.get_tup_dir_desc(), self.get_tup_base_dir());
             debug!(
-                "path from tup_base to here: {}",
+                "replacing tup_cwd with: {}",
                 path_from_tup_base_to_here.get_relative_path()
             );
             self.replace_tup_cwd(path_from_tup_base_to_here.into());

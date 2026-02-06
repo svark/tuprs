@@ -1,5 +1,6 @@
 //! This module handles decoding and de-globbing of rules
 
+use std::io::Write;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
@@ -9,7 +10,7 @@ use std::fmt::{Display, Formatter};
 use std::format;
 use std::fs::File;
 use std::hash::Hash;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use log::debug;
@@ -34,6 +35,7 @@ use nonempty::nonempty;
 use std::sync::OnceLock;
 use tuppaths::paths::SelOptions::Either;
 use tuppaths::paths::{GlobPath, MatchingPath, NormalPath, SelOptions};
+use crate::statements::PathExpr::Literal;
 
 static PERC_INP_REGEX: OnceLock<Regex> = OnceLock::new();
 static PERC_BIN_REGEX: OnceLock<Regex> = OnceLock::new();
@@ -702,7 +704,7 @@ impl DecodeInputPaths for PathExpr {
                 let group_dir = path_buffers
                     .add_path_from(tup_cwd, to_join.as_str())
                     .wrap_err(format!(
-                        "Joining group dir '{}' with base {:?} for {:?}",
+                        "Joining group dir '{}' with base {:?} among search dirs {:?}",
                         to_join, tup_cwd, search_dirs
                     ))?;
                 let grp_desc = path_buffers.add_group_pathexpr(&group_dir, name.cat().as_str())?;
@@ -1824,25 +1826,15 @@ impl LocatedStatement {
         } = self
         {
             let mut reparsed_primary = Vec::new();
-            for primary in s.primary.iter() {
-                if let PathExpr::Literal(s) = primary {
-                    let pelist = reparse_literal_as_input(s).unwrap_or(vec![s.to_string().into()]);
-                    reparsed_primary.extend(pelist);
-                    reparsed_primary.push(PathExpr::Sp1);
-                } else {
-                    reparsed_primary.push(primary.clone());
-                }
+            for primary in s.primary.split(PathExpr::is_ws) {
+                combine_into_rule_inp(primary, &mut reparsed_primary);
             }
+            reparsed_primary.pop();
             let mut reparsed_secondary = Vec::new();
-            for secondary in s.secondary.iter() {
-                if let PathExpr::Literal(s) = secondary {
-                    let pelist = reparse_literal_as_input(s).unwrap_or(vec![s.to_string().into()]);
-                    reparsed_secondary.extend(pelist);
-                    reparsed_secondary.push(PathExpr::Sp1);
-                } else {
-                    reparsed_secondary.push(secondary.clone());
-                }
+            for secondary in s.secondary.split(PathExpr::is_ws) {
+                combine_into_rule_inp(secondary, &mut reparsed_secondary);
             }
+            reparsed_secondary.pop();
 
             let rule_ref = path_buffers.add_rule_pos(rule_position);
             let mut inpdec = reparsed_primary
@@ -1980,6 +1972,36 @@ impl LocatedStatement {
             output,
         ))
     }
+}
+
+fn combine_into_rule_inp(input_fragment: &[PathExpr], reparsed_input_frag: &mut Vec<PathExpr> ) {
+    if input_fragment.is_empty() {
+        return;
+    }
+    if input_fragment.len() == 1 {
+        if let Some(Literal(s)) = input_fragment.first() {
+            let pelist = reparse_literal_as_input(s).unwrap_or(vec![s.to_string().into()]);
+            reparsed_input_frag.extend(pelist);
+        } else {
+            reparsed_input_frag.extend_from_slice(input_fragment);
+        }
+    } else {
+        let mut s: Vec<u8> = Vec::new();
+        {
+            let mut buf = BufWriter::new(&mut s);
+            for p in input_fragment {
+                write!(buf, "{}", p).unwrap();
+            }
+        }
+        if let Ok(str) = String::from_utf8(s) {
+            let o = reparse_literal_as_input(str.as_str()).unwrap_or_else(|_| input_fragment.to_vec());
+            reparsed_input_frag.extend(o);
+        } else {
+            reparsed_input_frag.extend_from_slice(input_fragment);
+        }
+    }
+    reparsed_input_frag.push(PathExpr::Sp1);
+
 }
 
 impl ResolvePaths for StatementsInFile {
