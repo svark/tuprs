@@ -404,6 +404,9 @@ impl ParseState {
         self.cur_tupfile_loc_stack.clone().into()
     }
 
+    pub(crate) fn is_in_expression(&self) -> bool {
+        matches!(self.parse_context, ParseContext::Expression)
+    }
     pub(crate) fn record_assignments_for_cached_config(&mut self, statement: &LocatedStatement) {
         if self.get_cached_config().is_empty() {
             return;
@@ -1561,6 +1564,12 @@ impl DollarExprs {
                     if body_frag_str.starts_with("-L") {
                         continue;
                     }
+                    if body_frag_str.starts_with("/LIBPATH") {
+                        continue;
+                    }
+                    if body_frag_str.starts_with("-LIBPATH") {
+                        continue;
+                    }
                     let rest = body_frag_str.strip_prefix("-l");
                     if rest.is_none() {
                         result.extend(body_frag.iter().cloned());
@@ -1666,6 +1675,7 @@ impl DollarExprs {
                 let _tempfile =
                     TempFile::new(body_str.as_bytes(), path_searcher.get_root(), &dump_file_pd);
 
+                    let is_in_expression = m.is_in_expression();
                 m.switch_tupfile_and_process(&dump_file_pd, |ps| -> Result<Vec<PathExpr>, Error> {
                     let stmts = parse_statements_until_eof(Span::new(body_str.as_bytes()))
                         .expect("failed to parse body of for-each");
@@ -1706,6 +1716,12 @@ impl DollarExprs {
                         || vs_updated.ends_with(&[PathExpr::NL])
                     {
                         vs_updated.pop();
+                    }
+                    //if parse context is expression, then replace newlines with spaces
+                    if is_in_expression {
+                        for pe in vs_updated.iter_mut() {
+                            replace_newlines_with_spaces(pe);
+                        }
                     }
                     vs_updated.cleanup();
                     Ok(vs_updated)
