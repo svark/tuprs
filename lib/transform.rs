@@ -107,8 +107,14 @@ fn shell<S: AsRef<OsStr>>(cmd: S) -> std::process::Command {
     };
 
     let mut command = std::process::Command::new(shell);
-    command.arg("-c");
-    command.arg(cmd);
+    let cmd_ref = cmd.as_ref();
+    if cmd_ref.len() > 8000 {
+        command.arg("-s");
+        command.stdin(Stdio::piped());
+    } else {
+        command.arg("-c");
+        command.arg(cmd);
+    }
 
     command
 }
@@ -2180,7 +2186,17 @@ impl DollarExprs {
                     "consider rewriting in a configuration step and access it here as an env"
                 );
                 // run sh -c over the args and process stdout
-                let outstr = match shell(args.clone()).stdout(Stdio::piped()).spawn() {
+                let mut cmd = shell(args.clone());
+                let outstr = match if args.len() > 8000 {
+                    cmd.stdout(Stdio::piped()).spawn().and_then(|mut ch| {
+                        if let Some(mut stdin) = ch.stdin.take() {
+                            stdin.write_all(args.as_bytes())?;
+                        }
+                        Ok(ch)
+                    })
+                } else {
+                    cmd.stdout(Stdio::piped()).spawn()
+                } {
                     Ok(ch) => match ch.wait_with_output() {
                         Ok(output) => {
                             if !output.status.success() {
